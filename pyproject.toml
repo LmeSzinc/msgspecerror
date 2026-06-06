@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "msgspecerror"
+dynamic = ["version"]
+description = "Structured parsing of msgspec ValidationError messages"
+readme = "README.md"
+license = { text = "BSD-3-Clause" }
+requires-python = ">=3.8"
+authors = [
+    { name = "LmeSzinc" },
+]
+keywords = [
+    "msgspec",
+    "validation",
+    "error",
+    "parse",
+    "serialization",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "msgspec>=0.18.6,<=0.21.1",
+    "typing-extensions",
+]
+
+[project.urls]
+Homepage = "https://github.com/LmeSzinc/msgspecerror"
+"Issue Tracker" = "https://github.com/LmeSzinc/msgspecerror/issues"
+Source = "https://github.com/LmeSzinc/msgspecerror"
+
+[project.optional-dependencies]
+eval-type-backport = [
+    "eval_type_backport ; python_version < '3.10'",
+]
+dev = [
+    "pytest>=8",
+    "attrs",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "msgspecerror.__version__"}
+
+[tool.setuptools]
+packages = ["msgspecerror"]
+
+[tool.pytest.ini_options]
+tmp_path_retention_count = 1
+tmp_path_retention_policy = "failed"
+addopts = "-p no:benchmark"
+testpaths = ["tests"]
+pythonpath = ["."]
