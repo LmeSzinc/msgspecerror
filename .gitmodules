@@ -1,0 +1,3 @@
+[submodule "msgspecsource"]
+	path = msgspecsource
+	url = https://github.com/msgspec/msgspec
