@@ -2,7 +2,8 @@
 
 ## 目的
 
-`msgspecerror/const.py` 中的 `ErrorType` 枚举定义了所有 msgspec 可能抛出的 `ValidationError` 错误格式。当新版本的 msgspec 引入了新的错误消息格式时，需要同步更新 `const.py` 以保持覆盖完整。
+`msgspecerror/const.py` 中的 `ErrorType` 枚举定义了 msgspec 及其关联操作中可能抛出的异常格式分类。
+当新版本的 msgspec 引入了新的错误消息格式时，需要同步更新 `const.py` 以保持覆盖完整。
 
 ---
 
@@ -10,7 +11,38 @@
 
 `_core.c` 中的错误消息由 C 代码动态构造。字符串字面量可能被 printf 格式串（`%s`、`%U`、`%zd` 等）拆散、跨行拼接，或被 `if/else` 分支按条件组合。**仅靠静态字符串搜索或程序化比对，一定会遗漏隐藏的错误格式分支**。
 
-正确方法：逐段阅读 `_core.c` 中构造 `ValidationError` 的代码路径，理解每条错误消息的完整形状和触发条件。
+正确方法：逐段阅读 `_core.c` 中构造异常对象的代码路径，理解每条错误消息的完整形状和触发条件。
+
+---
+
+## msgspec 异常体系总览
+
+msgspec decode/encode 过程中可能抛出以下异常，按来源分三类：
+
+### msgspec 原生异常
+
+| 异常类 | 枚举名称 | 说明 |
+|---|---|---|
+| `msgspec.ValidationError` | `ErrorType.*` | 数据校验失败，值不符合 schema。这是 `const.py` 主要覆盖的范围。 |
+| `msgspec.DecodeError` | `JSON_MALFORMED` / `MSGPACK_MALFORMED` | 输入数据格式错误（非法 JSON/MsgPack 结构）。 |
+| `msgspec.EncodeError` | `ENCODE_ERROR` | 编码时数据超限（超过 MsgPack 32-bit 长度限制）。 |
+
+
+### Python 内置异常（msgspec 透传，不包装）
+
+| 异常类 | 触发场景 |
+|---|---|
+| `UnicodeDecodeError` | 输入 `bytes` 中包含非法 UTF-8 序列，`PyUnicode_DecodeUTF8()` 失败 |
+| `UnicodeEncodeError` | 输入 `str` 中包含 surrogate（如 `\ud800`），`str.encode('utf-8')` 失败 |
+
+这些异常由 Python 解释器直接抛出，msgspec 的 C 代码不拦截不包装。它们与 `JSON_MALFORMED` 的区别：
+
+| 特征 | `JSON_MALFORMED` | `UnicodeDecodeError` | `UnicodeEncodeError` |
+|---|---|---|---|
+| 消息前缀 | `JSON is malformed:` | `'utf-8' codec can't decode byte ...` | `'utf-8' codec can't encode ...` |
+| 异常类型 | `msgspec.DecodeError` | `UnicodeDecodeError` | `UnicodeEncodeError` |
+| 输入类型 | `bytes`（JSON 语法非法） | `bytes`（UTF-8 解码失败） | `str`（含 surrogate） |
+| msgspec 定义 | 可枚举的固定格式 | Python 动态生成 | Python 动态生成 |
 
 ---
 
@@ -30,76 +62,85 @@ msgspeccore/
 └── 0.22.0/_core.c    ← 新增
 ```
 
-### 2. 阅读 C 源码，提取错误格式
+### 2. 阅读 C 源码，提取异常格式
 
-打开新版 `_core.c`，搜索以下函数和宏——它们是构造 `ValidationError` 的核心入口：
+打开新版 `_core.c`，根据目标异常类型搜索不同的入口点：
+
+#### 目标 A：`ValidationError` — 搜索 `raise_validation_error`
 
 | 搜索目标 | 说明 |
 |---|---|
-| `ValidationError` (C 函数定义) | 构造错误对象的函数原型和实现 |
-| `ms_err_msg` / `err_msg` | 格式化并抛出错误的辅助函数 |
-| `raise_validation_error` | msgspec 的 C 层抛出错误 |
-| `PyErr_SetObject` + `ValidationError` | 设置 Python 异常对象的路径 |
-| 各 decoder 中的 `goto error` 标签 | 解码失败后跳转到错误处理代码块 |
+| `raise_validation_error(` | ValidationError 抛出的集中入口 |
+| `ms_raise_validation_error(` | 另一种 ValidationError 抛出函数 |
+| `ms_validation_error(` | 构造 ValidationError 对象但不抛出的辅助函数 |
 
-对于每个错误构造点，需要做以下分析：
+每个调用点的格式字符串（含 `%U`）即为一条候选 `ErrorType` 定义。
 
-#### a. 追溯格式字符串的最终形态
+#### 目标 B：`DecodeError` — 搜索 `json_err_invalid` / `ms_err_truncated` / `mpack`
 
-C 代码中可能这样写：
+`DecodeError` 有三个来源：
 
-```c
-if (cond_a) {
-    err_msg = "Expected `int`%U";
-} else if (cond_b) {
-    err_msg = "Expected `int`, got `str`%U";
-} else {
-    err_msg = "Expected `int` >= 0%U";
-}
-```
+**1. `json_err_invalid(self, reason)` — JSON 解析错误**
 
-需要对照 `if/else` 条件，列出每种分支组合下用户实际看到的错误消息。
-
-#### b. 追踪 path 后缀的拼接规则
-
-path 部分（` - at <Path>`) 很可能被单独拼接：
-
-```c
-if (path != NULL) {
-    path_suffix = format_path(path);
-    final_msg = concat(err_msg, path_suffix);
-}
-```
-
-需要确认什么条件下 path 会被省略，什么条件下会附加。
-
-#### c. 检查 `%U` 之外的自定义格式化
-
-msgspec 的 C 代码使用自定义 `%U` 格式说明符来包裹反引号。确认是否有其它自定义格式符会导致字符串布局与静态搜索到的结果不同。
-
-#### d. 对比旧版源码的 diff
-
-直接 diff 两版 `_core.c`，聚焦于错误构造相关的代码区域：
+搜索 `json_err_invalid(self,` 可找到所有 JSON 解析错误原因。当前已知的 17 种 reason：
 
 ```
-git diff msgspeccore/0.21.1/_core.c msgspeccore/0.22.0/_core.c
+invalid character
+trailing characters
+expected ',' or ']'
+expected ',' or '}'
+expected ':'
+expected '"'
+trailing comma in array
+trailing comma in object
+object keys must be strings
+invalid number
+invalid escape character in string
+invalid character in unicode escape
+invalid utf-16 surrogate pair
+unexpected end of hex escape
+unexpected end of escaped utf-16 surrogate pair
+invalid escaped character
 ```
 
-关注：
-- `raise_validation_error` 相关修改
-- 新增或删除的 `err_msg` 赋值
-- 错误条件分支的变化
+消息格式为 `"JSON is malformed: <reason> (byte <pos>)"`。
 
-### 3. 分析新增错误消息
+**2. `ms_err_truncated()` — 数据截断**
 
-通过阅读 C 源码的原始构造逻辑，判断新增的错误格式属于哪一类别：
+搜索 `ms_err_truncated()` 找到所有数据截断的调用点。消息固定为 `"Input data was truncated"`。
 
-判断标准：
-- 如果新增的消息可以被已有的某个 `ErrorType` 的格式覆盖 → 无需新增
-- 如果新增的消息是一种全新的格式模式 → 需要新增 `ErrorType` 成员
-- 如果新增的消息是对已有消息的变体（如补充了更多细节）→ 扩展现有 `ErrorType` 的 docstring 注释
+**3. 搜索 `MessagePack` + `PyErr_Format` — MsgPack 格式错误**
+
+```
+"MessagePack data is malformed: trailing characters (byte %zd)"
+"MessagePack data is malformed: invalid opcode '\\x%02x' (byte %zd)"
+```
+
+#### 目标 C：`EncodeError` — 搜索 `EncodeError`
+
+`EncodeError` 固定格式：
+
+```
+"Can't encode %s longer than 2**32 - 1"
+"Can't encode bytes-like objects longer than 2**32 - 1"
+"Can't encode strings longer than 2**32 - 1"
+"Can't encode Ext objects with data longer than 2**32 - 1"
+```
+
+### 3. 分析新增异常
+
+根据 C 源码的原始构造逻辑，判断新增的异常格式属于哪一类别：
+
+- **ValidationError** 格式 → 需要新增或扩展现有 `ErrorType` 成员
+- **JSON 解析错误** → 添加到 `JSON_MALFORMED` 的 reason 列表
+- **MsgPack 解析错误** → 添加到 `MSGPACK_MALFORMED` 的 reason 列表
+- **编码超限** → 添加到 `ENCODE_ERROR` 的 example 列表
+
+- **Python 内置异常**（UnicodeDecodeError / UnicodeEncodeError） → 不属于 msgspec 定义的异常格式，无法枚举所有可能的消息，只需在 `UNICODE_DECODE_ERROR` 中注明即可
 
 ### 4. 更新 `const.py`
+
+#### ValidationError 格式
 
 如果需要新增 `ErrorType` 成员，按照以下模板添加：
 
@@ -118,8 +159,15 @@ Triggered by: <触发条件>
 - 约束错误 → `LENGTH_CONSTRAINT`、`PATTERN_CONSTRAINT`
 - 无效值错误 → `INVALID_XXX`
 - 范围错误 → `XXX_OUT_OF_RANGE`
+- 其他错误 → 按功能命名，放在 Group 6
 
 如果只是修改了已有错误消息的格式，更新对应 `ErrorType` 的 docstring 即可。
+
+#### 非 ValidationError 格式
+
+对于 `JSON_MALFORMED`、`MSGPACK_MALFORMED`、`ENCODE_ERROR`，
+这些成员不追踪精确的格式字符串，而是记录异常类和已知的消息模式。
+新增的 reason 或 example 直接追加到对应成员的 docstring 列表中即可。
 
 ### 5. 验证
 
@@ -139,43 +187,42 @@ python -c "from msgspecerror.const import ErrorType; print(ErrorType)"
 
 ### `raise_validation_error` 函数
 
-这是错误抛出的集中入口。搜索 `raise_validation_error(` 找到所有调用点。
+这是 ValidationError 抛出的集中入口。搜索 `raise_validation_error(` 找到所有调用点。
+
+### `json_err_invalid` 函数
+
+这是 `DecodeError("JSON is malformed: ...")` 的构造入口。搜索 `json_err_invalid(self,` 找到所有 17 种 reason。
 
 ### 常见错误构造模式
 
 ```c
-// 模式 1：直接构造带 path 的错误
+// ValidationError
 raise_validation_error("Expected `float`%U", path);
 
-// 模式 2：带条件分支的错误格式
-if (value_is_float) {
-    raise_validation_error("Expected `float`%U", path);
-} else {
-    raise_validation_error("Expected `int`, got `str`%U", path);
-}
+// DecodeError - JSON malformed
+return json_err_invalid(self, "trailing characters");
 
-// 模式 3：通过 switch/case 分发不同错误
-switch (err_type) {
-    case ERR_MISSING_FIELD:
-        raise_validation_error("Object missing required field `%U`%U", field_name, path);
-        break;
-    case ERR_UNKNOWN_FIELD:
-        raise_validation_error("Object contains unknown field `%U`%U", field_name, path);
-        break;
-}
+// DecodeError - truncated
+if (MS_UNLIKELY(!json_remaining(self, len))) return ms_err_truncated();
+
+// EncodeError
+PyErr_SetString(self->mod->EncodeError, "Can't encode strings longer than 2**32 - 1");
+
+// Definition Error (TypeError)
+PyErr_SetString(PyExc_TypeError, "All base classes must be types");
 ```
 
-### 关键索引（基于 0.21.1）
+### UnicodeDecodeError 透传
 
-以下行号仅作参考，不同版本会有偏移：
+`PyUnicode_DecodeUTF8(s, size, NULL)` 在以下位置被调用。若数据包含非法 UTF-8 序列，Python 会直接抛出 `UnicodeDecodeError`，msgspec 的 C 代码没有捕获或重新包装：
 
-| 区域 | 大致位置 | 说明 |
-|---|---|---|
-| `raise_validation_error` 定义 | ~12500–12600 | 错误抛出的底层函数 |
-| `JSONDecoder` 中的错误 | ~6000–9000 | JSON 解码时的校验错误 |
-| `MsgPackDecoder` 中的错误 | ~10000–12500 | MsgPack 解码时的校验错误 |
-| `Convert` 中的错误 | ~13000–16000 | `msgspec.convert()` 时的校验错误 |
-| 约束验证错误 | ~5000–6000 | `min_length`、`max_length`、`ge`、`le` 等约束触发 |
+```
+src/msgspec/_core.c:
+  ~5264  ms_invalid_cstr_value()
+  ~15451 mpack_decode_str()
+  ~17621 JSON 字符串值解码
+  ~17675 JSON 字符串值解码（custom type）
+```
 
 ---
 
@@ -187,3 +234,5 @@ switch (err_type) {
 - **不是每个版本都有变化**：msgspec 的错误消息体系相对稳定，通常只有大版本或新增数据类型时才会有变化
 - **不要移除旧的 `ErrorType` 成员**：即使上游已不再产生该错误，保留它可以解析历史日志
 - **每个新增的 `ErrorType` 成员都要附 Format / Example / Triggered by 三段注释**
+- **`UnicodeDecodeError` / `UnicodeEncodeError` 不是 msgspec 定义的错误**，它们是 Python 内置异常，消息由 Python 运行时动态生成。无需也无法枚举所有可能的消息格式，只需确认异常类型即可区分
+- **区分 `DecodeError` 和 `ValidationError`**：前者是输入数据格式错误（JSON 语法、MsgPack 结构），后者是数据格式正确但值不符合 schema 约束

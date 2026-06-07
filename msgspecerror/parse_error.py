@@ -178,8 +178,27 @@ def get_error_type(error):
     if error.startswith('Number out of range'):
         return MsgspecError(msg=error, type=ErrorType.NUMBER_OUT_OF_RANGE)
 
-    # Group 6: Other Errors - Wrapped Error (fallback)
-    # Any other error message that doesn't match above patterns
+    # Group 6: Wrapped Errors
+    # JSON_MALFORMED: "JSON is malformed: <reason> (byte <pos>)"
+    if error.startswith('JSON is malformed:'):
+        return MsgspecError(msg=error, type=ErrorType.JSON_MALFORMED)
+
+    # MSGPACK_MALFORMED: "MessagePack data is malformed: <reason> (byte <pos>)"
+    if error.startswith('MessagePack data is malformed:'):
+        return MsgspecError(msg=error, type=ErrorType.MSGPACK_MALFORMED)
+
+    # ENCODE_ERROR: "Can't encode <obj> longer than 2**32 - 1"
+    if error.startswith("Can't encode "):
+        return MsgspecError(msg=error, type=ErrorType.ENCODE_ERROR)
+
+    # UNICODE_DECODE_ERROR: "'<codec>' codec can't decode byte <byte>..."
+    if error.startswith("'"):
+        _, sep, msg = error[1:].partition("'")
+        if sep and msg.startswith(" codec can't decode byte "):
+            return MsgspecError(msg=error, type=ErrorType.UNICODE_DECODE_ERROR)
+
+    # WRAPPED_ERROR: catch-all for any remaining unmatched messages,
+    # typically user-code errors from dec_hook, __post_init__, etc.
     return MsgspecError(msg=error, type=ErrorType.WRAPPED_ERROR)
 
 

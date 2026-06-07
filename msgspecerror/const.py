@@ -282,7 +282,7 @@ class ErrorType(str, Enum):
     """
 
     # ======================================================================
-    # Group 6: Other Errors
+    # Group 6: Wrapped Errors
     # ======================================================================
 
     WRAPPED_ERROR = "WRAPPED_ERROR"
@@ -297,7 +297,73 @@ class ErrorType(str, Enum):
     UNICODE_DECODE_ERROR = 'UNICODE_DECODE_ERROR'
     """
     Our custom error type to wrap UnicodeDecodeError.
-    msgspec doesn't give detail loc of UnicodeDecodeError, we will do that.
-    Format: 'utf-8' codec can't decode byte 0x80 in position 3: invalid start byte
+    Format: '<codec>' codec can't decode byte <byte>...
+    Example:
+    - 'utf-8' codec can't decode byte {byte} in position {position}: invalid start byte
+    - 'utf-8' codec can't decode byte {byte} in position {position}: invalid continuation byte
+    - 'utf-8' codec can't decode bytes in position {position1}-{position2}: unexpected end of data
+    - 'utf-8' codec can't decode bytes in position {position1}-{position2}: surrogates not allowed
     Triggered by: Invalid unicode in bytes
+    """
+
+    JSON_MALFORMED = "JSON_MALFORMED"
+    """
+    Format: "JSON is malformed: <reason> (byte <pos>)"
+
+    Raised as `DecodeError` when the input is syntactically invalid JSON.
+    The `<reason>` is one of the error messages below; `<pos>` is the
+    byte offset where the error was detected.
+
+    Reasons:
+    - invalid character
+    - trailing characters
+    - expected ',' or ']'
+    - expected ',' or '}'
+    - expected ':'
+    - expected '"'
+    - trailing comma in array
+    - trailing comma in object
+    - object keys must be strings
+    - invalid number
+    - invalid escape character in string
+    - invalid character in unicode escape
+    - invalid utf-16 surrogate pair
+    - unexpected end of hex escape
+    - unexpected end of escaped utf-16 surrogate pair
+    - invalid escaped character
+
+    Triggered by: Any JSON text that does not conform to the JSON grammar.
+    """
+
+    MSGPACK_MALFORMED = "MSGPACK_MALFORMED"
+    """
+    Format: "MessagePack data is malformed: <reason> (byte <pos>)"
+
+    Raised as `DecodeError` when the input is syntactically invalid MsgPack.
+
+    Reasons:
+    - trailing characters (byte <pos>)
+    - invalid opcode '\\x<XX>' (byte <pos>)
+
+    Triggered by: Any MsgPack data that does not conform to the MessagePack
+                 binary format, e.g. trailing bytes after a complete message
+                 or an unrecognized opcode.
+    """
+
+    ENCODE_ERROR = "ENCODE_ERROR"
+    """
+    Format: "Can't encode <obj> longer than 2**32 - 1"
+
+    Raised as `EncodeError` when an object is too large to be encoded
+    in the MessagePack format (MsgPack's 32-bit length limit).
+
+    Examples:
+    - "Can't encode strings longer than 2**32 - 1"
+    - "Can't encode bytes-like objects longer than 2**32 - 1"
+    - "Can't encode arrays longer than 2**32 - 1"
+    - "Can't encode maps longer than 2**32 - 1"
+    - "Can't encode Ext objects with data longer than 2**32 - 1"
+
+    Triggered by: Encoding a string, bytes, array, map, or Ext object
+                 whose length exceeds 2**32 - 1 (MsgPack 32-bit limit).
     """
