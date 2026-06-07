@@ -187,8 +187,16 @@ def _repair_once(
                 return raw_obj, error
             else:
                 # go deeper
-                obj = obj[part]
-                model = get_field_typehint(model, part)
+                try:
+                    obj = obj[part]
+                except KeyError:
+                    # this shouldn't happen, unless raw_obj and error.loc don't match
+                    return NODEFAULT, error
+                try:
+                    model = get_field_typehint(model, part)
+                except AttributeError:
+                    # this shouldn't happen, unless raw_obj and error.loc don't match
+                    return NODEFAULT, error
                 continue
 
         # 5. Fallback
