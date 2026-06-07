@@ -95,6 +95,10 @@ def _repair_once(
             except IndexError:
                 # this shouldn't happen because a dict typehint should have a key and a value
                 return NODEFAULT, error
+            except TypeError:
+                # Msgpack data with integer keys validated against a struct.
+                # model_args is None
+                return NODEFAULT, error
             for key in obj.keys():
                 try:
                     convert(key, key_model)
