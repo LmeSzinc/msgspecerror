@@ -29,7 +29,7 @@ class TestLoadJsonWithDefaultUTF8:
         assert result is NODEFAULT
         assert len(errors) == 1
         assert errors[0].loc == ()  # Root-level error
-        assert errors[0].type == ErrorType.WRAPPED_ERROR
+        assert errors[0].type == ErrorType.UNICODE_DECODE_ERROR
         assert 'utf-8' in errors[0].msg  # Check that the error message contains "utf-8"
 
     def test_utf_error_strict_repairable_model(self):
@@ -44,7 +44,7 @@ class TestLoadJsonWithDefaultUTF8:
         assert result == WithDefaults(a=42, b="default", c=[])
         assert len(errors) == 1
         assert errors[0].loc == ()  # Root-level error
-        assert errors[0].type == ErrorType.WRAPPED_ERROR
+        assert errors[0].type == ErrorType.UNICODE_DECODE_ERROR
         assert 'utf-8' in errors[0].msg
 
     # --- 'replace' mode tests ---
@@ -174,7 +174,7 @@ class TestLoadJsonWithDefaultUTF8:
         assert result == WithDefaults()
         assert len(errors) == 1
         assert errors[0].loc == ()
-        assert errors[0].type == ErrorType.WRAPPED_ERROR
+        assert errors[0].type == ErrorType.JSON_MALFORMED
         assert 'JSON is malformed' in errors[0].msg
 
     def test_utf_error_at_root_replace(self):
@@ -216,5 +216,5 @@ class TestLoadJsonWithDefaultUTF8:
         assert result == WithDefaults()
         assert len(errors) == 1
         assert errors[0].loc == ()
-        assert errors[0].type == ErrorType.WRAPPED_ERROR
+        assert errors[0].type == ErrorType.JSON_MALFORMED
         assert "JSON is malformed" in errors[0].msg  # The error should mention empty input.

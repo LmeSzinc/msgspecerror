@@ -265,7 +265,7 @@ def _handle_root_error(
     Returns:
         tuple[any, list[MsgspecError]]:
     """
-    collected_errors = [MsgspecError(type=ErrorType.WRAPPED_ERROR, loc=(), msg=str(error))]
+    collected_errors = [parse_msgspec_error(error)]
     # try if model can be default constructed
     return get_default(model, return_obj=True), collected_errors
 
