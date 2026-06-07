@@ -126,7 +126,10 @@ class TestBracketNonNumeric:
         ("Expected `int`, got `str` - at `$.field[]`",  ("field[]",)),
         # Single char bracket content
         ("Expected `int`, got `str` - at `$.[a]`",  ("[a]",)),
-        ("Expected `int`, got `str` - at `$.[0]`",  (0,)),
+        # $[0] (no leading dot) — pure numeric index
+        ("Expected `int`, got `str` - at `$[0]`",  (0,)),
+        # $.[0] (leading dot + index) — empty field before index
+        ("Expected `int`, got `str` - at `$.[0]`",  ("", 0)),
     ])
     def test_non_numeric_bracket(self, error, expected):
         """Non-numeric bracket content is preserved as field name."""
@@ -146,15 +149,15 @@ class TestBracketNonNumeric:
         """Mix of valid numeric index and non-numeric bracket."""
         cases = [
             # Non-numeric then numeric
-            ("Expected `int`, got `str` - at `$.[x][0]`", ("[x]", 0)),
-            ("Expected `int`, got `str` - at `$.[abc][1]`", ("[abc]", 1)),
+            ("Expected `int`, got `str` - at `$[x][0]`", ("[x]", 0)),
+            ("Expected `int`, got `str` - at `$[abc][1]`", ("[abc]", 1)),
             # Numeric then non-numeric
-            ("Expected `int`, got `str` - at `$.[0][x]`", (0, "[x]")),
-            ("Expected `int`, got `str` - at `$.[1][abc]`", (1, "[abc]")),
+            ("Expected `int`, got `str` - at `$[0][x]`", (0, "[x]")),
+            ("Expected `int`, got `str` - at `$[1][abc]`", (1, "[abc]")),
             # Cascade: non-numeric, numeric, non-numeric
-            ("Expected `int`, got `str` - at `$.[x][0][y]`", ("[x]", 0, "[y]")),
+            ("Expected `int`, got `str` - at `$[x][0][y]`", ("[x]", 0, "[y]")),
             # Numeric, numeric, non-numeric
-            ("Expected `int`, got `str` - at `$.[0][1][x]`", (0, 1, "[x]")),
+            ("Expected `int`, got `str` - at `$[0][1][x]`", (0, 1, "[x]")),
             # Non-numeric in nested position — data[x] is one combined field
             ("Expected `int`, got `str` - at `$.data[x].value`",
              ("data[x]", "value")),
@@ -215,35 +218,40 @@ class TestBracketNonNumeric:
 class TestEmptyFieldName:
     """Paths with empty-string field names (rename=\"\")."""
 
-    @pytest.mark.parametrize("error, actual, correct", [
-        # rename="" → path `$.`
-        ("Expected `int`, got `str` - at `$.`",
-         (),                   # current: dropped
-         ("",)),               # correct: one empty field name
+    @pytest.mark.parametrize("error, expected", [
+        # === Basic empty field (rename="") ===
+        ("Expected `int`, got `str` - at `$.`",  ("",)),
+        ("Expected `int`, got `str` - at `$..`", ("", "")),
 
-        # rename=("", "") → path `$..`
-        ("Expected `int`, got `str` - at `$..`",
-         (),                   # current: dropped
-         ("", "")),            # correct: two empty names
+        # === Empty + index ===
+        ("Expected `int`, got `str` - at `$.[0]`",    ("", 0)),
+        ("Expected `int`, got `str` - at `$.[1][2]`", ("", 1, 2)),
+        ("Expected `int`, got `str` - at `$[0].`",    (0, "")),
+        ("Expected `int`, got `str` - at `$[1].`",    (1, "")),
+        ("Expected `int`, got `str` - at `$.[0].`",   ("", 0, "")),
+        ("Expected `int`, got `str` - at `$..[0]`",   ("", "", 0)),
+        ("Expected `int`, got `str` - at `$[0]..`",   (0, "", "")),
 
-        # rename=("", 1, "") → path `$[1].`
-        ("Expected `int`, got `str` - at `$[1].`",
-         (1,),                 # current: empty tail dropped
-         (1, "")),             # correct: (1, "")
+        # === Empty + [...] dict key ===
+        ("Expected `int`, got `str` - at `$.[...]`",  ("", "...")),
+        ("Expected `int`, got `str` - at `$[...].`",  ("...", "")),
+        ("Expected `int`, got `str` - at `$.[...].`", ("", "...", "")),
+        ("Expected `int`, got `str` - at `$..[...]`", ("", "", "...")),
+        ("Expected `int`, got `str` - at `$[...]..`", ("...", "", "")),
 
-        # Empty after dict key → path `$[...].`
-        ("Expected `int`, got `str` - at `$[...].`",
-         ("...",),             # current: empty tail dropped
-         ("...", "")),         # correct: ("...", "")
+        # === Empty + index + [...] mixed ===
+        ("Expected `int`, got `str` - at `$.[0][...]`",   ("", 0, "...")),
+        ("Expected `int`, got `str` - at `$[...][0].`",   ("...", 0, "")),
+        ("Expected `int`, got `str` - at `$.[0][...].`",  ("", 0, "...", "")),
+
+        # === Empty + field name ===
+        ("Expected `int`, got `str` - at `$..name`", ("", "name")),
+        ("Expected `int`, got `str` - at `$.name.`", ("name", "")),
     ])
-    def test_empty_field_name(self, error, actual, correct):
+    def test_empty_field_name(self, error, expected):
+        """Empty field names (rename=\"\") are now correctly preserved."""
         result = get_error_path(error)
-        assert result == actual, (
-            f"Current parser produces {result!r}, "
-            f"expected current behavior {actual!r}.\n"
-            f"  Correct behaviour would preserve empty components: {correct!r}\n"
-            f"  See _path_split_part — 'if part:' filters out ''."
-        )
+        assert result == expected, f"  Got: {result!r}, expected: {expected!r}"
 
     def test_normal_paths_still_work(self):
         """Normal paths without empty fields should work fine."""
@@ -571,11 +579,11 @@ class TestKnownLimitations:
         result = get_error_path(error)
         assert result == ("user", 0), f"Got {result!r}"
 
-    def test_empty_field_name_section_53(self):
-        """Section 5.3: Empty field names are dropped (known limitation)."""
+    def test_empty_field_name_now_preserved(self):
+        """Section 5.3: Empty field names were previously dropped, now preserved."""
         cases = [
-            ("Expected `int`, got `str` - at `$.`", ()),
-            ("Expected `int`, got `str` - at `$..`", ()),
+            ("Expected `int`, got `str` - at `$.`",  ("",)),
+            ("Expected `int`, got `str` - at `$..`", ("", "")),
         ]
         for error, expected in cases:
             result = get_error_path(error)

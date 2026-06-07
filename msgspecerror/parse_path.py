@@ -69,12 +69,22 @@ def _path_split_part(path):
     Yields:
         str:
     """
-    if '.' in path:
-        for part in path.split('.'):
-            if part:
-                yield part
-    else:
+    parts = path.split('.')
+    length = len(parts)
+    if length == 1:
         yield path
+        return
+
+    i = 0
+    for part in parts:
+        if part:
+            yield part
+        elif 0 < i < length:
+            # Middle or trailing empty means an empty field name
+            # (rename=""). Leading empties (i==0) are artifacts from
+            # the root-marker separator and are intentionally skipped.
+            yield ''
+        i += 1
 
 
 def _path_split(path):
@@ -144,11 +154,16 @@ def get_error_path(error):
 
     if error.endswith('`'):
         error = error[:-1]
-    # path startswith `$.` or '$'
-    # KEY_at and KEY_at_key_in endswith `$`
-    # so here we need to remove `.`
+    # Strip the leading dot that connects the root marker `$` to the
+    # first component — BUT only when it's followed by a real field name.
+    # `$.foo` → `foo`, but `$.` / `$..` / `$.[0]` keep the dot because
+    # it IS the first component's separator for an empty field.
+    # if error.startswith('.') and len(error) > 1 and error[1] not in ('.', '['):
+    #     error = error[1:]
     if error.startswith('.'):
-        error = error[1:]
+        right = error[1:]
+        if right and not right.startswith(('.', '[')):
+            error = right
 
     # pydantic style that tells you ('custom_field', 'id') is missing
     if field:
