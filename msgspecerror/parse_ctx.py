@@ -42,6 +42,44 @@ KEY_got = ', got '
 KEY_multiple_of = 'multiple of '
 
 
+def revert_regex(msg):
+    """
+    Unescape a regex pattern string that was processed by Python's ``repr()``
+    via msgspec's ``%R`` format specifier.
+
+    ``repr()`` wraps the pattern in quotes (``'...'`` or ``"..."``) and
+    doubles every backslash (``\\``  becomes  ``\\\\``).  This function
+    reverses both transformations so the pattern can be used directly.
+
+    Args:
+        msg (str): A pattern string extracted from a msgspec error message,
+            **including** the surrounding quotes added by ``repr()``.
+
+    Returns:
+        str: The unescaped pattern.
+    """
+    # Strip the outer quotes that repr() added, and remember which
+    # quote character was used so we can undo internal escaping.
+    if len(msg) >= 2:
+        head = msg[0]
+        tail = msg[-1]
+        if head == tail and (head == "'" or head == '"'):
+            # repr() escapes internal quotes that conflict with the outer
+            # wrapper: ``\\'`` inside ``'...'``, or ``\\"`` inside ``"..."``.
+            # Must run before the \\\\→\\ replacement, otherwise a literal
+            # ``\\'`` (backslash + escaped quote) would be collapsed to
+            # ``'`` after both passes.
+            if head == "'":
+                msg = msg[1:-1]
+                msg = msg.replace("\\'", "'")
+            elif head == '"':
+                msg = msg[1:-1]
+                msg = msg.replace('\\"', '"')
+
+    msg = msg.replace('\\\\', '\\')
+    return msg
+
+
 def get_pattern_ctx(msg):
     """
     Args:
@@ -55,15 +93,13 @@ def get_pattern_ctx(msg):
     left, sep, _ = msg.rpartition(KEY_at)
     if sep:
         msg = left
-    # remove paired ``
-    if len(msg) >= 2 and msg.startswith("'") and msg.endswith("'"):
-        msg = msg[1:-1]
 
     if msg:
-        return ErrorCtx(pattern=msg)
-    else:
-        # Empty regex
-        return NODEFAULT
+        msg = revert_regex(msg)
+        if msg:
+            return ErrorCtx(pattern=msg)
+    # Empty regex
+    return NODEFAULT
 
 
 def get_length_ctx(msg):

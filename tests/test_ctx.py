@@ -174,7 +174,7 @@ class TestGetPatternCtx:
             ),
             pytest.param(
                 "'\\\\' - at `$.path`",
-                ErrorCtx(pattern='\\\\'),
+                ErrorCtx(pattern='\\'),
                 id="single_backslash_pattern",
             ),
         ],

@@ -192,7 +192,7 @@ class TestPatternConstraintReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.PATTERN_CONSTRAINT
         assert err.ctx.expected == "str"
-        assert err.ctx.pattern == r"^\\d+$"
+        assert err.ctx.pattern == r"^\d+$"
 
     def test_pattern_date_format(self):
         r"""Expected `str` matching regex '\d{4}-\d{2}-\d{2}'"""
@@ -202,7 +202,7 @@ class TestPatternConstraintReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.PATTERN_CONSTRAINT
         assert err.ctx.expected == "str"
-        assert err.ctx.pattern == r"\\d{4}-\\d{2}-\\d{2}"
+        assert err.ctx.pattern == r"\d{4}-\d{2}-\d{2}"
 
     def test_pattern_nested(self):
         r"""Expected `str` matching regex '^[A-Z]+$' - at `$.code`"""
