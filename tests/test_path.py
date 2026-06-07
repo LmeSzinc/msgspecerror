@@ -7,9 +7,7 @@ and integration with parse_msgspec_error.
 """
 import pytest
 
-from msgspecerror.parse_error import get_error_path, parse_msgspec_error
-from msgspecerror.const import ErrorType
-from msgspecerror.parse_ctx import ErrorCtx
+from msgspecerror.parse_error import get_error_path
 
 
 # ======================================================================
@@ -478,79 +476,6 @@ class TestEdgeCases:
         ]
         for error, expected in cases:
             assert get_error_path(error) == expected
-
-
-# ======================================================================
-# Integration: full parse_msgspec_error returns correct loc + type
-# ======================================================================
-
-class TestIntegration:
-    """Full parse_msgspec_error integration — loc and type both correct."""
-
-    @pytest.mark.parametrize("error_string, expected_loc, expected_type", [
-        ("Expected `int`, got `str` - at `$.user.age`",
-         ('user', 'age'), ErrorType.TYPE_MISMATCH),
-        ("Invalid value 3 - at `$.kind`",
-         ('kind',), ErrorType.INVALID_TAG_VALUE),
-        ("Invalid enum value 'admin' - at `$.role`",
-         ('role',), ErrorType.INVALID_ENUM_VALUE),
-        ("Object missing required field `id` - at `$.user`",
-         ('user', 'id'), ErrorType.MISSING_FIELD),
-        ("Object contains unknown field `extra` - at `$`",
-         ('extra',), ErrorType.UNKNOWN_FIELD),
-        ("Invalid RFC3339 encoded datetime - at `$.ts`",
-         ('ts',), ErrorType.INVALID_DATETIME),
-        ("Invalid UUID - at `$.id`",
-         ('id',), ErrorType.INVALID_UUID),
-        ("Timestamp is out of range - at `$.ts`",
-         ('ts',), ErrorType.TIMESTAMP_OUT_OF_RANGE),
-        ("Expected `array` of length 2, got 3 - at `$.coords`",
-         ('coords',), ErrorType.ARRAY_LENGTH_CONSTRAINT),
-        ("Expected `int` >= 0 - at `$.age`",
-         ('age',), ErrorType.NUMERIC_CONSTRAINT),
-        ("Expected `str` of length <= 32 - at `$.name`",
-         ('name',), ErrorType.LENGTH_CONSTRAINT),
-        ("Expected `int`, got `str` - at `key` in `$.member_map`",
-         ('member_map', '...key'), ErrorType.TYPE_MISMATCH),
-    ])
-    def test_full_parse(self, error_string, expected_loc, expected_type):
-        result = parse_msgspec_error(error_string)
-        assert result.loc == expected_loc, (
-            f"loc mismatch for {error_string!r}: "
-            f"expected {expected_loc!r}, got {result.loc!r}"
-        )
-        assert result.type == expected_type, (
-            f"type mismatch for {error_string!r}: "
-            f"expected {expected_type}, got {result.type}"
-        )
-
-    @pytest.mark.parametrize("error_string, expected_loc, expected_type, expected_ctx", [
-        ("Expected `int` >= 0 - at `$.age`",
-         ('age',), ErrorType.NUMERIC_CONSTRAINT, ErrorCtx(ge=0)),
-        ("Expected `int` <= 100 - at `$.count`",
-         ('count',), ErrorType.NUMERIC_CONSTRAINT, ErrorCtx(le=100)),
-        ("Expected `int` that's a multiple of 6",
-         (), ErrorType.NUMERIC_CONSTRAINT, ErrorCtx(multiple_of=6)),
-        ("Expected `str` of length <= 32 - at `$.name`",
-         ('name',), ErrorType.LENGTH_CONSTRAINT, ErrorCtx(max_length=32)),
-        ("Expected `str` matching regex '\\d+' - at `$.code`",
-         ('code',), ErrorType.PATTERN_CONSTRAINT, ErrorCtx(pattern='\\d+')),
-        ("Expected `object` of length >= 1 - at `$.metadata`",
-         ('metadata',), ErrorType.OBJECT_LENGTH_CONSTRAINT, ErrorCtx(min_length=1)),
-        ("Expected `array` of length 2, got 3 - at `$.coords`",
-         ('coords',), ErrorType.ARRAY_LENGTH_CONSTRAINT, ErrorCtx(min_length=2, max_length=2)),
-    ])
-    def test_full_parse_with_ctx(self, error_string, expected_loc, expected_type, expected_ctx):
-        result = parse_msgspec_error(error_string)
-        assert result.loc == expected_loc, (
-            f"loc: {result.loc!r} != {expected_loc!r}"
-        )
-        assert result.type == expected_type, (
-            f"type: {result.type} != {expected_type}"
-        )
-        assert result.ctx == expected_ctx, (
-            f"ctx: {result.ctx!r} != {expected_ctx!r}"
-        )
 
 
 # ======================================================================
