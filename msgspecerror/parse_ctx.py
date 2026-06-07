@@ -1,6 +1,6 @@
 from msgspec import NODEFAULT, Struct
 
-from .parse_path import KEY_at, KEY_got
+from .parse_path import KEY_at
 
 
 class ErrorCtx(Struct, omit_defaults=True):
@@ -35,6 +35,7 @@ KEY_gt = '> '
 KEY_ge = '>= '
 KEY_lt = '< '
 KEY_le = '<= '
+KEY_got = ', got '
 KEY_multiple_of = 'multiple of '
 
 
