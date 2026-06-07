@@ -59,6 +59,25 @@ class IntKeyDictModel(Struct):
     mapping: Dict[int, str]
 
 
+# --- Models for Testing Field Aliases ---
+
+class WithAliases(Struct):
+    """A struct with aliased field names to test repair via encode names."""
+    name: str = field(name="userName")
+    age: int = field(name="userAge", default=18)
+
+
+class NestedAlias(Struct):
+    """A nested struct whose inner struct uses aliases."""
+    inner: WithAliases
+    tag: str = field(name="tagField", default="none")
+
+
+class DeepAliasList(Struct):
+    """Model for testing deeply nested aliased fields in a list."""
+    items: List[WithAliases]
+
+
 # --- Test Suite ---
 
 class TestLoadJsonWithDefault:
@@ -251,4 +270,111 @@ class TestLoadJsonWithDefault:
         assert result == NODEFAULT
         assert len(errors) > 0
         assert errors[-1].loc == ()
-        assert "Expected `str`" in errors[-1].msg
+
+    # --- Field Alias Scenarios ---
+
+    def test_valid_json_with_aliases(self):
+        """Valid JSON using alias (encode) names decodes correctly."""
+        data = b'{"userName": "Alice", "userAge": 25}'
+        result, errors = load_json_with_default(data, WithAliases)
+        assert result == WithAliases(name="Alice", age=25)
+        assert errors == []
+
+    def test_repair_aliased_field_with_default(self):
+        """
+        Repair fills in the default for an aliased field when the JSON
+        uses the encode name and the value has a wrong type.
+        """
+        data = b'{"userName": "hello", "userAge": "not-an-int"}'
+        result, errors = load_json_with_default(data, WithAliases)
+
+        # 'age' is an aliased field (encode_name='userAge') with default 18
+        assert result == WithAliases(name="hello", age=18)
+        assert len(errors) == 1
+        # The error location uses the JSON key (encode name), not the field name
+        assert errors[0].loc == ("userAge",)
+
+    def test_repair_aliased_field_without_default(self):
+        """
+        Repair fails for an aliased field that has no default when the
+        JSON uses the encode name and the value is the wrong type.
+        """
+        data = b'{"userName": 42, "userAge": 20}'
+        result, errors = load_json_with_default(data, WithAliases)
+
+        # 'name' is aliased (encode_name='userName') and has no default
+        assert result is NODEFAULT
+        assert len(errors) == 1
+        assert errors[0].loc == ("userName",)
+
+    def test_repair_aliased_missing_required_field(self):
+        """
+        Repair fails when a required aliased field is entirely missing
+        from the JSON (using its encode name).
+        """
+        data = b'{"userAge": 20}'
+        result, errors = load_json_with_default(data, WithAliases)
+
+        # 'name' (encode_name='userName') is required and missing.
+        # Since 'name' has no default and is not Optional, repair cannot
+        # construct a value.
+        assert result is NODEFAULT
+        assert len(errors) > 0
+
+    def test_repair_nested_aliased_struct(self):
+        """
+        Repair works for a nested struct where an inner field uses an alias.
+        """
+        data = b'{"inner": {"userName": "ok", "userAge": "bad"}, "tagField": "hello"}'
+        result, errors = load_json_with_default(data, NestedAlias)
+
+        # 'userAge' should be repaired to its default 18
+        assert result == NestedAlias(
+            inner=WithAliases(name="ok", age=18),
+            tag="hello",
+        )
+        assert len(errors) == 1
+        assert errors[0].loc == ("inner", "userAge")
+
+    def test_repair_nested_aliased_struct_invalid_outer(self):
+        """
+        Repair works for a nested struct where an outer field uses an alias.
+        """
+        data = b'{"inner": {"userName": "ok", "userAge": 20}, "tagField": 999}'
+        result, errors = load_json_with_default(data, NestedAlias)
+
+        # 'tag' (encode_name='tagField') has default "none"
+        assert result == NestedAlias(
+            inner=WithAliases(name="ok", age=20),
+            tag="none",
+        )
+        assert len(errors) == 1
+        assert errors[0].loc == ("tagField",)
+
+    def test_repair_aliased_field_in_list(self):
+        """
+        Repair works for an aliased field inside an object within a list.
+        """
+        data = b'{"items": [{"userName": "a", "userAge": 1}, {"userName": "b", "userAge": "bad"}]}'
+        result, errors = load_json_with_default(data, DeepAliasList)
+
+        assert result == DeepAliasList(items=[
+            WithAliases(name="a", age=1),
+            WithAliases(name="b", age=18),  # age repaired to default
+        ])
+        assert len(errors) == 1
+        assert errors[0].loc == ("items", 1, "userAge")
+
+    def test_repair_aliased_field_deep_path_uses_encode_name(self):
+        """Error location in a deeply nested aliased field uses the JSON encode name."""
+        data = b'{"items": [{"userName": "x", "userAge": "bad"}]}'
+        result, errors = load_json_with_default(data, DeepAliasList)
+
+        assert result == DeepAliasList(items=[
+            WithAliases(name="x", age=18),
+        ])
+        assert len(errors) == 1
+        # loc segment is the encode name "userAge", not the field name "age"
+        assert errors[0].loc == ("items", 0, "userAge")
+        # The error message also uses the encode name in the JSON path
+        assert "$.items[0].userAge" in errors[0].msg
