@@ -152,8 +152,8 @@ class ErrorType(str, Enum):
 
     TIMEZONE_CONSTRAINT = "TIMEZONE_CONSTRAINT"
     """
-    Format: "Expected datetime with (a|no) timezone component - at <Path>"
-            "Expected time with (a|no) timezone component - at <Path>"
+    Format: "Expected `datetime` with (a|no) timezone component - at <Path>"
+            "Expected `time` with (a|no) timezone component - at <Path>"
     Triggered by: A datetime/time object does not satisfy the `tz=True` (aware) or
                  `tz=False` (naive) constraint from a `Meta` object.
     """

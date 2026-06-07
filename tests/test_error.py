@@ -265,13 +265,21 @@ class TestTimezoneConstraint:
     """TIMEZONE_CONSTRAINT — datetime/time timezone awareness."""
 
     @pytest.mark.parametrize("msg, ctx", [
-        ("Expected datetime with a timezone component",
+        ("Expected `datetime` with a timezone component",
          ErrorCtx(tz=True)),
-        ("Expected datetime with a timezone component - at `$.event_at`",
+        ("Expected `datetime` with a timezone component - at `$.event_at`",
          ErrorCtx(tz=True)),
-        ("Expected datetime with no timezone component",
+        ("Expected `datetime` with no timezone component",
          ErrorCtx(tz=False)),
-        ("Expected datetime with no timezone component - at `$.naive_dt`",
+        ("Expected `datetime` with no timezone component - at `$.naive_dt`",
+         ErrorCtx(tz=False)),
+        ("Expected `time` with a timezone component",
+         ErrorCtx(tz=True)),
+        ("Expected `time` with a timezone component - at `$.start`",
+         ErrorCtx(tz=True)),
+        ("Expected `time` with no timezone component",
+         ErrorCtx(tz=False)),
+        ("Expected `time` with no timezone component - at `$.end`",
          ErrorCtx(tz=False)),
     ])
     def test_timezone_constraint(self, msg, ctx):

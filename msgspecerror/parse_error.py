@@ -110,10 +110,14 @@ def get_error_type(error):
                 err.ctx.got = got_val
             return err
 
-        # Expected datetime with (a|no) timezone component
-        if error.startswith('Expected datetime with a timezone'):
+        # Expected `datetime`/`time` with (a|no) timezone component
+        if error.startswith('Expected `datetime` with a timezone'):
             return _make_error(error, ErrorType.TIMEZONE_CONSTRAINT, ErrorCtx(tz=True))
-        if error.startswith('Expected datetime with no timezone'):
+        if error.startswith('Expected `datetime` with no timezone'):
+            return _make_error(error, ErrorType.TIMEZONE_CONSTRAINT, ErrorCtx(tz=False))
+        if error.startswith('Expected `time` with a timezone'):
+            return _make_error(error, ErrorType.TIMEZONE_CONSTRAINT, ErrorCtx(tz=True))
+        if error.startswith('Expected `time` with no timezone'):
             return _make_error(error, ErrorType.TIMEZONE_CONSTRAINT, ErrorCtx(tz=False))
 
         # Expected `str` matching regex `<pattern>` - at `<Path>`

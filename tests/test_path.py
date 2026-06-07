@@ -91,9 +91,12 @@ class TestBasicPaths:
         # === NUMERIC_CONSTRAINT (int) ===
         ("Expected `int` >= 0 - at `$.age`",
          ('age',)),
-        # === TIMEZONE_CONSTRAINT ===
-        ("Expected datetime with a timezone component - at `$.event_at`",
+        # === TIMEZONE_CONSTRAINT (datetime) ===
+        ("Expected `datetime` with a timezone component - at `$.event_at`",
          ('event_at',)),
+        # === TIMEZONE_CONSTRAINT (time) ===
+        ("Expected `time` with no timezone component - at `$.end`",
+         ('end',)),
         # === ENCODE_ERROR (no path suffix expected) ===
         ("Can't encode strings longer than 2**32 - 1",
          ()),
