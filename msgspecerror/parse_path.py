@@ -43,18 +43,21 @@ def _path_split_index(path):
             # [0]
             if prefix:
                 yield prefix + field
+                prefix = ''
             elif field:
                 yield field
             yield index
             path = remain
         except ValueError:
             # Invalid index like: [abc], [[], []]
-            # skip them and check the remains
-            prefix = f'{field}[{index}]'
+            # accumulate consecutive non-numeric brackets into prefix
+            prefix += f'{field}[{index}]'
             path = remain
 
-    # no list index
-    if path:
+    # no list index — preserve unparseable bracket content as field name
+    if prefix:
+        yield prefix + path
+    elif path:
         yield path
 
 
