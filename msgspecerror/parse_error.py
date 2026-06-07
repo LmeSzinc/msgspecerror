@@ -23,6 +23,45 @@ class MsgspecError(Struct, omit_defaults=True):
     ctx: ErrorCtx = field(default_factory=ErrorCtx)
 
 
+def _extract_got(remain):
+    """Extract the ``got`` type string from the remainder after ``KEY_got``.
+
+    ``remain`` starts with ``KEY_got`` (``', got '``).
+    Returns the type name (text between the first pair of backticks) or ``None``.
+    """
+    if not remain.startswith(KEY_got):
+        return None
+    after = remain[len(KEY_got):]
+    if after.startswith('`'):
+        head, sep, _ = after[1:].partition('`')
+        if sep:
+            return head
+    return None
+
+
+def _make_error(error, error_type, ctx=NODEFAULT, expected=None):
+    """
+    Create a MsgspecError with the given message, type, optional ctx, and expected.
+
+    Args:
+        error (str): The raw error message.
+        error_type (ErrorType): The classified error type.
+        ctx (ErrorCtx | Type[NODEFAULT]): Pre-built context object to attach.
+            When NODEFAULT, the default ErrorCtx() from MsgspecError is used.
+        expected (str | None): The expected type name. Only set when non-empty.
+
+    Returns:
+        MsgspecError
+    """
+    if ctx is not NODEFAULT:
+        err = MsgspecError(msg=error, type=error_type, ctx=ctx)
+    else:
+        err = MsgspecError(msg=error, type=error_type)
+    if expected:
+        err.ctx.expected = expected
+    return err
+
+
 def get_error_type(error):
     """
     Parse error message and return MsgspecError with type and context set.
@@ -33,21 +72,6 @@ def get_error_type(error):
     Returns:
         MsgspecError: Result with type and ctx set, loc is an empty tuple.
     """
-    def _extract_got(remain):
-        """Extract the ``got`` type string from the remainder after ``KEY_got``.
-
-        ``remain`` starts with ``KEY_got`` (``', got '``).
-        Returns the type name (text between the first pair of backticks) or ``None``.
-        """
-        if not remain.startswith(KEY_got):
-            return None
-        after = remain[len(KEY_got):]
-        if after.startswith('`'):
-            head, sep, _ = after[1:].partition('`')
-            if sep:
-                return head
-        return None
-
     # Group 2: Structural Errors
     if error.startswith('Object missing required field '):
         return MsgspecError(msg=error, type=ErrorType.MISSING_FIELD)
@@ -64,99 +88,83 @@ def get_error_type(error):
                 remain = right_right
             else:
                 remain = error
-                expected = ''
+                expected = None
         else:
             remain = error
-            expected = ''
+            expected = None
 
         # Expected `array` of length
         # Check expect array before KEY_got, because it has KEY_got too
         if error.startswith('Expected `array` '):
             remaining = error[17:]
             ctx = get_length_ctx(remaining)
-            ctx = ctx if ctx is not NODEFAULT else ErrorCtx()
-            ctx.expected = expected
-            return MsgspecError(msg=error, type=ErrorType.ARRAY_LENGTH_CONSTRAINT, ctx=ctx)
+            return _make_error(error, ErrorType.ARRAY_LENGTH_CONSTRAINT, ctx, expected)
 
         # Expected `int`, got `str`
         if remain.startswith(KEY_got):
             got_val = _extract_got(remain)
-            return MsgspecError(msg=error, type=ErrorType.TYPE_MISMATCH,
-                                ctx=ErrorCtx(expected=expected, got=got_val))
+            err = _make_error(error, ErrorType.TYPE_MISMATCH)
+            if expected:
+                err.ctx.expected = expected
+            if got_val:
+                err.ctx.got = got_val
+            return err
 
         # Expected datetime with (a|no) timezone component
         if error.startswith('Expected datetime with a timezone'):
-            return MsgspecError(msg=error, type=ErrorType.TIMEZONE_CONSTRAINT, ctx=ErrorCtx(tz=True))
+            return _make_error(error, ErrorType.TIMEZONE_CONSTRAINT, ErrorCtx(tz=True))
         if error.startswith('Expected datetime with no timezone'):
-            return MsgspecError(msg=error, type=ErrorType.TIMEZONE_CONSTRAINT, ctx=ErrorCtx(tz=False))
+            return _make_error(error, ErrorType.TIMEZONE_CONSTRAINT, ErrorCtx(tz=False))
 
         # Expected `str` matching regex `<pattern>` - at `<Path>`
         if error.startswith('Expected `str` matching regex '):
             _, _, remaining = error.partition('matching regex ')
             ctx = get_pattern_ctx(remaining)
-            if ctx is not NODEFAULT:
-                ctx.expected = expected
-                return MsgspecError(msg=error, type=ErrorType.PATTERN_CONSTRAINT, ctx=ctx)
-            return MsgspecError(msg=error, type=ErrorType.PATTERN_CONSTRAINT, ctx=ErrorCtx(expected=expected))
+            return _make_error(error, ErrorType.PATTERN_CONSTRAINT, ctx, expected)
 
         # Expected `object` of length
         if error.startswith('Expected `object` '):
             remaining = error[18:]
             ctx = get_length_ctx(remaining)
-            ctx = ctx if ctx is not NODEFAULT else ErrorCtx()
-            ctx.expected = expected
-            return MsgspecError(msg=error, type=ErrorType.OBJECT_LENGTH_CONSTRAINT, ctx=ctx)
+            return _make_error(error, ErrorType.OBJECT_LENGTH_CONSTRAINT, ctx, expected)
 
         # Expected `str` of length <= 32
         if error.startswith('Expected `str` of length '):
             remaining = error[15:]
             ctx = get_length_ctx(remaining)
-            ctx = ctx if ctx is not NODEFAULT else ErrorCtx()
-            ctx.expected = expected
-            return MsgspecError(msg=error, type=ErrorType.LENGTH_CONSTRAINT, ctx=ctx)
+            return _make_error(error, ErrorType.LENGTH_CONSTRAINT, ctx, expected)
 
         # Expected `bytes` of length
         if error.startswith('Expected `bytes` of length '):
             remaining = error[17:]
             ctx = get_length_ctx(remaining)
-            ctx = ctx if ctx is not NODEFAULT else ErrorCtx()
-            ctx.expected = expected
-            return MsgspecError(msg=error, type=ErrorType.LENGTH_CONSTRAINT, ctx=ctx)
+            return _make_error(error, ErrorType.LENGTH_CONSTRAINT, ctx, expected)
 
         # Expected `int` >= 0
         if error.startswith('Expected `int` '):
             remaining = error[15:]
             if not remaining.startswith(KEY_at_check):
                 ctx = get_number_ctx(remaining, expected=int)
-                if ctx is not NODEFAULT:
-                    ctx.expected = expected
-                    return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ctx)
-                return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ErrorCtx(expected=expected))
+                return _make_error(error, ErrorType.NUMERIC_CONSTRAINT, ctx, expected)
 
         # Expected `float`
         if error.startswith('Expected `float` '):
             remaining = error[17:]
             if not remaining.startswith(KEY_at_check):
                 ctx = get_number_ctx(remaining, expected=float)
-                if ctx is not NODEFAULT:
-                    ctx.expected = expected
-                    return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ctx)
-                return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ErrorCtx(expected=expected))
+                return _make_error(error, ErrorType.NUMERIC_CONSTRAINT, ctx, expected)
 
         # Expected `decimal`
         if error.startswith('Expected `decimal` '):
             remaining = error[19:]
             if not remaining.startswith(KEY_at_check):
                 ctx = get_number_ctx(remaining, expected=float)
-                if ctx is not NODEFAULT:
-                    ctx.expected = expected
-                    return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ctx)
-                return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ErrorCtx(expected=expected))
+                return _make_error(error, ErrorType.NUMERIC_CONSTRAINT, ctx, expected)
 
         # UNEXPECTED_TOKEN: "Expected `<type>` - at <Path>" without ", got"
         # Must be after all specific Expected patterns to avoid false matches.
         if remain.startswith(KEY_at) or remain.startswith(KEY_at_key_in):
-            return MsgspecError(msg=error, type=ErrorType.UNEXPECTED_TOKEN, ctx=ErrorCtx(expected=expected))
+            return _make_error(error, ErrorType.UNEXPECTED_TOKEN, expected=expected)
 
     # Group 4: Invalid Value Errors
     if error.startswith('Invalid enum value '):
@@ -228,7 +236,7 @@ def parse_msgspec_error(error):
     This makes msgspec more pydantic.
 
     Args:
-        error (str | msgspec.ValidationError): The raw error message or a
+        error (str | Exception): The raw error message or a
             msgspec.ValidationError instance.
 
     Returns:
