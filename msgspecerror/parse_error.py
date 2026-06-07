@@ -5,7 +5,7 @@ from msgspec import NODEFAULT, Struct, field
 
 from .const import ErrorType
 from .parse_ctx import ErrorCtx, KEY_got, get_length_ctx, get_number_ctx, get_pattern_ctx
-from .parse_path import KEY_at, KEY_at_check, get_error_path
+from .parse_path import KEY_at, KEY_at_check, get_error_path, KEY_at_key_in
 
 
 class MsgspecError(Struct, omit_defaults=True):
@@ -41,6 +41,19 @@ def get_error_type(error):
 
     # Group 1: Expected ... errors
     if error.startswith('Expected'):
+        # parse expected
+        _, sep, right = error.partition('`')
+        if sep:
+            expected, sep, right_right = right.partition('`')
+            if sep:
+                remain = right_right
+            else:
+                remain = error
+                expected = ''
+        else:
+            remain = error
+            expected = ''
+
         # Expected `array` of length
         # Check expect array before KEY_got, because it has KEY_got too
         if error.startswith('Expected `array` '):
@@ -51,7 +64,7 @@ def get_error_type(error):
             return MsgspecError(msg=error, type=ErrorType.ARRAY_LENGTH_CONSTRAINT)
 
         # Expected `int`, got `str`
-        if KEY_got in error:
+        if remain.startswith(KEY_got):
             return MsgspecError(msg=error, type=ErrorType.TYPE_MISMATCH)
 
         # Expected datetime with (a|no) timezone component
@@ -123,7 +136,7 @@ def get_error_type(error):
 
         # UNEXPECTED_TOKEN: "Expected `<type>` - at <Path>" without ", got"
         # Must be after all specific Expected patterns to avoid false matches.
-        if KEY_at in error:
+        if remain.startswith(KEY_at) or remain.startswith(KEY_at_key_in):
             return MsgspecError(msg=error, type=ErrorType.UNEXPECTED_TOKEN)
 
     # Group 4: Invalid Value Errors
