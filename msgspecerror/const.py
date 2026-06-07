@@ -350,6 +350,23 @@ class ErrorType(str, Enum):
                  or an unrecognized opcode.
     """
 
+    DATA_TRUNCATED = "DATA_TRUNCATED"
+    """
+    Format: "Input data was truncated"
+
+    Raised as `DecodeError` when the input ends unexpectedly before
+    the full message can be parsed. Both JSON and MessagePack decoders
+    can produce this error, and the message is identical for both.
+
+    Example:
+    - JSON: ``msgspec.json.decode(b'{"a": 1', type=object)``
+    - MsgPack: ``msgspec.msgpack.decode(b'\\xda\\x00\\x05', type=object)``
+
+    Triggered by:
+    1. JSON input that ends mid-token (unclosed braces/brackets/strings).
+    2. MessagePack input with an incomplete opcode or payload.
+    """
+
     ENCODE_ERROR = "ENCODE_ERROR"
     """
     Format: "Can't encode <obj> longer than 2**32 - 1"

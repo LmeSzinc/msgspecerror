@@ -218,6 +218,10 @@ def get_error_type(error):
     if error.startswith('MessagePack data is malformed:'):
         return MsgspecError(msg=error, type=ErrorType.MSGPACK_MALFORMED)
 
+    # Truncated data: same message for both JSON and msgpack DecodeError
+    if error == 'Input data was truncated':
+        return MsgspecError(msg=error, type=ErrorType.DATA_TRUNCATED)
+
     # ENCODE_ERROR: "Can't encode <obj> longer than 2**32 - 1"
     if error.startswith("Can't encode "):
         return MsgspecError(msg=error, type=ErrorType.ENCODE_ERROR)

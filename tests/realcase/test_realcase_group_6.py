@@ -174,12 +174,11 @@ class TestJsonMalformedReal:
     def test_unclosed_brace_truncated(self):
         """Input data was truncated
 
-        Unclosed brace triggers truncated data error, not JSON_MALFORMED.
-        The 'Input data was truncated' message falls to WRAPPED_ERROR."""
+        Truncated JSON is classified as DATA_TRUNCATED."""
         with pytest.raises(msgspec.DecodeError) as exc_info:
             msgspec.json.decode(b'{"a": 1', type=object)
         err = parse_msgspec_error(exc_info.value)
-        assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.type == ErrorType.DATA_TRUNCATED
         assert err.ctx == ErrorCtx()
 
     def test_single_quote(self):
@@ -221,12 +220,11 @@ class TestMsgpackMalformedReal:
     def test_truncated_data(self):
         """Input data was truncated
 
-        Truncated msgpack data falls to WRAPPED_ERROR because
-        'Input data was truncated' is not recognized by the parser."""
+        Truncated msgpack data is also classified as DATA_TRUNCATED."""
         with pytest.raises(msgspec.DecodeError) as exc_info:
             msgspec.msgpack.decode(b'\xda\x00\x05', type=object)
         err = parse_msgspec_error(exc_info.value)
-        assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.type == ErrorType.DATA_TRUNCATED
         assert err.ctx == ErrorCtx()
 
 

@@ -51,12 +51,11 @@ class TestMsgpackMalformedRepair:
         assert result == RepairableModel(a=42, b="default")
         assert len(errors) == 1
         assert errors[0].msg == "Input data was truncated"
-        # Format-ambiguous: parse_msgspec_error returns WRAPPED_ERROR
-        assert errors[0].type is ErrorType.WRAPPED_ERROR
+        assert errors[0].type is ErrorType.DATA_TRUNCATED
 
     def test_truncated_unrepairable(self):
         data = b'\xa5abc'
         result, errors = load_msgpack_with_default(data, UnrepairableModel)
         assert result is NODEFAULT
         assert len(errors) == 1
-        assert errors[0].type is ErrorType.WRAPPED_ERROR
+        assert errors[0].type is ErrorType.DATA_TRUNCATED
