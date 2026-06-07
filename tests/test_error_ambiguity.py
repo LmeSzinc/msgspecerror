@@ -29,9 +29,9 @@ class TestDollarInPath:
         ("Invalid RFC3339 encoded datetime - at `$.$`",
          ("$",), ErrorType.INVALID_DATETIME, None),
         ("Expected `int` >= 0 - at `$.$`",
-         ("$",), ErrorType.NUMERIC_CONSTRAINT, ErrorCtx(ge=0)),
+         ("$",), ErrorType.NUMERIC_CONSTRAINT, ErrorCtx(ge=0, expected="int")),
         ("Expected `str` of length <= 32 - at `$.$`",
-         ("$",), ErrorType.LENGTH_CONSTRAINT, ErrorCtx(max_length=32)),
+         ("$",), ErrorType.LENGTH_CONSTRAINT, ErrorCtx(max_length=32, expected="str")),
         ("Object missing required field `id` - at `$.$`",
          ("$", "id"), ErrorType.MISSING_FIELD, None),
         ("Object contains unknown field `extra` - at `$.$`",
@@ -123,12 +123,12 @@ class TestEmptyFieldInPath:
         result = parse_msgspec_error("Expected `int` >= 0 - at `$.`")
         assert result.loc == ("",)
         assert result.type == ErrorType.NUMERIC_CONSTRAINT
-        assert result.ctx == ErrorCtx(ge=0)
+        assert result.ctx == ErrorCtx(ge=0, expected="int")
 
         result = parse_msgspec_error("Expected `int` >= 0 - at `$.a.`")
         assert result.loc == ("a", "")
         assert result.type == ErrorType.NUMERIC_CONSTRAINT
-        assert result.ctx == ErrorCtx(ge=0)
+        assert result.ctx == ErrorCtx(ge=0, expected="int")
 
 
 # ======================================================================
@@ -177,12 +177,12 @@ class TestBacktickInPath:
         result = parse_msgspec_error("Expected `int` >= 0 - at `$.ag`e`")
         assert result.loc == ("ag`e",)
         assert result.type == ErrorType.NUMERIC_CONSTRAINT
-        assert result.ctx == ErrorCtx(ge=0)
+        assert result.ctx == ErrorCtx(ge=0, expected="int")
 
         result = parse_msgspec_error("Expected `str` of length <= 32 - at `$.nam`e`")
         assert result.loc == ("nam`e",)
         assert result.type == ErrorType.LENGTH_CONSTRAINT
-        assert result.ctx == ErrorCtx(max_length=32)
+        assert result.ctx == ErrorCtx(max_length=32, expected="str")
 
 
 # ======================================================================

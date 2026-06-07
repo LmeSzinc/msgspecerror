@@ -36,41 +36,43 @@ def check(msg, expected_type, expected_ctx=None):
 class TestTypeMismatch:
     """TYPE_MISMATCH — messages containing ', got `' inside the Expected block."""
 
-    @pytest.mark.parametrize("msg", [
+    @pytest.mark.parametrize("msg, ctx", [
         # root-level (no path suffix)
-        "Expected `int`, got `str`",
-        "Expected `str`, got `int`",
-        "Expected `bool`, got `null`",
-        "Expected `array`, got `str`",
-        "Expected `object`, got `int`",
+        ("Expected `int`, got `str`", ErrorCtx(expected="int", got="str")),
+        ("Expected `str`, got `int`", ErrorCtx(expected="str", got="int")),
+        ("Expected `bool`, got `null`", ErrorCtx(expected="bool", got="null")),
+        ("Expected `array`, got `str`", ErrorCtx(expected="array", got="str")),
+        ("Expected `object`, got `int`", ErrorCtx(expected="object", got="int")),
         # with path suffix
-        "Expected `int`, got `str` - at `$.age`",
-        "Expected `str`, got `float` - at `$.name`",
-        "Expected `MyCustomClass`, got `str` - at `$.custom_field`",
-        "Expected `int`, got `str` - at `$.type`",
+        ("Expected `int`, got `str` - at `$.age`", ErrorCtx(expected="int", got="str")),
+        ("Expected `str`, got `float` - at `$.name`", ErrorCtx(expected="str", got="float")),
+        ("Expected `MyCustomClass`, got `str` - at `$.custom_field`",
+         ErrorCtx(expected="MyCustomClass", got="str")),
+        ("Expected `int`, got `str` - at `$.type`", ErrorCtx(expected="int", got="str")),
         # list index in path
-        "Expected `int`, got `str` - at `$.items[0]`",
+        ("Expected `int`, got `str` - at `$.items[0]`", ErrorCtx(expected="int", got="str")),
         # annotated types
-        "Expected `Annotated[int, ...]`, got `str` - at `$.score`",
+        ("Expected `Annotated[int, ...]`, got `str` - at `$.score`",
+         ErrorCtx(expected="Annotated[int, ...]", got="str")),
     ])
-    def test_type_mismatch(self, msg):
-        check(msg, ErrorType.TYPE_MISMATCH)
+    def test_type_mismatch(self, msg, ctx):
+        check(msg, ErrorType.TYPE_MISMATCH, ctx)
 
 
 class TestUnexpectedToken:
     """UNEXPECTED_TOKEN — messages like "Expected `<type>` - at <Path>"
     without ", got `<B>`"."""
 
-    @pytest.mark.parametrize("msg", [
-        "Expected `str` - at `$.kind`",
-        "Expected `int` - at `$.kind`",
-        "Expected `str` - at `key` in `$`",
-        "Expected `float` - at `$.value`",
-        "Expected `decimal` - at `$.price`",
+    @pytest.mark.parametrize("msg, ctx", [
+        ("Expected `str` - at `$.kind`", ErrorCtx(expected="str")),
+        ("Expected `int` - at `$.kind`", ErrorCtx(expected="int")),
+        ("Expected `str` - at `key` in `$`", ErrorCtx(expected="str")),
+        ("Expected `float` - at `$.value`", ErrorCtx(expected="float")),
+        ("Expected `decimal` - at `$.price`", ErrorCtx(expected="decimal")),
     ])
-    def test_unexpected_token(self, msg):
+    def test_unexpected_token(self, msg, ctx):
         """All UNEXPECTED_TOKEN messages now correctly classified."""
-        check(msg, ErrorType.UNEXPECTED_TOKEN)
+        check(msg, ErrorType.UNEXPECTED_TOKEN, ctx)
 
 
 # ======================================================================
@@ -112,27 +114,27 @@ class TestArrayLengthConstraint:
     @pytest.mark.parametrize("msg, ctx", [
         # exact length (tuple size mismatch) — min=max
         ("Expected `array` of length 2, got 3 - at `$.coords`",
-         ErrorCtx(min_length=2, max_length=2)),
+         ErrorCtx(min_length=2, max_length=2, expected="array")),
         ("Expected `array` of length 5, got 1 - at `$.data`",
-         ErrorCtx(min_length=5, max_length=5)),
+         ErrorCtx(min_length=5, max_length=5, expected="array")),
         # range via "of length <min> to <max>"
         ("Expected `array` of length 1 to 5, got 6 - at `$.items`",
-         ErrorCtx(min_length=1, max_length=5)),
+         ErrorCtx(min_length=1, max_length=5, expected="array")),
         # >=
         ("Expected `array` of length >= 3",
-         ErrorCtx(min_length=3)),
+         ErrorCtx(min_length=3, expected="array")),
         ("Expected `array` of length >= 1 - at `$.tags`",
-         ErrorCtx(min_length=1)),
+         ErrorCtx(min_length=1, expected="array")),
         # <=
         ("Expected `array` of length <= 10",
-         ErrorCtx(max_length=10)),
+         ErrorCtx(max_length=10, expected="array")),
         ("Expected `array` of length <= 0 - at `$.empty`",
-         ErrorCtx(max_length=0)),
+         ErrorCtx(max_length=0, expected="array")),
         # "at least" / "at most" (msgspec 0.19+)
         ("Expected `array` of at least length 2",
-         ErrorCtx(min_length=2)),
+         ErrorCtx(min_length=2, expected="array")),
         ("Expected `array` of at most length 10 - at `$.buffer`",
-         ErrorCtx(max_length=10)),
+         ErrorCtx(max_length=10, expected="array")),
     ])
     def test_array_length_constraint(self, msg, ctx):
         check(msg, ErrorType.ARRAY_LENGTH_CONSTRAINT, ctx)
@@ -144,15 +146,15 @@ class TestObjectLengthConstraint:
     @pytest.mark.parametrize("msg, ctx", [
         # >=
         ("Expected `object` of length >= 1 - at `$.metadata`",
-         ErrorCtx(min_length=1)),
+         ErrorCtx(min_length=1, expected="object")),
         ("Expected `object` of length >= 1",
-         ErrorCtx(min_length=1)),
+         ErrorCtx(min_length=1, expected="object")),
         # <=
         ("Expected `object` of length <= 5",
-         ErrorCtx(max_length=5)),
+         ErrorCtx(max_length=5, expected="object")),
         # >= and <= are both present when constraint is set
         ("Expected `object` of length >= 2",
-         ErrorCtx(min_length=2)),
+         ErrorCtx(min_length=2, expected="object")),
     ])
     def test_object_length_constraint(self, msg, ctx):
         check(msg, ErrorType.OBJECT_LENGTH_CONSTRAINT, ctx)
@@ -164,28 +166,28 @@ class TestLengthConstraint:
     @pytest.mark.parametrize("msg, ctx", [
         # str variants — le
         ("Expected `str` of length <= 32",
-         ErrorCtx(max_length=32)),
+         ErrorCtx(max_length=32, expected="str")),
         ("Expected `str` of length <= 0",
-         ErrorCtx(max_length=0)),
+         ErrorCtx(max_length=0, expected="str")),
         # str variants — ge
         ("Expected `str` of length >= 1 - at `$.name`",
-         ErrorCtx(min_length=1)),
+         ErrorCtx(min_length=1, expected="str")),
         ("Expected `str` of length >= 8",
-         ErrorCtx(min_length=8)),
+         ErrorCtx(min_length=8, expected="str")),
         # str variants — range
         ("Expected `str` of length 5 to 10 - at `$.code`",
-         ErrorCtx(min_length=5, max_length=10)),
+         ErrorCtx(min_length=5, max_length=10, expected="str")),
         # bytes variants — exact
         ("Expected `bytes` of length 16",
-         ErrorCtx(min_length=16, max_length=16)),
+         ErrorCtx(min_length=16, max_length=16, expected="bytes")),
         # bytes variants — ge
         ("Expected `bytes` of length >= 8 - at `$.key`",
-         ErrorCtx(min_length=8)),
+         ErrorCtx(min_length=8, expected="bytes")),
         ("Expected `bytes` of length >= 1",
-         ErrorCtx(min_length=1)),
+         ErrorCtx(min_length=1, expected="bytes")),
         # bytes variants — le
         ("Expected `bytes` of length <= 1024",
-         ErrorCtx(max_length=1024)),
+         ErrorCtx(max_length=1024, expected="bytes")),
     ])
     def test_length_constraint(self, msg, ctx):
         check(msg, ErrorType.LENGTH_CONSTRAINT, ctx)
@@ -197,15 +199,15 @@ class TestPatternConstraint:
     @pytest.mark.parametrize("msg, ctx", [
         # simple patterns
         ("Expected `str` matching regex '\\d{4}-\\d{2}-\\d{2}' - at `$.date`",
-         ErrorCtx(pattern='\\d{4}-\\d{2}-\\d{2}')),
+         ErrorCtx(pattern='\\d{4}-\\d{2}-\\d{2}', expected="str")),
         ("Expected `str` matching regex '^[a-z]+$'",
-         ErrorCtx(pattern='^[a-z]+$')),
+         ErrorCtx(pattern='^[a-z]+$', expected="str")),
         # special characters
         ("Expected `str` matching regex 'https?://.*' - at `$.url`",
-         ErrorCtx(pattern='https?://.*')),
+         ErrorCtx(pattern='https?://.*', expected="str")),
         # pattern with backticks (the pattern itself is in quotes)
         ("Expected `str` matching regex '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}'",
-         ErrorCtx(pattern='[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}')),
+         ErrorCtx(pattern='[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}', expected="str")),
     ])
     def test_pattern_constraint(self, msg, ctx):
         check(msg, ErrorType.PATTERN_CONSTRAINT, ctx)
@@ -217,43 +219,43 @@ class TestNumericConstraint:
     @pytest.mark.parametrize("msg, ctx", [
         # int: ge
         ("Expected `int` >= 0",
-         ErrorCtx(ge=0)),
+         ErrorCtx(ge=0, expected="int")),
         ("Expected `int` >= 18 - at `$.age`",
-         ErrorCtx(ge=18)),
+         ErrorCtx(ge=18, expected="int")),
         # int: le
         ("Expected `int` <= 100",
-         ErrorCtx(le=100)),
+         ErrorCtx(le=100, expected="int")),
         ("Expected `int` <= 10 - at `$.count`",
-         ErrorCtx(le=10)),
+         ErrorCtx(le=10, expected="int")),
         # int: gt
         ("Expected `int` > 0",
-         ErrorCtx(gt=0)),
+         ErrorCtx(gt=0, expected="int")),
         # int: lt
         ("Expected `int` < 10 - at `$.rank`",
-         ErrorCtx(lt=10)),
+         ErrorCtx(lt=10, expected="int")),
         # int: multiple_of
         ("Expected `int` that's a multiple of 6",
-         ErrorCtx(multiple_of=6)),
+         ErrorCtx(multiple_of=6, expected="int")),
         ("Expected `int` that's a multiple of 2 - at `$.even`",
-         ErrorCtx(multiple_of=2)),
+         ErrorCtx(multiple_of=2, expected="int")),
         # float
         ("Expected `float` >= 0.0",
-         ErrorCtx(ge=0.0)),
+         ErrorCtx(ge=0.0, expected="float")),
         ("Expected `float` <= 100.5 - at `$.price`",
-         ErrorCtx(le=100.5)),
+         ErrorCtx(le=100.5, expected="float")),
         ("Expected `float` > 0.0",
-         ErrorCtx(gt=0.0)),
+         ErrorCtx(gt=0.0, expected="float")),
         ("Expected `float` < 1.0 - at `$.ratio`",
-         ErrorCtx(lt=1.0)),
+         ErrorCtx(lt=1.0, expected="float")),
         ("Expected `float` that's a multiple of 0.5",
-         ErrorCtx(multiple_of=0.5)),
+         ErrorCtx(multiple_of=0.5, expected="float")),
         # decimal (stored as float in ctx)
         ("Expected `decimal` >= 0.0",
-         ErrorCtx(ge=0.0)),
+         ErrorCtx(ge=0.0, expected="decimal")),
         ("Expected `decimal` <= 999999.99 - at `$.amount`",
-         ErrorCtx(le=999999.99)),
+         ErrorCtx(le=999999.99, expected="decimal")),
         ("Expected `decimal` that's a multiple of 0.01",
-         ErrorCtx(multiple_of=0.01)),
+         ErrorCtx(multiple_of=0.01, expected="decimal")),
     ])
     def test_numeric_constraint(self, msg, ctx):
         check(msg, ErrorType.NUMERIC_CONSTRAINT, ctx)
@@ -511,33 +513,27 @@ class TestHelperNODEFAULTFallback:
     correct MsgspecError with default empty ErrorCtx.
     """
 
-    @pytest.mark.parametrize("msg, expected_type", [
-        # ARRAY_LENGTH_CONSTRAINT with unparseable length text
+    @pytest.mark.parametrize("msg, expected_type, expected_ctx", [
         ("Expected `array` of length ???",
-         ErrorType.ARRAY_LENGTH_CONSTRAINT),
-        # LENGTH_CONSTRAINT with unparseable bytes length
+         ErrorType.ARRAY_LENGTH_CONSTRAINT, ErrorCtx(expected="array")),
         ("Expected `bytes` of length ???",
-         ErrorType.LENGTH_CONSTRAINT),
-        # LENGTH_CONSTRAINT with unparseable str length
+         ErrorType.LENGTH_CONSTRAINT, ErrorCtx(expected="bytes")),
         ("Expected `str` of length ???",
-         ErrorType.LENGTH_CONSTRAINT),
-        # OBJECT_LENGTH_CONSTRAINT with unparseable length
+         ErrorType.LENGTH_CONSTRAINT, ErrorCtx(expected="str")),
         ("Expected `object` of length ???",
-         ErrorType.OBJECT_LENGTH_CONSTRAINT),
-        # NUMERIC_CONSTRAINT with unparseable constraint
+         ErrorType.OBJECT_LENGTH_CONSTRAINT, ErrorCtx(expected="object")),
         ("Expected `int` >= ???",
-         ErrorType.NUMERIC_CONSTRAINT),
-        # NUMERIC_CONSTRAINT with unparseable float constraint
+         ErrorType.NUMERIC_CONSTRAINT, ErrorCtx(expected="int")),
         ("Expected `float` ???",
-         ErrorType.NUMERIC_CONSTRAINT),
+         ErrorType.NUMERIC_CONSTRAINT, ErrorCtx(expected="float")),
     ])
-    def test_unparseable_ctx_fallback(self, msg, expected_type):
+    def test_unparseable_ctx_fallback(self, msg, expected_type, expected_ctx):
         result = get_error_type(msg)
         assert result.type == expected_type, (
             f"msg={msg!r}: expected {expected_type}, got {result.type}"
         )
-        assert result.ctx == ErrorCtx(), (
-            f"msg={msg!r}: expected empty ErrorCtx, got {result.ctx}"
+        assert result.ctx == expected_ctx, (
+            f"msg={msg!r}: expected {expected_ctx}, got {result.ctx}"
         )
 
 
@@ -574,8 +570,9 @@ class TestEdgeCases:
         result = get_error_type("Expected `int` >= 0 garbage_trailing_text")
         assert result.type == ErrorType.NUMERIC_CONSTRAINT
         # "garbage_trailing_text" after "0" causes int("0 garbage_trailing_text")
-        # to raise ValueError, so get_number_ctx returns NODEFAULT -> empty ctx
-        assert result.ctx == ErrorCtx()
+        # to raise ValueError, so get_number_ctx returns NODEFAULT
+        # ctx still gets expected type from message
+        assert result.ctx == ErrorCtx(expected="int")
 
     def test_partial_match_does_not_leak(self):
         """'Expected `int`' alone (no constraint suffix) should not match NUMERIC_CONSTRAINT."""
@@ -597,21 +594,25 @@ class TestEdgeCases:
     def test_type_mismatch_with_backtick_types(self):
         """Types with backticks in their msgspec representation."""
         cases = [
-            "Expected `Union[int, str]`, got `int`",
-            "Expected `Optional[str]`, got `null`",
-            "Expected `list[int]`, got `str`",
+            ("Expected `Union[int, str]`, got `int`",
+             ErrorCtx(expected="Union[int, str]", got="int")),
+            ("Expected `Optional[str]`, got `null`",
+             ErrorCtx(expected="Optional[str]", got="null")),
+            ("Expected `list[int]`, got `str`",
+             ErrorCtx(expected="list[int]", got="str")),
         ]
-        for msg in cases:
-            check(msg, ErrorType.TYPE_MISMATCH)
+        for msg, ctx in cases:
+            check(msg, ErrorType.TYPE_MISMATCH, ctx)
 
     def test_numeric_constraint_with_all_operators(self):
         """All five numeric constraint operators for int type."""
         cases = [
-            ("Expected `int` >= 0", ErrorCtx(ge=0)),
-            ("Expected `int` <= 100", ErrorCtx(le=100)),
-            ("Expected `int` > 0", ErrorCtx(gt=0)),
-            ("Expected `int` < 50", ErrorCtx(lt=50)),
-            ("Expected `int` that's a multiple of 10", ErrorCtx(multiple_of=10)),
+            ("Expected `int` >= 0", ErrorCtx(ge=0, expected="int")),
+            ("Expected `int` <= 100", ErrorCtx(le=100, expected="int")),
+            ("Expected `int` > 0", ErrorCtx(gt=0, expected="int")),
+            ("Expected `int` < 50", ErrorCtx(lt=50, expected="int")),
+            ("Expected `int` that's a multiple of 10",
+             ErrorCtx(multiple_of=10, expected="int")),
         ]
         for msg, ctx in cases:
             check(msg, ErrorType.NUMERIC_CONSTRAINT, ctx)
@@ -619,11 +620,12 @@ class TestEdgeCases:
     def test_all_float_constraint_operators(self):
         """All five numeric constraint operators for float type."""
         cases = [
-            ("Expected `float` >= 0.5", ErrorCtx(ge=0.5)),
-            ("Expected `float` <= 1.5", ErrorCtx(le=1.5)),
-            ("Expected `float` > 0.0", ErrorCtx(gt=0.0)),
-            ("Expected `float` < 100.0", ErrorCtx(lt=100.0)),
-            ("Expected `float` that's a multiple of 0.25", ErrorCtx(multiple_of=0.25)),
+            ("Expected `float` >= 0.5", ErrorCtx(ge=0.5, expected="float")),
+            ("Expected `float` <= 1.5", ErrorCtx(le=1.5, expected="float")),
+            ("Expected `float` > 0.0", ErrorCtx(gt=0.0, expected="float")),
+            ("Expected `float` < 100.0", ErrorCtx(lt=100.0, expected="float")),
+            ("Expected `float` that's a multiple of 0.25",
+             ErrorCtx(multiple_of=0.25, expected="float")),
         ]
         for msg, ctx in cases:
             check(msg, ErrorType.NUMERIC_CONSTRAINT, ctx)

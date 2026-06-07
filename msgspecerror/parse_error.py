@@ -33,6 +33,21 @@ def get_error_type(error):
     Returns:
         MsgspecError: Result with type and ctx set, loc is an empty tuple.
     """
+    def _extract_got(remain):
+        """Extract the ``got`` type string from the remainder after ``KEY_got``.
+
+        ``remain`` starts with ``KEY_got`` (``', got '``).
+        Returns the type name (text between the first pair of backticks) or ``None``.
+        """
+        if not remain.startswith(KEY_got):
+            return None
+        after = remain[len(KEY_got):]
+        if after.startswith('`'):
+            head, sep, _ = after[1:].partition('`')
+            if sep:
+                return head
+        return None
+
     # Group 2: Structural Errors
     if error.startswith('Object missing required field '):
         return MsgspecError(msg=error, type=ErrorType.MISSING_FIELD)
@@ -59,13 +74,15 @@ def get_error_type(error):
         if error.startswith('Expected `array` '):
             remaining = error[17:]
             ctx = get_length_ctx(remaining)
-            if ctx is not NODEFAULT:
-                return MsgspecError(msg=error, type=ErrorType.ARRAY_LENGTH_CONSTRAINT, ctx=ctx)
-            return MsgspecError(msg=error, type=ErrorType.ARRAY_LENGTH_CONSTRAINT)
+            ctx = ctx if ctx is not NODEFAULT else ErrorCtx()
+            ctx.expected = expected
+            return MsgspecError(msg=error, type=ErrorType.ARRAY_LENGTH_CONSTRAINT, ctx=ctx)
 
         # Expected `int`, got `str`
         if remain.startswith(KEY_got):
-            return MsgspecError(msg=error, type=ErrorType.TYPE_MISMATCH)
+            got_val = _extract_got(remain)
+            return MsgspecError(msg=error, type=ErrorType.TYPE_MISMATCH,
+                                ctx=ErrorCtx(expected=expected, got=got_val))
 
         # Expected datetime with (a|no) timezone component
         if error.startswith('Expected datetime with a timezone'):
@@ -78,34 +95,33 @@ def get_error_type(error):
             _, _, remaining = error.partition('matching regex ')
             ctx = get_pattern_ctx(remaining)
             if ctx is not NODEFAULT:
+                ctx.expected = expected
                 return MsgspecError(msg=error, type=ErrorType.PATTERN_CONSTRAINT, ctx=ctx)
-            return MsgspecError(msg=error, type=ErrorType.PATTERN_CONSTRAINT)
+            return MsgspecError(msg=error, type=ErrorType.PATTERN_CONSTRAINT, ctx=ErrorCtx(expected=expected))
 
         # Expected `object` of length
         if error.startswith('Expected `object` '):
             remaining = error[18:]
             ctx = get_length_ctx(remaining)
-            if ctx is not NODEFAULT:
-                return MsgspecError(msg=error, type=ErrorType.OBJECT_LENGTH_CONSTRAINT, ctx=ctx)
-            return MsgspecError(msg=error, type=ErrorType.OBJECT_LENGTH_CONSTRAINT)
+            ctx = ctx if ctx is not NODEFAULT else ErrorCtx()
+            ctx.expected = expected
+            return MsgspecError(msg=error, type=ErrorType.OBJECT_LENGTH_CONSTRAINT, ctx=ctx)
 
         # Expected `str` of length <= 32
         if error.startswith('Expected `str` of length '):
-            # Strip "Expected `str` " (15 chars), keep "of length ..." prefix
             remaining = error[15:]
             ctx = get_length_ctx(remaining)
-            if ctx is not NODEFAULT:
-                return MsgspecError(msg=error, type=ErrorType.LENGTH_CONSTRAINT, ctx=ctx)
-            return MsgspecError(msg=error, type=ErrorType.LENGTH_CONSTRAINT)
+            ctx = ctx if ctx is not NODEFAULT else ErrorCtx()
+            ctx.expected = expected
+            return MsgspecError(msg=error, type=ErrorType.LENGTH_CONSTRAINT, ctx=ctx)
 
         # Expected `bytes` of length
         if error.startswith('Expected `bytes` of length '):
-            # Strip "Expected `bytes` " (17 chars), keep "of length ..." prefix
             remaining = error[17:]
             ctx = get_length_ctx(remaining)
-            if ctx is not NODEFAULT:
-                return MsgspecError(msg=error, type=ErrorType.LENGTH_CONSTRAINT, ctx=ctx)
-            return MsgspecError(msg=error, type=ErrorType.LENGTH_CONSTRAINT)
+            ctx = ctx if ctx is not NODEFAULT else ErrorCtx()
+            ctx.expected = expected
+            return MsgspecError(msg=error, type=ErrorType.LENGTH_CONSTRAINT, ctx=ctx)
 
         # Expected `int` >= 0
         if error.startswith('Expected `int` '):
@@ -113,8 +129,9 @@ def get_error_type(error):
             if not remaining.startswith(KEY_at_check):
                 ctx = get_number_ctx(remaining, expected=int)
                 if ctx is not NODEFAULT:
+                    ctx.expected = expected
                     return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ctx)
-                return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT)
+                return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ErrorCtx(expected=expected))
 
         # Expected `float`
         if error.startswith('Expected `float` '):
@@ -122,8 +139,9 @@ def get_error_type(error):
             if not remaining.startswith(KEY_at_check):
                 ctx = get_number_ctx(remaining, expected=float)
                 if ctx is not NODEFAULT:
+                    ctx.expected = expected
                     return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ctx)
-                return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT)
+                return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ErrorCtx(expected=expected))
 
         # Expected `decimal`
         if error.startswith('Expected `decimal` '):
@@ -131,13 +149,14 @@ def get_error_type(error):
             if not remaining.startswith(KEY_at_check):
                 ctx = get_number_ctx(remaining, expected=float)
                 if ctx is not NODEFAULT:
+                    ctx.expected = expected
                     return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ctx)
-                return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT)
+                return MsgspecError(msg=error, type=ErrorType.NUMERIC_CONSTRAINT, ctx=ErrorCtx(expected=expected))
 
         # UNEXPECTED_TOKEN: "Expected `<type>` - at <Path>" without ", got"
         # Must be after all specific Expected patterns to avoid false matches.
         if remain.startswith(KEY_at) or remain.startswith(KEY_at_key_in):
-            return MsgspecError(msg=error, type=ErrorType.UNEXPECTED_TOKEN)
+            return MsgspecError(msg=error, type=ErrorType.UNEXPECTED_TOKEN, ctx=ErrorCtx(expected=expected))
 
     # Group 4: Invalid Value Errors
     if error.startswith('Invalid enum value '):

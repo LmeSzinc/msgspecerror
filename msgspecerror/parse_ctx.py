@@ -7,6 +7,8 @@ class ErrorCtx(Struct, omit_defaults=True):
     """
     An optional object which contains extra info
     """
+    expected: "str | None" = None
+    got: "str | None" = None
     gt: "int | float | None" = None
     ge: "int | float | None" = None
     lt: "int | float | None" = None
@@ -19,7 +21,8 @@ class ErrorCtx(Struct, omit_defaults=True):
 
     def _iter_repr_fields(self):
         # show non-None fields only
-        field_names = ['gt', 'ge', 'lt', 'le', 'multiple_of', 'pattern', 'min_length', 'max_length', 'tz']
+        field_names = ['expected', 'got', 'gt', 'ge', 'lt', 'le', 'multiple_of',
+                       'pattern', 'min_length', 'max_length', 'tz', ]
         for key in field_names:
             value = getattr(self, key, None)
             if value is not None:

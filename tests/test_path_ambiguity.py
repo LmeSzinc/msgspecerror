@@ -86,7 +86,8 @@ class TestDollarInFieldName:
             ("Invalid value 3 - at `$.$`", ("$",), ErrorType.INVALID_TAG_VALUE),
             ("Invalid enum value 'admin' - at `$.$`", ("$",), ErrorType.INVALID_ENUM_VALUE),
             ("Invalid RFC3339 encoded datetime - at `$.$`", ("$",), ErrorType.INVALID_DATETIME),
-            ("Expected `object` of length >= 1 - at `$.$`", ("$",), ErrorType.OBJECT_LENGTH_CONSTRAINT, ErrorCtx(min_length=1)),
+            ("Expected `object` of length >= 1 - at `$.$`",
+             ("$",), ErrorType.OBJECT_LENGTH_CONSTRAINT, ErrorCtx(min_length=1, expected="object")),
         ]
         for case in cases:
             error, expected_loc, expected_type = case[:3]
@@ -353,9 +354,9 @@ class TestBacktickInFieldName:
         ("Invalid UUID - at `$.id`entifier`",
          ("id`entifier",), ErrorType.INVALID_UUID, None),
         ("Expected `int` >= 0 - at `$.ag`e`",
-         ("ag`e",), ErrorType.NUMERIC_CONSTRAINT, ErrorCtx(ge=0)),
+         ("ag`e",), ErrorType.NUMERIC_CONSTRAINT, ErrorCtx(ge=0, expected="int")),
         ("Expected `str` of length <= 32 - at `$.nam`e`",
-         ("nam`e",), ErrorType.LENGTH_CONSTRAINT, ErrorCtx(max_length=32)),
+         ("nam`e",), ErrorType.LENGTH_CONSTRAINT, ErrorCtx(max_length=32, expected="str")),
     ])
     def test_other_errors_with_backtick(self, error, expected_loc, expected_type, expected_ctx):
         result = parse_msgspec_error(error)
