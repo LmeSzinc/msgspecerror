@@ -5,6 +5,8 @@ Every test triggers a real msgspec error by decoding data with invalid
 values (enum, tag, datetime, uuid, base64, decimal, etc.),
 then validates parse_msgspec_error correctly classifies it.
 """
+from typing import Union
+
 import msgspec
 import msgspec.msgpack
 import datetime
@@ -13,7 +15,7 @@ import decimal
 import pytest
 from enum import Enum
 
-from msgspecerror import parse_msgspec_error
+from msgspecerror import parse_msgspec_error, ErrorCtx
 from msgspecerror.const import ErrorType
 
 
@@ -30,6 +32,7 @@ class TestInvalidEnumValueReal:
             msgspec.json.decode(b'"blue"', type=Color)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_ENUM_VALUE
+        assert err.ctx == ErrorCtx()
 
     def test_int_enum_invalid(self):
         """Invalid enum value 99"""
@@ -41,6 +44,7 @@ class TestInvalidEnumValueReal:
             msgspec.json.decode(b'99', type=Status)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_ENUM_VALUE
+        assert err.ctx == ErrorCtx()
 
     def test_str_enum_nested(self):
         """Invalid enum value 'superuser' - at `$.role`"""
@@ -59,6 +63,7 @@ class TestInvalidEnumValueReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_ENUM_VALUE
         assert err.loc == ("role",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidTagValueReal:
@@ -72,7 +77,7 @@ class TestInvalidTagValueReal:
         class Dog(msgspec.Struct, tag=True):
             name: str
 
-        Animal = Cat | Dog
+        Animal = Union[Cat, Dog]
 
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(
@@ -81,6 +86,7 @@ class TestInvalidTagValueReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_TAG_VALUE
         assert err.loc == ("type",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidDateTimeReal:
@@ -92,6 +98,7 @@ class TestInvalidDateTimeReal:
             msgspec.json.decode(b'"not-a-date"', type=datetime.datetime)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_DATETIME
+        assert err.ctx == ErrorCtx()
 
     def test_bad_datetime_nested(self):
         """Invalid RFC3339 encoded datetime - at `$.timestamp`"""
@@ -106,6 +113,7 @@ class TestInvalidDateTimeReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_DATETIME
         assert err.loc == ("timestamp",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidDateReal:
@@ -117,6 +125,7 @@ class TestInvalidDateReal:
             msgspec.json.decode(b'"not-a-date"', type=datetime.date)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_DATE
+        assert err.ctx == ErrorCtx()
 
     def test_bad_date_nested(self):
         """Invalid RFC3339 encoded date - at `$.birth`"""
@@ -131,6 +140,7 @@ class TestInvalidDateReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_DATE
         assert err.loc == ("birth",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidTimeReal:
@@ -142,6 +152,7 @@ class TestInvalidTimeReal:
             msgspec.json.decode(b'"not-a-time"', type=datetime.time)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_TIME
+        assert err.ctx == ErrorCtx()
 
     def test_bad_time_nested(self):
         """Invalid RFC3339 encoded time - at `$.event`"""
@@ -156,6 +167,7 @@ class TestInvalidTimeReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_TIME
         assert err.loc == ("event",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidDurationReal:
@@ -167,6 +179,7 @@ class TestInvalidDurationReal:
             msgspec.json.decode(b'"not-a-duration"', type=datetime.timedelta)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_DURATION
+        assert err.ctx == ErrorCtx()
 
     def test_bad_duration_nested(self):
         """Invalid ISO8601 duration - at `$.period`"""
@@ -181,6 +194,7 @@ class TestInvalidDurationReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_DURATION
         assert err.loc == ("period",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestUnsupportedDurationUnitsReal:
@@ -194,6 +208,7 @@ class TestUnsupportedDurationUnitsReal:
             msgspec.json.decode(b'"P1Y"', type=datetime.timedelta)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNSUPPORTED_DURATION_UNITS
+        assert err.ctx == ErrorCtx()
 
     def test_week_unit(self):
         """Only units 'D', 'H', 'M', and 'S' are supported when
@@ -202,6 +217,7 @@ class TestUnsupportedDurationUnitsReal:
             msgspec.json.decode(b'"P1W"', type=datetime.timedelta)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNSUPPORTED_DURATION_UNITS
+        assert err.ctx == ErrorCtx()
 
     def test_unsupported_nested(self):
         """Only units 'D', 'H', 'M', and 'S' are supported when
@@ -217,6 +233,7 @@ class TestUnsupportedDurationUnitsReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNSUPPORTED_DURATION_UNITS
         assert err.loc == ("wait",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidMsgpackTimestampReal:
@@ -231,6 +248,7 @@ class TestInvalidMsgpackTimestampReal:
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_MSGPACK_TIMESTAMP
+        assert err.ctx == ErrorCtx()
 
     def test_nanoseconds_out_of_range(self):
         """Invalid MessagePack timestamp: nanoseconds out of range"""
@@ -241,6 +259,7 @@ class TestInvalidMsgpackTimestampReal:
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_MSGPACK_TIMESTAMP
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidUuidReal:
@@ -252,6 +271,7 @@ class TestInvalidUuidReal:
             msgspec.json.decode(b'"not-a-uuid"', type=uuid.UUID)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_UUID
+        assert err.ctx == ErrorCtx()
 
     def test_bad_uuid_nested(self):
         """Invalid UUID - at `$.id`"""
@@ -266,6 +286,7 @@ class TestInvalidUuidReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_UUID
         assert err.loc == ("id",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidBase64StringReal:
@@ -277,6 +298,7 @@ class TestInvalidBase64StringReal:
             msgspec.json.decode(b'"!!!invalid-base64!!!"', type=bytes)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_BASE64_STRING
+        assert err.ctx == ErrorCtx()
 
     def test_invalid_base64_nested(self):
         """Invalid base64 encoded string - at `$.data`"""
@@ -291,6 +313,7 @@ class TestInvalidBase64StringReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_BASE64_STRING
         assert err.loc == ("data",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidDecimalStringReal:
@@ -302,6 +325,7 @@ class TestInvalidDecimalStringReal:
             msgspec.json.decode(b'"not-a-decimal"', type=decimal.Decimal)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_DECIMAL_STRING
+        assert err.ctx == ErrorCtx()
 
     def test_invalid_decimal_nested(self):
         """Invalid decimal string - at `$.price`"""
@@ -316,6 +340,7 @@ class TestInvalidDecimalStringReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_DECIMAL_STRING
         assert err.loc == ("price",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestInvalidEpochTimestampReal:
@@ -331,6 +356,7 @@ class TestInvalidEpochTimestampReal:
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_EPOCH_TIMESTAMP
+        assert err.ctx == ErrorCtx()
 
     def test_inf_as_datetime(self):
         """Invalid epoch timestamp"""
@@ -341,6 +367,7 @@ class TestInvalidEpochTimestampReal:
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_EPOCH_TIMESTAMP
+        assert err.ctx == ErrorCtx()
 
     def test_neg_inf_as_datetime(self):
         """Invalid epoch timestamp"""
@@ -351,3 +378,4 @@ class TestInvalidEpochTimestampReal:
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INVALID_EPOCH_TIMESTAMP
+        assert err.ctx == ErrorCtx()

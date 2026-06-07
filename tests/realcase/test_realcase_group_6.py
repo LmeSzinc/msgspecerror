@@ -11,11 +11,13 @@ Covers:
 - MSGPACK_MALFORMED
 - ENCODE_ERROR
 """
+from typing import Dict
+
 import msgspec
 import msgspec.msgpack
 import pytest
 
-from msgspecerror import parse_msgspec_error
+from msgspecerror import parse_msgspec_error, ErrorCtx
 from msgspecerror.const import ErrorType
 
 
@@ -41,6 +43,7 @@ class TestWrappedErrorReal:
             msgspec.json.decode(b'"bad"', type=Custom, dec_hook=dec_hook)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.ctx == ErrorCtx()
 
     def test_post_init_error(self):
         """name cannot be empty
@@ -57,6 +60,7 @@ class TestWrappedErrorReal:
             msgspec.json.decode(b'{"name": ""}', type=Validating)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.ctx == ErrorCtx()
 
     def test_dec_hook_type_error(self):
         """bad type for custom
@@ -74,6 +78,7 @@ class TestWrappedErrorReal:
             msgspec.json.decode(b'"x"', type=Custom2, dec_hook=dec_hook2)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.ctx == ErrorCtx()
 
     def test_post_init_type_error(self):
         """type validation failed
@@ -89,6 +94,7 @@ class TestWrappedErrorReal:
             msgspec.json.decode(b'{"val": 42}', type=ValidateType)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.ctx == ErrorCtx()
 
     def test_wrapped_error_nested(self):
         """nested construction error - at `$[...]`
@@ -105,12 +111,13 @@ class TestWrappedErrorReal:
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(
                 b'{"field": "bad"}',
-                type=dict[str, Custom3],
+                type=Dict[str, Custom3],
                 dec_hook=dec_hook3,
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.WRAPPED_ERROR
         assert err.loc == ("...",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestUnicodeDecodeErrorReal:
@@ -123,16 +130,18 @@ class TestUnicodeDecodeErrorReal:
             msgspec.msgpack.decode(b'\xa2\xff\xfe', type=str)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNICODE_DECODE_ERROR
+        assert err.ctx == ErrorCtx()
 
     def test_msgpack_invalid_utf8_nested(self):
         """'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"""
         with pytest.raises(UnicodeDecodeError) as exc_info:
             msgspec.msgpack.decode(
                 b'\x81\xa1n\xa2\xff\xfe',
-                type=dict[str, str],
+                type=Dict[str, str],
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNICODE_DECODE_ERROR
+        assert err.ctx == ErrorCtx()
 
 
 class TestJsonMalformedReal:
@@ -144,6 +153,7 @@ class TestJsonMalformedReal:
             msgspec.json.decode(b'[1,2,]', type=object)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.JSON_MALFORMED
+        assert err.ctx == ErrorCtx()
 
     def test_trailing_characters(self):
         """JSON is malformed: trailing characters (byte 4)"""
@@ -151,6 +161,7 @@ class TestJsonMalformedReal:
             msgspec.json.decode(b'{} extra', type=object)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.JSON_MALFORMED
+        assert err.ctx == ErrorCtx()
 
     def test_invalid_character(self):
         """JSON is malformed: object keys must be strings (byte 1)"""
@@ -158,6 +169,7 @@ class TestJsonMalformedReal:
             msgspec.json.decode(b'{invalid}', type=object)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.JSON_MALFORMED
+        assert err.ctx == ErrorCtx()
 
     def test_unclosed_brace_truncated(self):
         """Input data was truncated
@@ -168,6 +180,7 @@ class TestJsonMalformedReal:
             msgspec.json.decode(b'{"a": 1', type=object)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.ctx == ErrorCtx()
 
     def test_single_quote(self):
         """JSON is malformed: object keys must be strings (byte 1)"""
@@ -175,6 +188,7 @@ class TestJsonMalformedReal:
             msgspec.json.decode(b"{'a': 1}", type=object)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.JSON_MALFORMED
+        assert err.ctx == ErrorCtx()
 
     def test_invalid_escape(self):
         """JSON is malformed: invalid escape character in string (byte 3)"""
@@ -182,6 +196,7 @@ class TestJsonMalformedReal:
             msgspec.json.decode(b'"\\x"', type=object)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.JSON_MALFORMED
+        assert err.ctx == ErrorCtx()
 
 
 class TestMsgpackMalformedReal:
@@ -193,6 +208,7 @@ class TestMsgpackMalformedReal:
             msgspec.msgpack.decode(b'\xc1', type=object)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.MSGPACK_MALFORMED
+        assert err.ctx == ErrorCtx()
 
     def test_trailing_characters(self):
         """MessagePack data is malformed: trailing characters (byte 1)"""
@@ -200,6 +216,7 @@ class TestMsgpackMalformedReal:
             msgspec.msgpack.decode(b'\x00\xc1', type=object)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.MSGPACK_MALFORMED
+        assert err.ctx == ErrorCtx()
 
     def test_truncated_data(self):
         """Input data was truncated
@@ -210,6 +227,7 @@ class TestMsgpackMalformedReal:
             msgspec.msgpack.decode(b'\xda\x00\x05', type=object)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.ctx == ErrorCtx()
 
 
 class TestEncodeErrorReal:

@@ -4,6 +4,8 @@ Real-case tests for Group 1: Type Mismatch & Unexpected Token.
 Every test triggers a real msgspec error by decoding malformed data,
 then validates that parse_msgspec_error correctly classifies it.
 """
+from typing import List, Union
+
 import msgspec
 import pytest
 
@@ -24,6 +26,8 @@ class TestTypeMismatchReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TYPE_MISMATCH
         assert err.loc == ("age",)
+        assert err.ctx.expected == "int"
+        assert err.ctx.got == "str"
 
     def test_str_got_int(self):
         """Expected `str`, got `int` - at `$.name`"""
@@ -35,6 +39,8 @@ class TestTypeMismatchReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TYPE_MISMATCH
         assert err.loc == ("name",)
+        assert err.ctx.expected == "str"
+        assert err.ctx.got == "int"
 
     def test_bool_got_str(self):
         """Expected `bool`, got `str`"""
@@ -42,6 +48,8 @@ class TestTypeMismatchReal:
             msgspec.json.decode(b'"hello"', type=bool)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TYPE_MISMATCH
+        assert err.ctx.expected == "bool"
+        assert err.ctx.got == "str"
 
     def test_int_got_null(self):
         """Expected `int`, got `null`"""
@@ -49,13 +57,17 @@ class TestTypeMismatchReal:
             msgspec.json.decode(b'null', type=int)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TYPE_MISMATCH
+        assert err.ctx.expected == "int"
+        assert err.ctx.got == "null"
 
     def test_array_got_str(self):
         """Expected `array`, got `str`"""
         with pytest.raises(msgspec.ValidationError) as exc_info:
-            msgspec.json.decode(b'"not_array"', type=list[int])
+            msgspec.json.decode(b'"not_array"', type=List[int])
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TYPE_MISMATCH
+        assert err.ctx.expected == "array"
+        assert err.ctx.got == "str"
 
     def test_object_got_int(self):
         """Expected `object`, got `int`"""
@@ -66,6 +78,8 @@ class TestTypeMismatchReal:
             msgspec.json.decode(b'42', type=Model)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TYPE_MISMATCH
+        assert err.ctx.expected == "object"
+        assert err.ctx.got == "int"
 
     def test_float_got_str_deep(self):
         """Expected `float`, got `str` - at `$.inner.value`"""
@@ -80,17 +94,21 @@ class TestTypeMismatchReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TYPE_MISMATCH
         assert err.loc == ("inner", "value")
+        assert err.ctx.expected == "float"
+        assert err.ctx.got == "str"
 
     def test_list_index_path(self):
         """Expected `int`, got `str` - at `$.items[1]`"""
         class Model(msgspec.Struct):
-            items: list[int]
+            items: List[int]
 
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(b'{"items": [1, "bad", 3]}', type=Model)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TYPE_MISMATCH
         assert err.loc == ("items", 1)
+        assert err.ctx.expected == "int"
+        assert err.ctx.got == "str"
 
     def test_bytes_got_int(self):
         """Expected `bytes`, got `int`"""
@@ -98,6 +116,8 @@ class TestTypeMismatchReal:
             msgspec.json.decode(b'42', type=bytes)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TYPE_MISMATCH
+        assert err.ctx.expected == "bytes"
+        assert err.ctx.got == "int"
 
 
 class TestUnexpectedTokenReal:
@@ -111,13 +131,14 @@ class TestUnexpectedTokenReal:
         class Dog(msgspec.Struct, tag=True):
             name: str
 
-        Animal = Cat | Dog
+        Animal = Union[Cat, Dog]
 
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(b'{"name": "fluffy", "type": 1}', type=Animal)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNEXPECTED_TOKEN
         assert err.loc == ("type",)
+        assert err.ctx.expected == "str"
 
     def test_tag_field_int_got_str(self):
         """Invalid value 'xyz' - at `$.type`
@@ -131,7 +152,7 @@ class TestUnexpectedTokenReal:
         class Dog(msgspec.Struct, tag=True):
             name: str
 
-        Animal = Cat | Dog
+        Animal = Union[Cat, Dog]
 
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(b'{"name": "fluffy", "type": "xyz"}', type=Animal)
@@ -150,10 +171,11 @@ class TestUnexpectedTokenReal:
         class B(msgspec.Struct, tag=True):
             pass
 
-        AB = A | B
+        AB = Union[A, B]
 
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(b'{"type": 999}', type=AB)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNEXPECTED_TOKEN
         assert err.loc == ("type",)
+        assert err.ctx.expected == "str"

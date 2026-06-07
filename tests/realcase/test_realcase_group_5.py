@@ -9,7 +9,7 @@ import msgspec.msgpack
 import datetime
 import pytest
 
-from msgspecerror import parse_msgspec_error
+from msgspecerror import parse_msgspec_error, ErrorCtx
 from msgspecerror.const import ErrorType
 
 
@@ -27,6 +27,7 @@ class TestTimestampOutOfRangeReal:
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TIMESTAMP_OUT_OF_RANGE
+        assert err.ctx == ErrorCtx()
 
     def test_positive_timestamp_too_large(self):
         """Timestamp is out of range"""
@@ -38,6 +39,7 @@ class TestTimestampOutOfRangeReal:
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TIMESTAMP_OUT_OF_RANGE
+        assert err.ctx == ErrorCtx()
 
     def test_timestamp_out_of_range_nested(self):
         """Timestamp is out of range  - at `$.ts`"""
@@ -53,6 +55,7 @@ class TestTimestampOutOfRangeReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.TIMESTAMP_OUT_OF_RANGE
         assert err.loc == ("ts",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestDurationOutOfRangeReal:
@@ -69,6 +72,7 @@ class TestDurationOutOfRangeReal:
             )
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.DURATION_OUT_OF_RANGE
+        assert err.ctx == ErrorCtx()
 
     def test_duration_out_of_range_nested(self):
         """Duration is out of range - at `$.dur`"""
@@ -84,6 +88,7 @@ class TestDurationOutOfRangeReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.DURATION_OUT_OF_RANGE
         assert err.loc == ("dur",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestIntegerOutOfRangeReal:
@@ -96,6 +101,7 @@ class TestIntegerOutOfRangeReal:
             msgspec.json.decode(data, type=int)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INTEGER_OUT_OF_RANGE
+        assert err.ctx == ErrorCtx()
 
     def test_integer_too_long_nested(self):
         """Integer value out of range - at `$.val`"""
@@ -108,6 +114,7 @@ class TestIntegerOutOfRangeReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.INTEGER_OUT_OF_RANGE
         assert err.loc == ("val",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestNumberOutOfRangeReal:
@@ -119,6 +126,7 @@ class TestNumberOutOfRangeReal:
             msgspec.json.decode(b'1e999', type=float)
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.NUMBER_OUT_OF_RANGE
+        assert err.ctx == ErrorCtx()
 
     def test_number_out_of_range_nested(self):
         """Number out of range - at `$.big`"""
@@ -133,3 +141,4 @@ class TestNumberOutOfRangeReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.NUMBER_OUT_OF_RANGE
         assert err.loc == ("big",)
+        assert err.ctx == ErrorCtx()

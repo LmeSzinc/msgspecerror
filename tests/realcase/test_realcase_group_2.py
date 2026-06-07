@@ -7,7 +7,7 @@ then validates parse_msgspec_error correctly classifies it.
 import msgspec
 import pytest
 
-from msgspecerror import parse_msgspec_error
+from msgspecerror import parse_msgspec_error, ErrorCtx
 from msgspecerror.const import ErrorType
 
 
@@ -25,6 +25,7 @@ class TestMissingFieldReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.MISSING_FIELD
         assert err.loc == ("age",)
+        assert err.ctx == ErrorCtx()
 
     def test_missing_field_nested(self):
         """Object missing required field `value` - at `$.inner`"""
@@ -39,6 +40,7 @@ class TestMissingFieldReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.MISSING_FIELD
         assert err.loc == ("inner", "value")
+        assert err.ctx == ErrorCtx()
 
     def test_missing_multiple_fields_one_provided(self):
         """Object missing required field `b`"""
@@ -52,6 +54,7 @@ class TestMissingFieldReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.MISSING_FIELD
         assert err.loc == ("b",)
+        assert err.ctx == ErrorCtx()
 
 
 class TestUnknownFieldReal:
@@ -70,6 +73,7 @@ class TestUnknownFieldReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNKNOWN_FIELD
         assert err.loc == ("extra",)
+        assert err.ctx == ErrorCtx()
 
     def test_unknown_field_nested(self):
         """Object contains unknown field `unknown` - at `$.inner`"""
@@ -86,6 +90,7 @@ class TestUnknownFieldReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNKNOWN_FIELD
         assert err.loc == ("inner", "unknown")
+        assert err.ctx == ErrorCtx()
 
     def test_multiple_unknown_fields(self):
         """Object contains unknown field `x`"""
@@ -99,3 +104,4 @@ class TestUnknownFieldReal:
         err = parse_msgspec_error(exc_info.value)
         assert err.type == ErrorType.UNKNOWN_FIELD
         assert err.loc == ("x",)
+        assert err.ctx == ErrorCtx()
