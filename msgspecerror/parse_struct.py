@@ -8,14 +8,15 @@ from msgspec._utils import _apply_params, _get_class_mro_and_typevar_mappings
 from .parse_type import _eval_type, _forward_ref, is_struct_type
 
 
-def get_field_name(model: "Type[Struct]", encode_name):
+def get_field_name(model: "Type[Struct]", name):
     """
-    Convert encode name, where you defined with `Field(name=...)`
-    to field name (the python attribute name)
+    Resolve a name to the field name (Python attribute name).
+
+    Accepts both field names and encode names (serialization names defined via ``field(name=...)``).
 
     Args:
         model: Subclass of msgspec.Struct
-        encode_name (str):
+        name (str): Field name or encode name
 
     Returns:
         str: field_name
@@ -30,27 +31,33 @@ def get_field_name(model: "Type[Struct]", encode_name):
     except AttributeError:
         raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
 
-    # 2. Find the index of the target field.
+    # 2. Try the name as an encode name first.
     try:
-        idx = encode_names.index(encode_name)
+        idx = encode_names.index(name)
     except ValueError:
-        raise AttributeError(f'Type {model} has no field with encode_name="{encode_name}"')
+        pass
+    else:
+        try:
+            return field_names[idx]
+        except IndexError:
+            # this shouldn't happen, __struct_fields__ should have the same length as __struct_encode_fields__
+            raise AttributeError(f'Type {model} field_index={idx} is out of __struct_fields__={field_names}')
 
-    # 3. Get the Python attribute name (field_name).
-    try:
-        return field_names[idx]
-    except IndexError:
-        # this shouldn't happen, __struct_fields__ should have the same length as __struct_encode_fields__
-        raise AttributeError(f'Type {model} field_index={idx} is out of __struct_fields__={field_names}')
+    # 3. If not an encode name, try as a field name directly.
+    if name in field_names:
+        return name
+
+    # 4. Not found in either list.
+    raise AttributeError(f'Type {model} has no field with name="{name}"')
 
 
-def get_field_default(model: "Type[Struct]", field_name):
+def get_field_default(model: "Type[Struct]", name):
     """
     Get default and default_factory of model.field_name
 
     Args:
         model: Subclass of msgspec.Struct
-        field_name (str):
+        name (str): Field name (Python attribute) or encode name (serialization name)
 
     Returns:
         Any | NODEFAULT:
@@ -68,11 +75,11 @@ def get_field_default(model: "Type[Struct]", field_name):
     except AttributeError:
         raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
 
-    # 2. Find the index of the target field.
-    try:
-        idx = field_names.index(field_name)
-    except ValueError:
-        raise AttributeError(f'Type {model} has no field with field_name="{field_name}"')
+    # 2. Resolve the name to a field name (supports both field_name and encode_name).
+    field_name = get_field_name(model, name)
+
+    # 3. Find the index of the target field.
+    idx = field_names.index(field_name)
 
     num_required = len(field_names) - len(defaults)
     if idx >= num_required:
@@ -110,13 +117,13 @@ def _contains_typevar(tp):
     return False
 
 
-def get_field_typehint(model: "Type[Struct]", field_name):
+def get_field_typehint(model: "Type[Struct]", name):
     """
     Get typehint or annotation of model.field_name
 
     Args:
         model: Subclass of msgspec.Struct
-        field_name (str):
+        name (str): Field name (Python attribute) or encode name (serialization name)
 
     Returns:
         Any: typehint of model.field_name
@@ -124,6 +131,9 @@ def get_field_typehint(model: "Type[Struct]", field_name):
     Raises:
         AttributeError: if failed
     """
+    # Resolve the name to a field name (supports both field_name and encode_name).
+    field_name = get_field_name(model, name)
+
     mro = model.__mro__
 
     for cls in mro:
@@ -165,6 +175,6 @@ def get_field_typehint(model: "Type[Struct]", field_name):
     # Starting with Python 3.10, obj.__annotations__ is guaranteed to safely look up annotations on classes.
     # so we need to check if model is a msgspec.Struct
     if is_struct_type(model):
-        raise AttributeError(f'Type {model} has no field with field_name="{field_name}"')
+        raise AttributeError(f'Type {model} has no field with name="{name}"')
     else:
         raise AttributeError(f'Type {model} is not a valid msgspec.Struct')

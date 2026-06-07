@@ -71,6 +71,16 @@ class StructWithFailingFactory(Struct):
     failing_field: list = field(default_factory=_failing_factory)
 
 
+# Structs for testing inheritance with aliases.
+class ParentWithAlias(Struct):
+    aliased_from_parent: str = field(name="parentAlias")
+    aliased_with_default: int = field(name="parentDefaultAlias", default=99)
+
+
+class ChildOfAliased(ParentWithAlias, kw_only=True):
+    own_aliased: float = field(name="childAlias")
+
+
 # =================================================================
 # Test Class for `get_field_name`
 # =================================================================
@@ -91,6 +101,13 @@ class TestGetFieldName:
         """
         assert get_field_name(SimpleStruct, "a_required") == "a_required"
 
+    def test_get_name_with_alias_fieldname(self):
+        """
+        Tests that passing a field name that has an alias returns the
+        field name itself.
+        """
+        assert get_field_name(SimpleStruct, "b_aliased") == "b_aliased"
+
     def test_non_existent_encode_name_raises_attribute_error(self):
         """
         Tests that an AttributeError is raised when the provided `encode_name`
@@ -98,7 +115,7 @@ class TestGetFieldName:
         """
         with pytest.raises(
                 AttributeError,
-                match=f'Type {SimpleStruct} has no field with encode_name="non_existent"',
+                match=f'Type {SimpleStruct} has no field with name="non_existent"',
         ):
             get_field_name(SimpleStruct, "non_existent")
 
@@ -111,6 +128,26 @@ class TestGetFieldName:
                 AttributeError, match=f"Type {NotAStruct} is not a valid msgspec.Struct"
         ):
             get_field_name(NotAStruct, "a")
+
+    def test_inherited_alias_encode_name(self):
+        """Encode name from parent resolves to field name on child."""
+        assert get_field_name(ChildOfAliased, "parentAlias") == "aliased_from_parent"
+
+    def test_inherited_alias_field_name(self):
+        """Field name from parent returns itself on child."""
+        assert get_field_name(ChildOfAliased, "aliased_from_parent") == "aliased_from_parent"
+
+    def test_inherited_aliased_default_encode_name(self):
+        """Encode name of inherited field with default resolves on child."""
+        assert get_field_name(ChildOfAliased, "parentDefaultAlias") == "aliased_with_default"
+
+    def test_child_own_alias_encode_name(self):
+        """Child's own encode name resolves to field name."""
+        assert get_field_name(ChildOfAliased, "childAlias") == "own_aliased"
+
+    def test_child_own_alias_field_name(self):
+        """Child's own field name (with alias) returns itself."""
+        assert get_field_name(ChildOfAliased, "own_aliased") == "own_aliased"
 
 
 # =================================================================
@@ -164,7 +201,7 @@ class TestGetFieldDefault:
         """
         with pytest.raises(
                 AttributeError,
-                match=f'Type {SimpleStruct} has no field with field_name="non_existent"',
+                match=f'Type {SimpleStruct} has no field with name="non_existent"',
         ):
             get_field_default(SimpleStruct, "non_existent")
 
@@ -177,6 +214,40 @@ class TestGetFieldDefault:
                 AttributeError, match=f"Type {NotAStruct} is not a valid msgspec.Struct"
         ):
             get_field_default(NotAStruct, "a")
+
+    def test_get_default_with_encode_name(self):
+        """
+        Tests that a field default can be retrieved using its encode name
+        (the serialization name defined via ``field(name=...)``).
+        """
+        # bField is the encode name for field `b_aliased`, which has no default
+        assert get_field_default(SimpleStruct, "bField") is NODEFAULT
+
+        # c_default_value has no alias, encode_name == field_name
+        assert get_field_default(SimpleStruct, "c_default_value") == 3.14
+
+    def test_non_existent_encode_name_raises_attribute_error_in_get_default(self):
+        """
+        Tests that a non-existent encode name raises AttributeError
+        in `get_field_default`.
+        """
+        with pytest.raises(
+                AttributeError,
+                match=f'Type {SimpleStruct} has no field with name="non_existent_encode"',
+        ):
+            get_field_default(SimpleStruct, "non_existent_encode")
+
+    def test_inherited_aliased_default_by_encode_name(self):
+        """Default of inherited aliased field accessible via encode name on child."""
+        assert get_field_default(ChildOfAliased, "parentDefaultAlias") == 99
+
+    def test_inherited_aliased_default_by_field_name(self):
+        """Default of inherited aliased field accessible via field name on child."""
+        assert get_field_default(ChildOfAliased, "aliased_with_default") == 99
+
+    def test_inherited_aliased_required_default_by_encode_name(self):
+        """Inherited required (no default) aliased field returns NODEFAULT via encode name."""
+        assert get_field_default(ChildOfAliased, "parentAlias") is NODEFAULT
 
 
 # =================================================================
@@ -248,7 +319,7 @@ class TestGetFieldTypehint:
         """
         with pytest.raises(
                 AttributeError,
-                match=f'Type {Child} has no field with field_name="non_existent"',
+                match=f'Type {Child} has no field with name="non_existent"',
         ):
             get_field_typehint(Child, "non_existent")
 
@@ -263,3 +334,45 @@ class TestGetFieldTypehint:
                 match=f"Type {NotAStruct} is not a valid msgspec.Struct"
         ):
             get_field_typehint(NotAStruct, "any_field")
+
+    def test_get_typehint_with_encode_name(self):
+        """
+        Tests that a type hint can be retrieved using its encode name
+        (the serialization name defined via ``field(name=...)``).
+        """
+        # bField is the encode name for field `b_aliased`, which has type str
+        assert get_field_typehint(SimpleStruct, "bField") is str
+
+        # c_default_value has no alias, encode_name == field_name
+        assert get_field_typehint(SimpleStruct, "c_default_value") is float
+
+    def test_non_existent_encode_name_raises_attribute_error_in_get_typehint(self):
+        """
+        Tests that a non-existent encode name raises AttributeError
+        in `get_field_typehint`.
+        """
+        with pytest.raises(
+                AttributeError,
+                match=f'Type {SimpleStruct} has no field with name="nonexistent_encode"',
+        ):
+            get_field_typehint(SimpleStruct, "nonexistent_encode")
+
+    def test_inherited_aliased_typehint_by_encode_name(self):
+        """Type hint of inherited aliased field via encode name on child."""
+        assert get_field_typehint(ChildOfAliased, "parentAlias") is str
+
+    def test_inherited_aliased_typehint_by_field_name(self):
+        """Type hint of inherited aliased field via field name on child."""
+        assert get_field_typehint(ChildOfAliased, "aliased_from_parent") is str
+
+    def test_inherited_aliased_default_typehint_by_encode_name(self):
+        """Type hint of inherited aliased field with default via encode name."""
+        assert get_field_typehint(ChildOfAliased, "parentDefaultAlias") is int
+
+    def test_child_own_aliased_typehint_by_encode_name(self):
+        """Type hint of child's own aliased field via encode name."""
+        assert get_field_typehint(ChildOfAliased, "childAlias") is float
+
+    def test_child_own_aliased_typehint_by_field_name(self):
+        """Type hint of child's own aliased field via field name."""
+        assert get_field_typehint(ChildOfAliased, "own_aliased") is float
