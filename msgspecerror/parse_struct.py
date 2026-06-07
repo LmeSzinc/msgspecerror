@@ -5,7 +5,7 @@ from msgspec import NODEFAULT, Struct, UNSET
 from msgspec._core import Factory
 from msgspec._utils import _apply_params, _get_class_mro_and_typevar_mappings
 
-from .parse_type import _eval_type, _forward_ref
+from .parse_type import _eval_type, _forward_ref, is_struct_type
 
 
 def get_field_name(model: "Type[Struct]", encode_name):
@@ -162,4 +162,9 @@ def get_field_typehint(model: "Type[Struct]", field_name):
         }
         return _apply_params(anno, merged_mapping)
 
-    raise AttributeError(f'Type {model} has no field with field_name="{field_name}"')
+    # Starting with Python 3.10, obj.__annotations__ is guaranteed to safely look up annotations on classes.
+    # so we need to check if model is a msgspec.Struct
+    if is_struct_type(model):
+        raise AttributeError(f'Type {model} has no field with field_name="{field_name}"')
+    else:
+        raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
