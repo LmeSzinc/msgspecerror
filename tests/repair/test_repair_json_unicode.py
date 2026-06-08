@@ -306,12 +306,12 @@ class TestMixedUnicodeAndValidation:
 
     def test_mixed_multiple_invalid_list_items(self):
         """
-        A ``List[int]`` field whose items are all invalid after unicode repair.
-        The repair loop pops one item, then detects a deadlock when the same
-        ``(c, 0)`` error repeats, falling back to the model default.
+        A ``List[int]`` field with all items invalid after unicode repair.
+        The repair loop pops each item one by one, eventually clearing
+        the list entirely, while other valid fields are preserved.
         """
         # All items in `c` are strings that can't become int → each pop
-        # exposes the same error at index 0, triggering deadlock detection.
+        # exposes the same error at index 0 because the list shifts left.
         data = (
             b'{"b": "bad' + self.invalid
             + b'", "c": ["x' + self.invalid
@@ -319,9 +319,11 @@ class TestMixedUnicodeAndValidation:
         )
         result, errors = load_json_with_default(data, WithDefaults, utf8_error='replace')
 
-        # Deadlock detection → falls back to the model default constructor.
-        assert result == WithDefaults()
-        assert len(errors) >= 2
+        replacement_char = '\ufffd'
+        # Field 'b' preserved with repaired value; 'c' cleared; 'a' repaired to 42
+        assert result == WithDefaults(a=42, b=f"bad{replacement_char}", c=[])
+        # Unicode errors on b and c[0], plus type mismatches for list items and a
+        assert len(errors) >= 3
 
         error_types = {e.type for e in errors}
         assert ErrorType.UNICODE_DECODE_ERROR in error_types

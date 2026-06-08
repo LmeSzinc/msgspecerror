@@ -4,6 +4,7 @@ from msgspec import DecodeError, NODEFAULT, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
+from .const import ErrorType
 from .parse_error import MsgspecError, parse_msgspec_error
 from .parse_struct import get_field_default, get_field_typehint
 from .parse_type import get_default, is_struct_type, origin_args
@@ -223,24 +224,14 @@ def _handle_obj_repair(
     """
     error = parse_msgspec_error(error)
     collected_errors = []
-    seen_errors = set()
     while 1:
         # repair once
-        raw_error = error
         raw_obj, error = _repair_once(raw_obj, model, error)
-        if error is NODEFAULT:
-            # don't collect this error
-            error_info = (raw_error.loc, raw_error.msg)
-        else:
+        if error is not NODEFAULT:
             collected_errors.append(error)
-            error_info = (error.loc, error.msg)
 
         # repair failed
         if raw_obj is NODEFAULT:
-            return get_default(model, return_obj=True), collected_errors
-        # check deadlock
-        # We are in a loop, probably because the field default doesn't match custom post init validation
-        if error_info in seen_errors:
             return get_default(model, return_obj=True), collected_errors
 
         # try if all repaired
@@ -248,9 +239,10 @@ def _handle_obj_repair(
             return convert(raw_obj, model), collected_errors
         except ValidationError as e:
             error = parse_msgspec_error(e)
-
-        # record this error and go on next try
-        seen_errors.add(error_info)
+            # User-code errors (__post_init__, dec_hook, etc.) are wrapped as
+            # WRAPPED_ERROR. Retrying the same fix won't help — bail immediately.
+            if error.type is ErrorType.WRAPPED_ERROR:
+                return get_default(model, return_obj=True), collected_errors
 
 
 def _handle_root_error(

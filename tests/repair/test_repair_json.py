@@ -417,3 +417,60 @@ class TestLoadJsonWithDefault:
         assert result == WithDefaults(a=42, b="default", c=[])
         assert len(errors) == 1
         assert errors[0].loc == ()
+
+
+class TestDeadlockPostInit:
+    """
+    Deadlock detection when ``__post_init__`` rejects the repaired value
+    but the model's own default construction (used as the final fallback)
+    is acceptable.
+    """
+
+    def test_cross_field_constraint_rejected(self):
+        """
+        A cross-field post_init constraint rejects a single-field repair,
+        but the model's own defaults satisfy it. The deadlock should be
+        detected immediately and fall back to default construction.
+        """
+
+        class Pair(Struct):
+            a: int = 1
+            b: int = 1
+
+            def __post_init__(self):
+                if self.a + self.b != 2:
+                    raise ValueError("a + b must equal 2")
+
+        # Field 'a' has a type error, 'b' is valid (= 2)
+        data = b'{"a": "bad", "b": 2}'
+
+        # First repair: set a=1 (field default), keep b=2
+        # convert: 1+2=3 ≠ 2 → post_init rejects
+        # Second repair: same fix (a=1), same error → deadlock
+        # Fallback: model default Pair() = Pair(1, 1) → 1+1=2 → OK
+        result, errors = load_json_with_default(data, Pair)
+
+        assert result == Pair(a=1, b=1)
+        assert len(errors) >= 1
+
+    def test_default_factory_rejected_by_post_init(self):
+        """
+        A ``default_factory`` result is rejected during repair, but the
+        model's own defaults are acceptable.
+        """
+
+        class AtLeastOne(Struct):
+            items: List[int] = field(default_factory=lambda: [0])
+
+            def __post_init__(self):
+                if not self.items:
+                    raise ValueError("items must be non-empty")
+
+        # An invalid entry causes the list to be cleared
+        data = b'{"items": [1, "bad", 3]}'
+
+        # Repair: pops "bad" from items → [1, 3] → post_init passes
+        result, errors = load_json_with_default(data, AtLeastOne)
+
+        assert result == AtLeastOne(items=[1, 3])
+        assert len(errors) >= 1
