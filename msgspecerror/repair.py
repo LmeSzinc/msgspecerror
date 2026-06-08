@@ -1,14 +1,13 @@
-from collections import deque
 from typing import Any, Dict, Literal, Type, TypeVar, overload, Union, Tuple, List
 
 from msgspec import DecodeError, NODEFAULT, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
-from .const import ErrorType
 from .parse_error import MsgspecError, parse_msgspec_error
 from .parse_struct import get_field_default, get_field_typehint
 from .parse_type import get_default, is_struct_type, origin_args
+from .repair_unicode import _collect_unicode_replace
 
 
 def _repair_once(
@@ -270,88 +269,6 @@ def _handle_root_error(
     return get_default(model, return_obj=True), collected_errors
 
 
-def _find_unicode_errors(obj: Any) -> "list[MsgspecError]":
-    """
-    Iteratively and with maximum efficiency, finds all locations (paths)
-    within a Python object that contain a Unicode replacement character.
-    This version uses guard clauses and lazy path construction to optimize performance.
-
-    Args:
-        obj: The Python object (decoded from JSON) to scan.
-
-    Returns:
-        A list of tuples, where each tuple represents the path to an error.
-    """
-    obj_type = type(obj)
-
-    # --- Guard Clauses for Non-Container Root Objects ---
-    # Handle the case where the root object itself is a string.
-    if obj_type is str:
-        if '\ufffd' in obj:
-            error = MsgspecError(
-                'Invalid UTF-8 sequence in root',
-                type=ErrorType.UNICODE_DECODE_ERROR, loc=())
-            return [error]
-        else:
-            return []
-
-    # If the root object is not a container, there's nothing to traverse.
-    if obj_type is not dict and obj_type is not list:
-        return []
-
-    # --- Main Iterative Traversal for Containers ---
-    # From this point, `obj` is guaranteed to be a dict or a list.
-    errors = []
-    stack = deque()
-    stack.append((obj, ()))
-    replacement_char = '\ufffd'
-
-    while 1:
-        new_stack = deque()
-        for container, path in stack:
-            if type(container) is dict:
-                for key, value in container.items():
-                    value_type = type(value)
-
-                    # Check the dict key
-                    if type(key) is str and replacement_char in key:
-                        error = MsgspecError(
-                            'Invalid UTF-8 sequence in dict key',
-                            type=ErrorType.UNICODE_DECODE_ERROR, loc=path + (key,))
-                        errors.append(error)
-
-                    # Check the dict value.
-                    if value_type is str:
-                        if replacement_char in value:
-                            error = MsgspecError(
-                                'Invalid UTF-8 sequence in dict value',
-                                type=ErrorType.UNICODE_DECODE_ERROR, loc=path + (key,))
-                            errors.append(error)
-                    elif value_type is dict or value_type is list:
-                        new_stack.append((value, path + (key,)))
-            else:
-                # It must be a list, as the stack only contains dicts or lists.
-                for i, item in enumerate(container):
-                    item_type = type(item)
-
-                    # Check list item
-                    if item_type is str:
-                        if replacement_char in item:
-                            error = MsgspecError(
-                                'Invalid UTF-8 sequence in list item',
-                                type=ErrorType.UNICODE_DECODE_ERROR, loc=path + (i,))
-                            errors.append(error)
-                    elif item_type is dict or item_type is list:
-                        new_stack.append((item, path + (i,)))
-
-        if new_stack:
-            stack = new_stack
-        else:
-            break
-
-    return errors
-
-
 def _handle_json_unicode_repair(
         data: bytes,
         *,
@@ -368,7 +285,7 @@ def _handle_json_unicode_repair(
             raw_obj = decode_json(data)
         except DecodeError:
             return data, []
-        return data, _find_unicode_errors(raw_obj)
+        return data, _collect_unicode_replace(raw_obj)
     elif utf8_error == 'ignore':
         data = data.decode('utf-8', errors=utf8_error)
         return data, []
@@ -382,19 +299,19 @@ T = TypeVar("T")
 
 @overload
 def load_json_with_default(
-    data: Union[bytes, str],
-    model_or_decoder: Type[T],
-    *,
-    utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
+        data: Union[bytes, str],
+        model_or_decoder: Type[T],
+        *,
+        utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
 ) -> Tuple[T, List[MsgspecError]]: ...
 
 
 @overload
 def load_json_with_default(
-    data: Union[bytes, str],
-    model_or_decoder: JsonDecoder[T],
-    *,
-    utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
+        data: Union[bytes, str],
+        model_or_decoder: JsonDecoder[T],
+        *,
+        utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
 ) -> Tuple[T, List[MsgspecError]]: ...
 
 
@@ -465,7 +382,7 @@ def load_json_with_default(
                 return _handle_root_error(model, error)
             except UnicodeDecodeError as error:
                 if utf8_error in ['replace', 'ignore']:
-                    data, new_errors = _handle_json_unicode_repair(data, utf8_error)
+                    data, new_errors = _handle_json_unicode_repair(data, utf8_error=utf8_error)
                     collected_errors.extend(new_errors)
                     continue
                 else:
@@ -478,7 +395,7 @@ def load_json_with_default(
             return _handle_root_error(model, error)
         except UnicodeDecodeError as error:
             if utf8_error in ['replace', 'ignore']:
-                data, new_errors = _handle_json_unicode_repair(data, utf8_error)
+                data, new_errors = _handle_json_unicode_repair(data, utf8_error=utf8_error)
                 collected_errors.extend(new_errors)
                 continue
             else:
@@ -491,15 +408,15 @@ def load_json_with_default(
 
 @overload
 def load_msgpack_with_default(
-    data: bytes,
-    model_or_decoder: Type[T],
+        data: bytes,
+        model_or_decoder: Type[T],
 ) -> Tuple[Any, List[MsgspecError]]: ...
 
 
 @overload
 def load_msgpack_with_default(
-    data: bytes,
-    model_or_decoder: MsgpackDecoder[T],
+        data: bytes,
+        model_or_decoder: MsgpackDecoder[T],
 ) -> Tuple[Any, List[MsgspecError]]: ...
 
 
