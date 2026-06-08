@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "msgspecerror"
 dynamic = ["version"]
-description = "Structured parsing of msgspec ValidationError messages"
+description = "Enhanced msgspec exception handling, get structured error info, auto fallback to default on error"
 readme = "README.md"
 license = { text = "BSD-3-Clause" }
 requires-python = ">=3.8"
@@ -43,9 +43,6 @@ Homepage = "https://github.com/LmeSzinc/msgspecerror"
 Source = "https://github.com/LmeSzinc/msgspecerror"
 
 [project.optional-dependencies]
-eval-type-backport = [
-    "eval_type_backport ; python_version < '3.10'",
-]
 dev = [
     "pytest>=8",
     "attrs",
