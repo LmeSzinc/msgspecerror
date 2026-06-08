@@ -354,6 +354,7 @@ def _find_unicode_errors(obj: Any) -> "list[MsgspecError]":
 
 def _handle_json_unicode_repair(
         data: bytes,
+        *,
         utf8_error: "Literal['replace', 'ignore']"
 ) -> "tuple[bytes | str, list[MsgspecError]]":
     """
@@ -383,6 +384,7 @@ T = TypeVar("T")
 def load_json_with_default(
     data: Union[bytes, str],
     model_or_decoder: Type[T],
+    *,
     utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
 ) -> Tuple[T, List[MsgspecError]]: ...
 
@@ -391,6 +393,7 @@ def load_json_with_default(
 def load_json_with_default(
     data: Union[bytes, str],
     model_or_decoder: JsonDecoder[T],
+    *,
     utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
 ) -> Tuple[T, List[MsgspecError]]: ...
 
@@ -398,6 +401,7 @@ def load_json_with_default(
 def load_json_with_default(
         data: Union[bytes, str],
         model_or_decoder: Any,
+        *,
         utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
 ) -> Tuple[Any, List[MsgspecError]]:
     """
