@@ -1,4 +1,4 @@
-from .const import ErrorType
+from .const import ErrorType, DECODE_ERRORS, ENCODE_ERRORS
 from .parse_anno import (get_class_annotation, get_class_annotation_dict,
                          get_msgspec_annotation, get_msgspec_annotation_dict)
 from .parse_ctx import ErrorCtx

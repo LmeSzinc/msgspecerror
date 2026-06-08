@@ -1,5 +1,10 @@
 from enum import Enum
 
+from msgspec import ValidationError, DecodeError, EncodeError
+
+DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError)
+ENCODE_ERRORS = (EncodeError, UnicodeEncodeError)
+
 
 # StrEnum is introduced in py3.11
 class ErrorType(str, Enum):
