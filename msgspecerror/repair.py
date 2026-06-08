@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Any, Dict, Literal, Type, TypeVar, overload
+from typing import Any, Dict, Literal, Type, TypeVar, overload, Union, Tuple, List
 
 from msgspec import DecodeError, NODEFAULT, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
@@ -381,30 +381,30 @@ T = TypeVar("T")
 
 @overload
 def load_json_with_default(
-    data: bytes,
-    model_or_decoder: "Type[T]",
-    utf8_error: "Literal['strict', 'replace', 'ignore']" = ...,
-) -> "tuple[T, list[MsgspecError]]": ...
+    data: Union[bytes, str],
+    model_or_decoder: Type[T],
+    utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
+) -> Tuple[T, List[MsgspecError]]: ...
 
 
 @overload
 def load_json_with_default(
-    data: bytes,
+    data: Union[bytes, str],
     model_or_decoder: JsonDecoder[T],
-    utf8_error: "Literal['strict', 'replace', 'ignore']" = ...,
-) -> "tuple[T, list[MsgspecError]]": ...
+    utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
+) -> Tuple[T, List[MsgspecError]]: ...
 
 
 def load_json_with_default(
-        data: bytes,
+        data: Union[bytes, str],
         model_or_decoder: Any,
-        utf8_error: "Literal['strict', 'replace', 'ignore']" = 'replace',
-) -> "tuple[Any, list[MsgspecError]]":
+        utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
+) -> Tuple[Any, List[MsgspecError]]:
     """
     Decodes bytes, substituting defaults for fields that fail validation or have invalid unicode.
 
     Args:
-        data (bytes): The input bytes to decode.
+        data (bytes | str): The input bytes to decode.
         model_or_decoder: The target type to decode into, or a ``msgspec.json.Decoder`` instance.
             When a decoder is passed, the model is extracted from ``decoder.type``.
         utf8_error: The error handling scheme to use for the handling of decoding errors.
@@ -488,21 +488,21 @@ def load_json_with_default(
 @overload
 def load_msgpack_with_default(
     data: bytes,
-    model_or_decoder: "Type[T]",
-) -> "tuple[T, list[MsgspecError]]": ...
+    model_or_decoder: Type[T],
+) -> Tuple[Any, List[MsgspecError]]: ...
 
 
 @overload
 def load_msgpack_with_default(
     data: bytes,
     model_or_decoder: MsgpackDecoder[T],
-) -> "tuple[T, list[MsgspecError]]": ...
+) -> Tuple[Any, List[MsgspecError]]: ...
 
 
 def load_msgpack_with_default(
         data: bytes,
         model_or_decoder: Any,
-) -> "tuple[Any, list[MsgspecError]]":
+) -> Tuple[Any, List[MsgspecError]]:
     """
     Decodes bytes, substituting defaults for fields that fail validation.
     Note that load_msgpack_with_default can't handle UnicodeDecodeError, will act like utf8_error='strict'
