@@ -1,3 +1,5 @@
+from typing import Optional, Union
+
 from msgspec import NODEFAULT, Struct
 
 from .parse_path import KEY_at
@@ -7,22 +9,22 @@ class ErrorCtx(Struct, omit_defaults=True):
     """
     An optional object which contains extra info
     """
-    expected: "str | None" = None
-    got: "str | None" = None
-    gt: "int | float | None" = None
-    ge: "int | float | None" = None
-    lt: "int | float | None" = None
-    le: "int | float | None" = None
-    multiple_of: "int | float | None" = None
-    pattern: "str | None" = None
-    min_length: "int | None" = None
-    max_length: "int | None" = None
-    tz: "bool | None" = None
+    expected: Optional[str] = None
+    got: Optional[str] = None
+    gt: Union[int, float, None] = None
+    ge: Union[int, float, None] = None
+    lt: Union[int, float, None] = None
+    le: Union[int, float, None] = None
+    multiple_of: Union[int, float, None] = None
+    pattern: Optional[str] = None
+    min_length: Optional[int] = None
+    max_length: Optional[int] = None
+    tz: Optional[bool] = None
 
     def _iter_repr_fields(self):
         # show non-None fields only
         field_names = ['expected', 'got', 'gt', 'ge', 'lt', 'le', 'multiple_of',
-                       'pattern', 'min_length', 'max_length', 'tz', ]
+                       'pattern', 'min_length', 'max_length', 'tz']
         for key in field_names:
             value = getattr(self, key, None)
             if value is not None:

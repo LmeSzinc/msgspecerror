@@ -8,7 +8,7 @@ from msgspec._utils import _apply_params, _get_class_mro_and_typevar_mappings
 from .parse_type import _eval_type, _forward_ref, is_struct_type
 
 
-def get_field_name(model: "Type[Struct]", name):
+def get_field_name(model: Type[Struct], name: str) -> str:
     """
     Resolve a name to the field name (Python attribute name).
 
@@ -51,7 +51,7 @@ def get_field_name(model: "Type[Struct]", name):
     raise AttributeError(f'Type {model} has no field with name="{name}"')
 
 
-def get_field_default(model: "Type[Struct]", name):
+def get_field_default(model: Type[Struct], name: str):
     """
     Get default and default_factory of model.field_name
 
@@ -117,7 +117,7 @@ def _contains_typevar(tp):
     return False
 
 
-def get_field_typehint(model: "Type[Struct]", name):
+def get_field_typehint(model: Type[Struct], name: str):
     """
     Get typehint or annotation of model.field_name
 

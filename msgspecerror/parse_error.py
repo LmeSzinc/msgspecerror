@@ -237,7 +237,7 @@ def get_error_type(error):
     return MsgspecError(msg=error, type=ErrorType.WRAPPED_ERROR)
 
 
-def parse_msgspec_error(error):
+def parse_msgspec_error(error: Union[str, Exception]) -> MsgspecError:
     """
     Parse plain text error message like "Expected `int`, got `str` - at `$.user.profile.age`"
     into structured MsgspecError object.

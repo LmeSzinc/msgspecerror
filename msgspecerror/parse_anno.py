@@ -1,7 +1,9 @@
+from typing import Dict, Any
+
 from msgspec import NODEFAULT, UNSET
 
 
-def get_class_annotation_dict(cls):
+def get_class_annotation_dict(cls: type) -> Dict[str, Any]:
     """
     Safely get __annotations__ of a class and its parent classes
     A simpler version of `typing.get_type_hints`, that won't do _eval_type() just leave annotation as it is
@@ -26,7 +28,7 @@ def get_class_annotation_dict(cls):
     return out
 
 
-def get_msgspec_annotation_dict(cls):
+def get_msgspec_annotation_dict(cls: type) -> Dict[str, Any]:
     """
     Safely get __annotations__ of a class and its parent classes, with special support for msgspec.
     A simpler version of `typing.get_type_hints`, as we don't call _eval_type() just leave annotation as it is
@@ -58,7 +60,7 @@ def get_msgspec_annotation_dict(cls):
     return out
 
 
-def get_class_annotation(cls, key):
+def get_class_annotation(cls: type, key: str):
     """
     Get the annotation for a specific key from a class and its MRO in sequential order.
 
@@ -88,7 +90,7 @@ def get_class_annotation(cls, key):
     raise AttributeError(f"'{cls.__name__}' has no annotation '{key}'")
 
 
-def get_msgspec_annotation(cls, key):
+def get_msgspec_annotation(cls: type, key: str):
     """
     Get the annotation for a specific key from a class and its MRO, with msgspec UNSET support.
 
