@@ -64,6 +64,34 @@ class TestDeadlockPostInit:
         assert len(errors) >= 1
 
 
+class TestMaximumRepairConfig:
+    """``MAXIMUM_REPAIR`` in ``msgspecerror.const`` can be patched."""
+
+    def test_patch_maximum_repair(self):
+        """Lowering ``MAXIMUM_REPAIR`` makes the cap take effect sooner."""
+        import msgspecerror.const
+
+        old = msgspecerror.const.MAXIMUM_REPAIR
+        msgspecerror.const.MAXIMUM_REPAIR = 20
+        try:
+            class PatchedModel(Struct):
+                items: List[int]
+
+            # 21 items -> cap hit after 20 pops, 1 item remains
+            items_json = ",".join(['"bad"'] * 21)
+            data = b'{"items": [' + items_json.encode() + b']}'
+            result, errors = load_json_with_default(data, PatchedModel)
+
+            assert result is NODEFAULT
+            type_mismatches = [e for e in errors if e.type is ErrorType.TYPE_MISMATCH]
+            assert len(type_mismatches) == 20, (
+                f"expected 20 TYPE_MISMATCH (one per pop), got {len(type_mismatches)}"
+            )
+            assert any(e.type is ErrorType.INPUT_REJECTED for e in errors)
+        finally:
+            msgspecerror.const.MAXIMUM_REPAIR = old
+
+
 class TestInputRejected:
     """Cap on repair iterations to prevent resource exhaustion."""
 

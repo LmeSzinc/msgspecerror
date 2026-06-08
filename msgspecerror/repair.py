@@ -4,6 +4,7 @@ from msgspec import DecodeError, NODEFAULT, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
+from . import const
 from .const import ErrorType
 from .parse_error import MsgspecError, parse_msgspec_error
 from .parse_struct import get_field_default, get_field_typehint
@@ -224,7 +225,7 @@ def _handle_obj_repair(
     """
     error = parse_msgspec_error(error)
     collected_errors = []
-    for _ in range(100):
+    for _ in range(const.MAXIMUM_REPAIR):
         # repair once
         raw_obj, error = _repair_once(raw_obj, model, error)
         if error is not NODEFAULT:

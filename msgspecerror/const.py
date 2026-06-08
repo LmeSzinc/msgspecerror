@@ -4,6 +4,7 @@ from msgspec import ValidationError, DecodeError, EncodeError
 
 DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError)
 ENCODE_ERRORS = (EncodeError, UnicodeEncodeError)
+MAXIMUM_REPAIR = 100
 
 
 # StrEnum is introduced in py3.11
