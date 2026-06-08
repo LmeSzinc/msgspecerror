@@ -18,6 +18,7 @@ class TestTypeMismatchReal:
 
     def test_int_got_str(self):
         """Expected `int`, got `str` - at `$.age`"""
+
         class Model(msgspec.Struct):
             age: int
 
@@ -31,6 +32,7 @@ class TestTypeMismatchReal:
 
     def test_str_got_int(self):
         """Expected `str`, got `int` - at `$.name`"""
+
         class Model(msgspec.Struct):
             name: str
 
@@ -71,6 +73,7 @@ class TestTypeMismatchReal:
 
     def test_object_got_int(self):
         """Expected `object`, got `int`"""
+
         class Model(msgspec.Struct):
             x: int
 
@@ -83,6 +86,7 @@ class TestTypeMismatchReal:
 
     def test_float_got_str_deep(self):
         """Expected `float`, got `str` - at `$.inner.value`"""
+
         class Inner(msgspec.Struct):
             value: float
 
@@ -99,6 +103,7 @@ class TestTypeMismatchReal:
 
     def test_list_index_path(self):
         """Expected `int`, got `str` - at `$.items[1]`"""
+
         class Model(msgspec.Struct):
             items: List[int]
 
@@ -120,11 +125,16 @@ class TestTypeMismatchReal:
         assert err.ctx.got == "int"
 
 
-class TestUnexpectedTokenReal:
-    """UNEXPECTED_TOKEN — triggered by tag value type mismatches."""
+class TestTokenTypeMismatchReal:
+    """TOKEN_TYPE_MISMATCH — triggered by tag value / token type mismatches."""
+
+    # ==================================================================
+    # Trigger 1: Tag Value Mismatch (JSON)
+    # ==================================================================
 
     def test_tag_field_str_got_int(self):
         """Expected `str` - at `$.type`"""
+
         class Cat(msgspec.Struct, tag=True):
             name: str
 
@@ -136,7 +146,7 @@ class TestUnexpectedTokenReal:
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(b'{"name": "fluffy", "type": 1}', type=Animal)
         err = parse_msgspec_error(exc_info.value)
-        assert err.type == ErrorType.UNEXPECTED_TOKEN
+        assert err.type == ErrorType.TOKEN_TYPE_MISMATCH
         assert err.loc == ("type",)
         assert err.ctx.expected == "str"
 
@@ -146,6 +156,7 @@ class TestUnexpectedTokenReal:
         Tag value 'xyz' doesn't match any known type but is a string,
         so it goes through tag lookup first and produces INVALID_TAG_VALUE.
         """
+
         class Cat(msgspec.Struct, tag=True):
             name: str
 
@@ -163,8 +174,9 @@ class TestUnexpectedTokenReal:
         """Expected `str` - at `$.type`
 
         tag=True -> tag value is str (class name). Pass a number to
-        trigger UNEXPECTED_TOKEN.
+        trigger TOKEN_TYPE_MISMATCH.
         """
+
         class A(msgspec.Struct, tag=True):
             pass
 
@@ -176,6 +188,86 @@ class TestUnexpectedTokenReal:
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(b'{"type": 999}', type=AB)
         err = parse_msgspec_error(exc_info.value)
-        assert err.type == ErrorType.UNEXPECTED_TOKEN
+        assert err.type == ErrorType.TOKEN_TYPE_MISMATCH
         assert err.loc == ("type",)
+        assert err.ctx.expected == "str"
+
+    # ==================================================================
+    # Trigger 2: Map Key Mismatch (convert)
+    #   convert_is_str_key: non-string dict key in msgspec.convert()
+    #   when target type is Struct / TypedDict / dataclass
+    # ==================================================================
+
+    def test_convert_non_str_key_struct(self):
+        """Expected `str` - at `key` in `$`
+
+        msgspec.convert() with a Struct target rejects non-string keys
+        because struct field names are always strings.
+        """
+
+        class Model(msgspec.Struct):
+            x: int
+
+        with pytest.raises(msgspec.ValidationError) as exc_info:
+            msgspec.convert({1: 10}, Model)
+        err = parse_msgspec_error(exc_info.value)
+        assert err.type == ErrorType.TOKEN_TYPE_MISMATCH
+        assert err.loc == ("...key",)
+        assert err.ctx.expected == "str"
+
+    # ==================================================================
+    # Trigger 3: Token Type Mismatch (JSON - array-like tag)
+    #   json_decode_cstr: array first element expected str tag, got int/bool/null
+    #   Error message: "Expected `str` - at `$[0]`"
+    # ==================================================================
+
+    def test_array_like_str_tag_got_int(self):
+        """Expected `str` - at `$[0]`
+
+        Array-like tagged struct expects a str tag (class name) as the
+        first element, but finds an int instead.
+        """
+
+        class Tagged(msgspec.Struct, tag=True, array_like=True):
+            x: int
+
+        with pytest.raises(msgspec.ValidationError) as exc_info:
+            msgspec.json.decode(b'[123, 42]', type=Tagged)
+        err = parse_msgspec_error(exc_info.value)
+        assert err.type == ErrorType.TOKEN_TYPE_MISMATCH
+        assert err.loc == (0,)
+        assert err.ctx.expected == "str"
+
+    def test_array_like_str_tag_got_bool(self):
+        """Expected `str` - at `$[0]`
+
+        Array-like tagged struct expects a str tag as the first element,
+        but finds a JSON boolean instead.
+        """
+
+        class Tagged(msgspec.Struct, tag=True, array_like=True):
+            x: int
+
+        with pytest.raises(msgspec.ValidationError) as exc_info:
+            msgspec.json.decode(b'[true, 42]', type=Tagged)
+        err = parse_msgspec_error(exc_info.value)
+        assert err.type == ErrorType.TOKEN_TYPE_MISMATCH
+        assert err.loc == (0,)
+        assert err.ctx.expected == "str"
+
+    def test_array_like_str_tag_got_null(self):
+        """Expected `str` - at `$[0]`
+
+        Array-like tagged struct expects a str tag as the first element,
+        but finds a JSON null instead.
+        """
+
+        class Tagged(msgspec.Struct, tag=True, array_like=True):
+            x: int
+
+        with pytest.raises(msgspec.ValidationError) as exc_info:
+            msgspec.json.decode(b'[null, 42]', type=Tagged)
+        err = parse_msgspec_error(exc_info.value)
+        assert err.type == ErrorType.TOKEN_TYPE_MISMATCH
+        assert err.loc == (0,)
         assert err.ctx.expected == "str"

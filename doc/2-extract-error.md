@@ -154,7 +154,7 @@ Triggered by: <触发条件>
 ```
 
 保持枚举成员的命名风格：
-- 类型错误 → `TYPE_MISMATCH`、`UNEXPECTED_TOKEN`
+- 类型错误 → `TYPE_MISMATCH`、`TOKEN_TYPE_MISMATCH`
 - 字段错误 → `MISSING_FIELD`、`UNKNOWN_FIELD`
 - 约束错误 → `LENGTH_CONSTRAINT`、`PATTERN_CONSTRAINT`
 - 无效值错误 → `INVALID_XXX`

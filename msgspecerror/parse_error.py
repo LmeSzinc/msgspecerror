@@ -16,10 +16,15 @@ class MsgspecError(Struct, omit_defaults=True):
     # Error path
     # ('user', 'profile', 'age')
     # ('...', 'RepairThreshold')
+    # ('items', '...key')
     # ('matrix', 0, 1, 'value')
-    # note that dict keys are shown as [...] in msgspec, so they are parsed as "..."
+    # note that:
+    # - dict values are shown as [...] in msgspec, so they are parsed as "..."
+    # - dict keys have specific error format, for compatibility we parsed as "...key"
+    # - msgspec doesn't give the specific key/value in dict, path is just "..." and "...key" literally
+    # - list index in loc will be int, not str
     loc: Tuple[Union[int, str]] = ()
-    # Additional info
+    # Additional context info
     ctx: ErrorCtx = field(default_factory=ErrorCtx)
 
 
@@ -165,10 +170,10 @@ def get_error_type(error):
                 ctx = get_number_ctx(remaining, expected=float)
                 return _make_error(error, ErrorType.NUMERIC_CONSTRAINT, ctx, expected)
 
-        # UNEXPECTED_TOKEN: "Expected `<type>` - at <Path>" without ", got"
+        # TOKEN_TYPE_MISMATCH: "Expected `<type>` - at <Path>" without ", got"
         # Must be after all specific Expected patterns to avoid false matches.
         if remain.startswith(KEY_at) or remain.startswith(KEY_at_key_in):
-            return _make_error(error, ErrorType.UNEXPECTED_TOKEN, expected=expected)
+            return _make_error(error, ErrorType.TOKEN_TYPE_MISMATCH, expected=expected)
 
     # Group 4: Invalid Value Errors
     if error.startswith('Invalid enum value '):

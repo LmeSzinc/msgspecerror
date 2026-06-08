@@ -59,8 +59,8 @@ class TestTypeMismatch:
         check(msg, ErrorType.TYPE_MISMATCH, ctx)
 
 
-class TestUnexpectedToken:
-    """UNEXPECTED_TOKEN — messages like "Expected `<type>` - at <Path>"
+class TestTokenTypeMismatch:
+    """TOKEN_TYPE_MISMATCH — messages like "Expected `<type>` - at <Path>"
     without ", got `<B>`"."""
 
     @pytest.mark.parametrize("msg, ctx", [
@@ -70,9 +70,9 @@ class TestUnexpectedToken:
         ("Expected `float` - at `$.value`", ErrorCtx(expected="float")),
         ("Expected `decimal` - at `$.price`", ErrorCtx(expected="decimal")),
     ])
-    def test_unexpected_token(self, msg, ctx):
-        """All UNEXPECTED_TOKEN messages now correctly classified."""
-        check(msg, ErrorType.UNEXPECTED_TOKEN, ctx)
+    def test_token_type_mismatch(self, msg, ctx):
+        """All TOKEN_TYPE_MISMATCH messages now correctly classified."""
+        check(msg, ErrorType.TOKEN_TYPE_MISMATCH, ctx)
 
 
 # ======================================================================

@@ -55,14 +55,15 @@ class ErrorType(str, Enum):
         type (e.g., an `int` was found when a `str` was expected).
     """
 
-    UNEXPECTED_TOKEN = "UNEXPECTED_TOKEN"
+    TOKEN_TYPE_MISMATCH = "TOKEN_TYPE_MISMATCH"
     """
     Format: "Expected `<type>` - at <Path>"
 
-    A type mismatch where the decoder encounters a syntactically valid but
-    structurally incompatible token, but the actual type cannot be included
-    in the error message. This always lacks the ", got `<B>`" portion that
-    distinguishes it from TYPE_MISMATCH.
+    A type mismatch where the decoder encounters a syntactically valid JSON
+    token of the wrong type at the current decode position, but the actual
+    token type cannot be included in the error message because the token was
+    skipped (via ``json_skip``) rather than fully decoded. This always lacks
+    the ", got `<B>`" portion that distinguishes it from TYPE_MISMATCH.
 
     Examples:
     - "Expected `str` - at `$.kind`" (JSON: tag field value is non-string)
@@ -74,9 +75,13 @@ class ErrorType(str, Enum):
         has the wrong JSON token type (e.g., a number where a string tag
         is expected, or vice versa).
     2.  **Map Key Mismatch** (convert): A dict key in `msgspec.convert()` or
-        equivalent path is not a string.
-    3.  **Token Type Mismatch** (JSON): A JSON token (parsed as int/str/...)
-        has the wrong type for the decoder position.
+        equivalent path is not a string — the target type (Struct, TypedDict,
+        or dataclass) only has string field names, so non-string keys cannot
+        be matched.
+    3.  **Token Type Mismatch** (JSON): The decoder expects an ``int`` or
+        ``str`` at the current JSON decode position, but the next JSON token
+        has a different type. The token is identified by peeking its first
+        character and skipped with ``json_skip`` before the error is raised.
     """
 
     # ======================================================================
