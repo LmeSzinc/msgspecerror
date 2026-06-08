@@ -309,7 +309,7 @@ def load_json_with_default(
 @overload
 def load_json_with_default(
         data: Union[bytes, str],
-        model_or_decoder: JsonDecoder[T],
+        model_or_decoder: "JsonDecoder[T]",
         *,
         utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
 ) -> Tuple[T, List[MsgspecError]]: ...
@@ -416,7 +416,7 @@ def load_msgpack_with_default(
 @overload
 def load_msgpack_with_default(
         data: bytes,
-        model_or_decoder: MsgpackDecoder[T],
+        model_or_decoder: "MsgpackDecoder[T]",
 ) -> Tuple[Any, List[MsgspecError]]: ...
 
 
