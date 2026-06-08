@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional
 
+import msgspec
 import msgspec.msgpack
 from msgspec import NODEFAULT, Struct, field
 
@@ -407,3 +408,41 @@ class TestLoadMsgpackWithDefault:
         assert len(errors) == 1
         assert errors[0].loc == ("items", 0, "userAge")
         assert "$.items[0].userAge" in errors[0].msg
+
+    # --- Decoder as input ---
+
+    def test_decoder_valid_msgpack_no_errors(self):
+        """Passing a MsgpackDecoder with valid data works the same as passing a model."""
+        decoder = msgspec.msgpack.Decoder(Simple)
+        data = _msgpack({"a": 1, "b": "test"})
+        result, errors = load_msgpack_with_default(data, decoder)
+        assert result == Simple(a=1, b="test")
+        assert errors == []
+
+    def test_decoder_repair_succeeds_with_field_default(self):
+        """Passing a MsgpackDecoder, repair uses the decoder's type."""
+        decoder = msgspec.msgpack.Decoder(WithDefaults)
+        data = _msgpack({"a": "not-an-int", "b": "test"})
+        result, errors = load_msgpack_with_default(data, decoder)
+        assert result == WithDefaults(a=42, b="test", c=[])
+        assert len(errors) == 1
+        assert errors[0].loc == ("a",)
+
+    def test_decoder_repair_multiple_errors(self):
+        """Passing a MsgpackDecoder with multiple errors."""
+        decoder = msgspec.msgpack.Decoder(WithDefaults)
+        data = _msgpack({"a": "wrong-type", "b": "good",
+                         "c": "not-a-list", "d": "not-an-int"})
+        result, errors = load_msgpack_with_default(data, decoder)
+        expected = WithDefaults(a=42, b="good", c=[], d=None)
+        assert result == expected
+        assert len(errors) == 3
+
+    def test_decoder_malformed_msgpack(self):
+        """Passing a MsgpackDecoder with malformed msgpack."""
+        decoder = msgspec.msgpack.Decoder(WithDefaults)
+        data = b'\xc1'  # 0xc1 is never used in msgpack
+        result, errors = load_msgpack_with_default(data, decoder)
+        assert result == WithDefaults(a=42, b="default", c=[])
+        assert len(errors) == 1
+        assert errors[0].loc == ()

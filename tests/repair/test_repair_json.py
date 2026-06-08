@@ -1,5 +1,7 @@
 from typing import Dict, List, Optional
 
+import msgspec
+import msgspec.json
 from msgspec import NODEFAULT, Struct, field
 
 from msgspecerror.repair import load_json_with_default
@@ -378,3 +380,40 @@ class TestLoadJsonWithDefault:
         assert errors[0].loc == ("items", 0, "userAge")
         # The error message also uses the encode name in the JSON path
         assert "$.items[0].userAge" in errors[0].msg
+
+    # --- Decoder as input ---
+
+    def test_decoder_valid_json_no_errors(self):
+        """Passing a JsonDecoder with valid data works the same as passing a model."""
+        decoder = msgspec.json.Decoder(Simple)
+        data = b'{"a": 1, "b": "test"}'
+        result, errors = load_json_with_default(data, decoder)
+        assert result == Simple(a=1, b="test")
+        assert errors == []
+
+    def test_decoder_repair_succeeds_with_field_default(self):
+        """Passing a JsonDecoder, repair uses the decoder's type."""
+        decoder = msgspec.json.Decoder(WithDefaults)
+        data = b'{"a": "not-an-int", "b": "test"}'
+        result, errors = load_json_with_default(data, decoder)
+        assert result == WithDefaults(a=42, b="test", c=[])
+        assert len(errors) == 1
+        assert errors[0].loc == ("a",)
+
+    def test_decoder_repair_multiple_errors(self):
+        """Passing a JsonDecoder with multiple errors."""
+        decoder = msgspec.json.Decoder(WithDefaults)
+        data = b'{"a": "wrong-type", "b": "good", "c": "not-a-list", "d": "not-an-int"}'
+        result, errors = load_json_with_default(data, decoder)
+        expected = WithDefaults(a=42, b="good", c=[], d=None)
+        assert result == expected
+        assert len(errors) == 3
+
+    def test_decoder_malformed_json(self):
+        """Passing a JsonDecoder with malformed JSON."""
+        decoder = msgspec.json.Decoder(WithDefaults)
+        data = b'{"a": 1, "b": "test'  # Incomplete JSON
+        result, errors = load_json_with_default(data, decoder)
+        assert result == WithDefaults(a=42, b="default", c=[])
+        assert len(errors) == 1
+        assert errors[0].loc == ()

@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Any, Dict, Literal, Type
+from typing import Any, Dict, Literal, Type, TypeVar, overload
 
 from msgspec import DecodeError, NODEFAULT, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
@@ -376,18 +376,37 @@ def _handle_json_unicode_repair(
         return data, []
 
 
+T = TypeVar("T")
+
+
+@overload
+def load_json_with_default(
+    data: bytes,
+    model_or_decoder: "Type[T]",
+    utf8_error: "Literal['strict', 'replace', 'ignore']" = ...,
+) -> "tuple[T, list[MsgspecError]]": ...
+
+
+@overload
+def load_json_with_default(
+    data: bytes,
+    model_or_decoder: JsonDecoder[T],
+    utf8_error: "Literal['strict', 'replace', 'ignore']" = ...,
+) -> "tuple[T, list[MsgspecError]]": ...
+
+
 def load_json_with_default(
         data: bytes,
-        model: Any,
+        model_or_decoder: Any,
         utf8_error: "Literal['strict', 'replace', 'ignore']" = 'replace',
-        decoder: JsonDecoder = None,
 ) -> "tuple[Any, list[MsgspecError]]":
     """
     Decodes bytes, substituting defaults for fields that fail validation or have invalid unicode.
 
     Args:
         data (bytes): The input bytes to decode.
-        model (type): The target type to decode into.
+        model_or_decoder: The target type to decode into, or a ``msgspec.json.Decoder`` instance.
+            When a decoder is passed, the model is extracted from ``decoder.type``.
         utf8_error: The error handling scheme to use for the handling of decoding errors.
             - "strict", any UnicodeDecodeError will be treated as root level error and generate a root level default.
                 You may lose tons of useful data because of one unicode error.
@@ -395,7 +414,6 @@ def load_json_with_default(
                 Most data will be preserved, but you may have a U+FFFD in string.
             - "ignore", remove error bytes.
                 Most data will be preserved, but you may lose the error data
-        decoder: Custom decoder to use
 
     Returns:
         tuple[any, list[MsgspecError]]: (result, errors) validated result and a list of collected errors
@@ -419,6 +437,15 @@ def load_json_with_default(
         # [MsgspecError(msg='Expected `int`, got `str` - at `$.s.a`',
         # type=<ErrorType.TYPE_MISMATCH>, loc=('s', 'a'), ctx=ErrorCtx())]
     """
+    # since there's no BASETYPE flag on decoder classes, subclassing is impossible,
+    # so `type(obj) is Decoder` is equivalent to `isinstance(obj, Decoder)` and we can reduce some time cost
+    if type(model_or_decoder) is JsonDecoder:
+        decoder = model_or_decoder
+        model = decoder.type
+    else:
+        decoder = None
+        model = model_or_decoder
+
     collected_errors = []
     for _ in range(2):
         try:
@@ -458,17 +485,47 @@ def load_json_with_default(
     return _handle_root_error(model, error)
 
 
+@overload
+def load_msgpack_with_default(
+    data: bytes,
+    model_or_decoder: "Type[T]",
+) -> "tuple[T, list[MsgspecError]]": ...
+
+
+@overload
+def load_msgpack_with_default(
+    data: bytes,
+    model_or_decoder: MsgpackDecoder[T],
+) -> "tuple[T, list[MsgspecError]]": ...
+
+
 def load_msgpack_with_default(
         data: bytes,
-        model: Any,
-        decoder: MsgpackDecoder = None,
+        model_or_decoder: Any,
 ) -> "tuple[Any, list[MsgspecError]]":
     """
     Decodes bytes, substituting defaults for fields that fail validation.
     Note that load_msgpack_with_default can't handle UnicodeDecodeError, will act like utf8_error='strict'
 
+    Args:
+        data (bytes): The input bytes to decode.
+        model_or_decoder: The target type to decode into, or a ``msgspec.msgpack.Decoder`` instance.
+            When a decoder is passed, the model is extracted from ``decoder.type``.
+
+    Returns:
+        tuple[any, list[MsgspecError]]: (result, errors) validated result and a list of collected errors
+
     See load_json_with_default for more info.
     """
+    # since there's no BASETYPE flag on decoder classes, subclassing is impossible,
+    # so `type(obj) is Decoder` is equivalent to `isinstance(obj, Decoder)` and we can reduce some time cost
+    if type(model_or_decoder) is MsgpackDecoder:
+        decoder = model_or_decoder
+        model = decoder.type
+    else:
+        decoder = None
+        model = model_or_decoder
+
     try:
         # happy path, return directly
         if decoder is None:
