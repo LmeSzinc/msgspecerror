@@ -224,7 +224,7 @@ def _handle_obj_repair(
     """
     error = parse_msgspec_error(error)
     collected_errors = []
-    while 1:
+    for _ in range(100):
         # repair once
         raw_obj, error = _repair_once(raw_obj, model, error)
         if error is not NODEFAULT:
@@ -242,16 +242,27 @@ def _handle_obj_repair(
             # User-code errors (__post_init__, dec_hook, etc.) are wrapped as
             # WRAPPED_ERROR. Retrying the same fix won't help — bail immediately.
             if error.type is ErrorType.WRAPPED_ERROR:
+                rejected = MsgspecError(
+                    'Input rejected: validation failed on struct defaults',
+                    type=ErrorType.INPUT_REJECTED, loc=())
+                collected_errors.append(rejected)
                 return get_default(model, return_obj=True), collected_errors
+
+    # Too many iterations — possible malicious input
+    rejected = MsgspecError(
+        'Input rejected: too many repair cycles',
+        type=ErrorType.INPUT_REJECTED, loc=())
+    collected_errors.append(rejected)
+    return get_default(model, return_obj=True), collected_errors
 
 
 def _handle_root_error(
-        model: Any, error: Exception
+        model: Any, error
 ) -> "tuple[Any, list[MsgspecError]]":
     """
     Args:
         model (type): The target type to decode into.
-        error:
+        error (str | Exception):
 
     Returns:
         tuple[any, list[MsgspecError]]:
@@ -394,8 +405,12 @@ def load_json_with_default(
                 return _handle_root_error(model, error)
 
     # this shouldn't happen
-    error = RuntimeError(f'Failed to solve UnicodeDecodeError')
-    return _handle_root_error(model, error)
+    result = get_default(model, return_obj=True)
+    rejected = MsgspecError(
+        'Input rejected: failed to solve UnicodeDecodeError',
+        type=ErrorType.INPUT_REJECTED, loc=())
+    collected_errors.append(rejected)
+    return result, collected_errors
 
 
 @overload

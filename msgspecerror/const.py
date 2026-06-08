@@ -389,3 +389,27 @@ class ErrorType(str, Enum):
     Triggered by: Encoding a string, bytes, array, map, or Ext object
                  whose length exceeds 2**32 - 1 (MsgPack 32-bit limit).
     """
+
+    INPUT_REJECTED = "INPUT_REJECTED"
+    """
+    Internal error type used by ``msgspecerror`` — never raised by msgspec
+    itself.
+
+    Emitted by the repair loop when a single input requires more than 100
+    repair attempts. This cap prevents server resource exhaustion from
+    maliciously crafted inputs that repeatedly trigger new errors after
+    each repair cycle.
+
+    Note:
+        This is an ``msgspecerror``-internal type. It does not correspond
+        to any msgspec ``ValidationError`` message.
+    
+    Format: "Input rejected: too many repair cycles"
+    Triggered by: input repaired >100 times, but still fails
+
+    Format: "Input rejected: validation failed on struct defaults"
+    Triggered by: Usually because struct definition mistake:
+        __post_init__, dec_hook, etc, have conflicts with field defaults.
+        e.g. field struct writes `amount: int = 0`,
+        but __post_init__ checks `if self.amount < 1: raise ValueError`
+    """
