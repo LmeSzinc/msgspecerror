@@ -8,6 +8,7 @@ Provides two strategies:
   fix every string with invalid UTF-8 (O(N) one-pass).
 """
 import struct
+from collections import deque
 
 from .const import T_utf8_error
 
@@ -104,7 +105,6 @@ def _check_str_header_at(data, payload_start, str_len):
 
 # ── slow-walker helpers ─────────────────────────────────────────────────
 
-
 def _try_fix_string(ba, header_len, str_len, item_start, utf8_error):
     """
     Try to decode the string at *item_start*.
@@ -139,204 +139,211 @@ def _try_fix_string(ba, header_len, str_len, item_start, utf8_error):
     return item_start + header_len + str_len
 
 
+# ── iterative walker ────────────────────────────────────────────────────
+
 def _walk_fix(ba, start, utf8_error):
     """
-    Walk one msgpack item starting at *start*, fixing any string with
-    invalid UTF-8 encountered along the way.
+    Walk the msgpack structure from *start*, fixing any string with invalid
+    UTF-8 encountered along the way.
+
+    Uses an explicit :class:`collections.deque` as a stack instead of
+    recursion to avoid hitting Python's recursion limit on deeply nested
+    inputs.
 
     Args:
         ba (bytearray): Mutable msgpack buffer.
-        start (int): Offset of the item to process.
+        start (int): Offset to begin processing.
         utf8_error (str): Error handler for bytes decode/encode.
 
     Returns:
-        int: The byte position immediately after this item.
+        int: The byte position immediately after the processed item.
     """
-    if start >= len(ba):
-        return start
+    pos = start
+    # Stack of remaining-item counts for enclosing containers.
+    # For a map with N entries we push N*2 (keys + values).
+    # For an array with N elements we push N.
+    stack = deque()
+    # Cached count of remaining items in the current (top) container.
+    # 0 means no container context (stack is empty or all finished).
+    remain = 0
 
-    op = ba[start]
+    while True:
+        if pos >= len(ba):
+            return pos
 
-    # ── positive fixint 0x00 .. 0x7f ──
-    if op <= 0x7f:
-        return start + 1
+        op = ba[pos]
 
-    # ── fixmap 0x80 .. 0x8f ──
-    if 0x80 <= op <= 0x8f:
-        n = op & 0x0f
-        pos = start + 1
-        for _ in range(n):
-            pos = _walk_fix(ba, pos, utf8_error)   # key
-            pos = _walk_fix(ba, pos, utf8_error)   # value
-        return pos
+        # ── container headers (with children) — push + continue onsite ──
+        if 0x80 <= op <= 0x8f:  # fixmap
+            n = op & 0x0f
+            if n:
+                stack.append(n * 2)
+                remain = n * 2
+            pos += 1
+            continue
+        if 0x90 <= op <= 0x9f:  # fixarray
+            n = op & 0x0f
+            if n:
+                stack.append(n)
+                remain = n
+            pos += 1
+            continue
 
-    # ── fixarray 0x90 .. 0x9f ──
-    if 0x90 <= op <= 0x9f:
-        n = op & 0x0f
-        pos = start + 1
-        for _ in range(n):
-            pos = _walk_fix(ba, pos, utf8_error)
-        return pos
+        # ── positive fixint 0x00 .. 0x7f ──
+        if op <= 0x7f:
+            pos += 1
+        # ── fixstr 0xa0 .. 0xbf ──
+        elif 0xa0 <= op <= 0xbf:
+            pos = _try_fix_string(ba, 1, op & 0x1f, pos, utf8_error)
+        # ── nil 0xc0 ──
+        elif op == 0xc0:
+            pos += 1
+        # ── (never used) 0xc1 ──
+        elif op == 0xc1:
+            pos += 1
+        # ── false 0xc2 / true 0xc3 ──
+        elif op in (0xc2, 0xc3):
+            pos += 1
+        # ── bin8 0xc4 ──
+        elif op == 0xc4:
+            pos += 2 + ba[pos + 1]
+        # ── bin16 0xc5 ──
+        elif op == 0xc5:
+            blen = _U16BE.unpack_from(ba, pos + 1)[0]
+            pos += 3 + blen
+        # ── bin32 0xc6 ──
+        elif op == 0xc6:
+            blen = _U32BE.unpack_from(ba, pos + 1)[0]
+            pos += 5 + blen
+        # ── ext8 0xc7 ──
+        elif op == 0xc7:
+            elen = ba[pos + 1]
+            pos += 3 + elen
+        # ── ext16 0xc8 ──
+        elif op == 0xc8:
+            elen = _U16BE.unpack_from(ba, pos + 1)[0]
+            pos += 4 + elen
+        # ── ext32 0xc9 ──
+        elif op == 0xc9:
+            elen = _U32BE.unpack_from(ba, pos + 1)[0]
+            pos += 6 + elen
+        # ── float32 0xca ──
+        elif op == 0xca:
+            pos += 5
+        # ── float64 0xcb ──
+        elif op == 0xcb:
+            pos += 9
+        # ── uint8 0xcc ──
+        elif op == 0xcc:
+            pos += 2
+        # ── uint16 0xcd ──
+        elif op == 0xcd:
+            pos += 3
+        # ── uint32 0xce ──
+        elif op == 0xce:
+            pos += 5
+        # ── uint64 0xcf ──
+        elif op == 0xcf:
+            pos += 9
+        # ── int8 0xd0 ──
+        elif op == 0xd0:
+            pos += 2
+        # ── int16 0xd1 ──
+        elif op == 0xd1:
+            pos += 3
+        # ── int32 0xd2 ──
+        elif op == 0xd2:
+            pos += 5
+        # ── int64 0xd3 ──
+        elif op == 0xd3:
+            pos += 9
+        # ── fixext1 0xd4 ──
+        elif op == 0xd4:
+            pos += 3
+        # ── fixext2 0xd5 ──
+        elif op == 0xd5:
+            pos += 4
+        # ── fixext4 0xd6 ──
+        elif op == 0xd6:
+            pos += 6
+        # ── fixext8 0xd7 ──
+        elif op == 0xd7:
+            pos += 10
+        # ── fixext16 0xd8 ──
+        elif op == 0xd8:
+            pos += 18
+        # ── str8 0xd9 ──
+        elif op == 0xd9:
+            pos = _try_fix_string(ba, 2, ba[pos + 1], pos, utf8_error)
+        # ── str16 0xda ──
+        elif op == 0xda:
+            slen = _U16BE.unpack_from(ba, pos + 1)[0]
+            pos = _try_fix_string(ba, 3, slen, pos, utf8_error)
+        # ── str32 0xdb ──
+        elif op == 0xdb:
+            slen = _U32BE.unpack_from(ba, pos + 1)[0]
+            pos = _try_fix_string(ba, 5, slen, pos, utf8_error)
 
-    # ── fixstr 0xa0 .. 0xbf ──
-    if 0xa0 <= op <= 0xbf:
-        return _try_fix_string(ba, 1, op & 0x1f, start, utf8_error)
+        # ── array16 / array32 / map16 / map32 ──
+        elif op == 0xdc:
+            n = _U16BE.unpack_from(ba, pos + 1)[0]
+            if n:
+                stack.append(n)
+                remain = n
+            pos += 3
+            continue
+        elif op == 0xdd:
+            n = _U32BE.unpack_from(ba, pos + 1)[0]
+            if n:
+                stack.append(n)
+                remain = n
+            pos += 5
+            continue
+        elif op == 0xde:
+            n = _U16BE.unpack_from(ba, pos + 1)[0]
+            if n:
+                stack.append(n * 2)
+                remain = n * 2
+            pos += 3
+            continue
+        elif op == 0xdf:
+            n = _U32BE.unpack_from(ba, pos + 1)[0]
+            if n:
+                stack.append(n * 2)
+                remain = n * 2
+            pos += 5
+            continue
 
-    # ── nil 0xc0 ──
-    if op == 0xc0:
-        return start + 1
+        # ── negative fixint 0xe0 .. 0xff ──
+        elif op >= 0xe0:
+            pos += 1
 
-    # ── (never used) 0xc1 ──
-    if op == 0xc1:
-        return start + 1
+        else:
+            # Unknown opcode – skip one byte so the walker doesn't hang
+            pos += 1
 
-    # ── false 0xc2 / true 0xc3 ──
-    if op in (0xc2, 0xc3):
-        return start + 1
+        # ── container bookkeeping ──
+        # Decrement the cached remain counter.  When it reaches 0,
+        # pop the frame and cascade to parent containers.
+        if remain:
+            remain -= 1
+            if remain > 0:
+                continue
 
-    # ── bin8 0xc4 ──
-    if op == 0xc4:
-        return start + 2 + ba[start + 1]
+        # Current container (or a parent) has been fully consumed.
+        while stack:
+            stack.pop()
+            if not stack:
+                return pos
+            # Decrement the parent container
+            remain = stack[-1] - 1
+            if remain > 0:
+                stack[-1] = remain
+                break
+            # Parent also empty, loop to pop it
 
-    # ── bin16 0xc5 ──
-    if op == 0xc5:
-        blen = _U16BE.unpack_from(ba, start + 1)[0]
-        return start + 3 + blen
-
-    # ── bin32 0xc6 ──
-    if op == 0xc6:
-        blen = _U32BE.unpack_from(ba, start + 1)[0]
-        return start + 5 + blen
-
-    # ── ext8 0xc7 ──
-    if op == 0xc7:
-        elen = ba[start + 1]
-        return start + 3 + elen        # op(1) + len(1) + type(1) + data(elen)
-
-    # ── ext16 0xc8 ──
-    if op == 0xc8:
-        elen = _U16BE.unpack_from(ba, start + 1)[0]
-        return start + 4 + elen        # op(1) + len(2) + type(1) + data(elen)
-
-    # ── ext32 0xc9 ──
-    if op == 0xc9:
-        elen = _U32BE.unpack_from(ba, start + 1)[0]
-        return start + 6 + elen        # op(1) + len(4) + type(1) + data(elen)
-
-    # ── float32 0xca ──
-    if op == 0xca:
-        return start + 5
-
-    # ── float64 0xcb ──
-    if op == 0xcb:
-        return start + 9
-
-    # ── uint8 0xcc ──
-    if op == 0xcc:
-        return start + 2
-
-    # ── uint16 0xcd ──
-    if op == 0xcd:
-        return start + 3
-
-    # ── uint32 0xce ──
-    if op == 0xce:
-        return start + 5
-
-    # ── uint64 0xcf ──
-    if op == 0xcf:
-        return start + 9
-
-    # ── int8 0xd0 ──
-    if op == 0xd0:
-        return start + 2
-
-    # ── int16 0xd1 ──
-    if op == 0xd1:
-        return start + 3
-
-    # ── int32 0xd2 ──
-    if op == 0xd2:
-        return start + 5
-
-    # ── int64 0xd3 ──
-    if op == 0xd3:
-        return start + 9
-
-    # ── fixext1 0xd4 ──
-    if op == 0xd4:
-        return start + 3     # op(1) + type(1) + data(1)
-
-    # ── fixext2 0xd5 ──
-    if op == 0xd5:
-        return start + 4     # op(1) + type(1) + data(2)
-
-    # ── fixext4 0xd6 ──
-    if op == 0xd6:
-        return start + 6     # op(1) + type(1) + data(4)
-
-    # ── fixext8 0xd7 ──
-    if op == 0xd7:
-        return start + 10    # op(1) + type(1) + data(8)
-
-    # ── fixext16 0xd8 ──
-    if op == 0xd8:
-        return start + 18    # op(1) + type(1) + data(16)
-
-    # ── str8 0xd9 ──
-    if op == 0xd9:
-        return _try_fix_string(ba, 2, ba[start + 1], start, utf8_error)
-
-    # ── str16 0xda ──
-    if op == 0xda:
-        slen = _U16BE.unpack_from(ba, start + 1)[0]
-        return _try_fix_string(ba, 3, slen, start, utf8_error)
-
-    # ── str32 0xdb ──
-    if op == 0xdb:
-        slen = _U32BE.unpack_from(ba, start + 1)[0]
-        return _try_fix_string(ba, 5, slen, start, utf8_error)
-
-    # ── array16 0xdc ──
-    if op == 0xdc:
-        n = _U16BE.unpack_from(ba, start + 1)[0]
-        pos = start + 3
-        for _ in range(n):
-            pos = _walk_fix(ba, pos, utf8_error)
-        return pos
-
-    # ── array32 0xdd ──
-    if op == 0xdd:
-        n = _U32BE.unpack_from(ba, start + 1)[0]
-        pos = start + 5
-        for _ in range(n):
-            pos = _walk_fix(ba, pos, utf8_error)
-        return pos
-
-    # ── map16 0xde ──
-    if op == 0xde:
-        n = _U16BE.unpack_from(ba, start + 1)[0]
-        pos = start + 3
-        for _ in range(n):
-            pos = _walk_fix(ba, pos, utf8_error)   # key
-            pos = _walk_fix(ba, pos, utf8_error)   # value
-        return pos
-
-    # ── map32 0xdf ──
-    if op == 0xdf:
-        n = _U32BE.unpack_from(ba, start + 1)[0]
-        pos = start + 5
-        for _ in range(n):
-            pos = _walk_fix(ba, pos, utf8_error)   # key
-            pos = _walk_fix(ba, pos, utf8_error)   # value
-        return pos
-
-    # ── negative fixint 0xe0 .. 0xff ──
-    if op >= 0xe0:
-        return start + 1
-
-    # Unknown opcode – skip one byte so the walker doesn't hang
-    return start + 1
+        if not stack:
+            return pos
 
 
 # ── fast method ─────────────────────────────────────────────────────────
@@ -360,16 +367,16 @@ def fixup_msgpack_unicode_fast(
 
     Args:
         data (bytes): The original msgpack buffer.
-        error: The ``UnicodeDecodeError`` raised during decoding.
-        utf8_error: Error handling scheme.  ``'replace'`` substitutes
+        error (UnicodeDecodeError): The error raised during decoding.
+        utf8_error (str): Error handling scheme.  ``'replace'`` substitutes
             U+FFFD, ``'ignore'`` drops invalid bytes, ``'strict'``
             re-raises (not useful here).
 
     Returns:
-        bytes | None: The fixed ``bytes`` on success, ``None`` when the failing string
-            cannot be unambiguously located.
+        bytes | None: The fixed ``bytes`` on success, ``None`` when the
+            failing string cannot be unambiguously located.
     """
-    payload: bytes = error.object
+    payload = error.object
     str_len = len(payload)
 
     # Collect all (position, header) candidates by searching for the payload
@@ -421,9 +428,9 @@ def fixup_msgpack_unicode_slow(
 
     Args:
         data (bytes): The msgpack buffer to repair.
-        utf8_error: Error handling scheme passed to ``bytes.decode()`` /
-            ``.encode()`` when a string is not valid UTF-8.
-            ``'replace'`` (default) substitutes U+FFFD,
+        utf8_error (str): Error handling scheme passed to
+            ``bytes.decode()`` / ``.encode()`` when a string is not valid
+            UTF-8.  ``'replace'`` (default) substitutes U+FFFD,
             ``'ignore'`` drops invalid bytes.
             ``'strict'`` would re-raise and is not useful here.
 
