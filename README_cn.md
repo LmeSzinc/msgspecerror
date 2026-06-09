@@ -1,5 +1,7 @@
 # msgspecerror
 
+**| [English](README.md) | 简体中文 |**
+
 [msgspec](https://github.com/msgspec/msgspec) 是一个高性能的序列化与验证库，但其校验失败时返回的 `ValidationError` 只有纯文本消息：
 
 ```

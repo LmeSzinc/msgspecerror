@@ -1,5 +1,7 @@
 # msgspecerror
 
+**| English | [简体中文](README_cn.md) |**
+
 [msgspec](https://github.com/msgspec/msgspec) is a high-performance serialization and validation library, but its `ValidationError` on failure only provides a plain-text message:
 
 ```
