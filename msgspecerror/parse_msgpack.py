@@ -50,7 +50,7 @@ def _make_str_header(n):
         bytes: Header bytes (fixstr, str8, str16, or str32 as appropriate).
     """
     if n <= 31:
-        return bytes([0xa0 | n])
+        return bytes([0xa0 + n])
     if n < 256:
         return bytes([0xd9, n])
     if n < 65536:
@@ -76,7 +76,7 @@ def _check_str_header_at(data, payload_start, str_len):
     # fixstr (0xa0-0xbf)
     if payload_start >= 1:
         h = data[payload_start - 1]
-        if 0xa0 <= h <= 0xbf and (h & 0x1f) == str_len:
+        if 0xa0 <= h <= 0xbf and (h - 0xa0) == str_len:
             return bytes([h])
 
     # str8  (0xd9 + 1-byte length)
@@ -167,25 +167,27 @@ def _walk_fix(ba, start, utf8_error):
     # 0 means no container context (stack is empty or all finished).
     remain = 0
 
+    total = len(ba)
     while True:
-        if pos >= len(ba):
+        if pos >= total:
             return pos
 
         op = ba[pos]
 
         # ── container headers (with children) — push + continue onsite ──
         if 0x80 <= op <= 0x8f:  # fixmap
-            n = op & 0x0f
-            if n:
-                stack.append(n * 2)
-                remain = n * 2
+            op -= 0x80
+            if op:
+                op *= 2
+                stack.append(op)
+                remain = op
             pos += 1
             continue
         if 0x90 <= op <= 0x9f:  # fixarray
-            n = op & 0x0f
-            if n:
-                stack.append(n)
-                remain = n
+            op -= 0x90
+            if op:
+                stack.append(op)
+                remain = op
             pos += 1
             continue
 
@@ -194,7 +196,7 @@ def _walk_fix(ba, start, utf8_error):
             pos += 1
         # ── fixstr 0xa0 .. 0xbf ──
         elif 0xa0 <= op <= 0xbf:
-            pos = _try_fix_string(ba, 1, op & 0x1f, pos, utf8_error)
+            pos = _try_fix_string(ba, 1, op - 0xa0, pos, utf8_error)
         # ── nil 0xc0 ──
         elif op == 0xc0:
             pos += 1
@@ -302,15 +304,17 @@ def _walk_fix(ba, start, utf8_error):
         elif op == 0xde:
             n = _U16BE.unpack_from(ba, pos + 1)[0]
             if n:
-                stack.append(n * 2)
-                remain = n * 2
+                n *= 2
+                stack.append(n)
+                remain = n
             pos += 3
             continue
         elif op == 0xdf:
             n = _U32BE.unpack_from(ba, pos + 1)[0]
             if n:
-                stack.append(n * 2)
-                remain = n * 2
+                n *= 2
+                stack.append(n)
+                remain = n
             pos += 5
             continue
 
