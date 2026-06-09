@@ -1,10 +1,14 @@
 from enum import Enum
+from typing import Literal
 
 from msgspec import ValidationError, DecodeError, EncodeError
 
 DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError)
 ENCODE_ERRORS = (EncodeError, UnicodeEncodeError)
 MAXIMUM_REPAIR = 100
+
+# Shared utf8_error type for public repair API
+T_utf8_error = Literal['strict', 'replace', 'ignore']
 
 
 # StrEnum is introduced in py3.11

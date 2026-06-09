@@ -5,9 +5,6 @@ Verifies that the fast method correctly disambiguates real bad strings from
 coincidental byte sequences in binary payloads, and that the slow walker
 provides a correct fallback without corrupting opaque data.
 """
-
-from __future__ import annotations
-
 import os
 import struct
 

@@ -7,18 +7,17 @@ Provides two strategies:
 - ``fixup_msgpack_unicode_slow`` -- walk the entire msgpack structure and
   fix every string with invalid UTF-8 (O(N) one-pass).
 """
-
-from __future__ import annotations
-
 import struct
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
+
+from .const import T_utf8_error
 
 # ── pre-compiled structs ─────────────────────────────────────────────────
 
 _U16BE = struct.Struct('>H')
 _U32BE = struct.Struct('>I')
 
-_utf8_error_values = Literal['strict', 'replace', 'ignore', 'surrogateescape']
+_utf8_error_values = Union[T_utf8_error, Literal['surrogateescape']]
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -87,7 +86,7 @@ def _check_str_header_at(data: bytes, payload_start: int, str_len: int
 
 # ── slow-walker helpers ─────────────────────────────────────────────────
 
-def _str_header_len_peek(ba: bytearray, start: int) -> tuple[int, int]:
+def _str_header_len_peek(ba: bytearray, start: int) -> "tuple[int, int]":
     """
     Read a msgpack str header at *start* and return ``(header_len, str_len)``.
     """

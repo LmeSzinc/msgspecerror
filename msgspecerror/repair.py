@@ -1,11 +1,11 @@
-from typing import Any, Dict, Literal, Type, TypeVar, overload, Union, Tuple, List
+from typing import Any, Dict, Type, TypeVar, overload, Union, Tuple, List
 
 from msgspec import DecodeError, NODEFAULT, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
 from . import const
-from .const import ErrorType
+from .const import ErrorType, T_utf8_error
 from .parse_error import MsgspecError, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 from .parse_struct import get_field_default, get_field_typehint
@@ -307,7 +307,7 @@ def load_json_with_default(
         data: Union[bytes, str],
         model_or_decoder: Type[T],
         *,
-        utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
+        utf8_error: T_utf8_error = ...,
 ) -> Tuple[T, List[MsgspecError]]: ...
 
 
@@ -316,7 +316,7 @@ def load_json_with_default(
         data: Union[bytes, str],
         model_or_decoder: "JsonDecoder[T]",
         *,
-        utf8_error: Literal['strict', 'replace', 'ignore'] = ...,
+        utf8_error: T_utf8_error = ...,
 ) -> Tuple[T, List[MsgspecError]]: ...
 
 
@@ -324,7 +324,7 @@ def load_json_with_default(
         data: Union[bytes, str],
         model_or_decoder: Any,
         *,
-        utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
+        utf8_error: T_utf8_error = 'replace',
 ) -> Tuple[Any, List[MsgspecError]]:
     """
     Decodes bytes, substituting defaults for fields that fail validation or have invalid unicode.
@@ -419,6 +419,8 @@ def load_json_with_default(
 def load_msgpack_with_default(
         data: bytes,
         model_or_decoder: Type[T],
+        *,
+        utf8_error: T_utf8_error = 'replace',
 ) -> Tuple[Any, List[MsgspecError]]: ...
 
 
@@ -426,24 +428,27 @@ def load_msgpack_with_default(
 def load_msgpack_with_default(
         data: bytes,
         model_or_decoder: "MsgpackDecoder[T]",
+        *,
+        utf8_error: T_utf8_error = 'replace',
 ) -> Tuple[Any, List[MsgspecError]]: ...
 
 
 def load_msgpack_with_default(
         data: bytes,
         model_or_decoder: Any,
+        *,
+        utf8_error: T_utf8_error = 'replace',
 ) -> Tuple[Any, List[MsgspecError]]:
     """
-    Decodes bytes, substituting defaults for fields that fail validation.
+    Decodes bytes, substituting defaults for fields that fail validation or have invalid unicode.
 
-    Unlike the JSON variant, msgpack does not have a ``utf8_error`` parameter
-    at the Python API level.  Instead, ``UnicodeDecodeError`` is handled
-    transparently by:
+    When a ``UnicodeDecodeError`` is encountered, a two-level repair strategy
+    is used:
 
-    1. **Fast fix**: locate the exact string that failed (via
-       ``fixup_msgpack_unicode_fast``) and fix it with UTF-8 ``'replace'``
-       semantics.
-    2. **Slow fallback**: if the fast method is ambiguous or the data still
+    1. **Fast fix** — locate the exact string that failed (via
+       ``fixup_msgpack_unicode_fast``) and fix it with the requested
+       *utf8_error* handler.
+    2. **Slow fallback** — if the fast method is ambiguous or the data still
        contains bad strings, the entire msgpack structure is walked once
        (O(N)) and every invalid string is repaired in a single pass.
 
@@ -454,9 +459,20 @@ def load_msgpack_with_default(
         data (bytes): The input bytes to decode.
         model_or_decoder: The target type to decode into, or a ``msgspec.msgpack.Decoder`` instance.
             When a decoder is passed, the model is extracted from ``decoder.type``.
+        utf8_error: The error handling scheme for invalid UTF-8 in string payloads.
+            - ``"strict"`` — any ``UnicodeDecodeError`` is treated as a root-level
+              error and produces a root-level default.
+            - ``"replace"`` (default) — replace error bytes with U+FFFD.
+              Most data is preserved, but strings may contain the replacement
+              character.
+            - ``"ignore"`` — remove error bytes entirely.
 
     Returns:
         tuple[any, list[MsgspecError]]: (result, errors) validated result and a list of collected errors
+            If validate failed and model (or any deeply nested field) can't be default constructed,
+            (e.g. model has a required field) result would be NODEFAULT
+            Note that it's function caller's duty to check if result is NODEFAULT,
+                and decide whether to generate a default or raise error.
 
     See load_json_with_default for more info.
     """
@@ -482,10 +498,14 @@ def load_msgpack_with_default(
             try:
                 raw_obj = decode_msgpack(data)
             except UnicodeDecodeError as error:
-                # Fix unicode and retry on the next loop iteration
-                data = _repair_msgpack_unicode(data, error, attempt)
-                unicode_errors.append(parse_msgspec_error(error))
-                continue
+                if utf8_error in ('replace', 'ignore'):
+                    data = _repair_msgpack_unicode(data, error, attempt, utf8_error=utf8_error)
+                    unicode_errors.append(parse_msgspec_error(error))
+                    continue
+                # strict or unknown → root error
+                result, errors = _handle_root_error(model, error)
+                errors.extend(unicode_errors)
+                return result, errors
             except DecodeError as error:
                 result, errors = _handle_root_error(model, error)
                 errors.extend(unicode_errors)
@@ -497,9 +517,14 @@ def load_msgpack_with_default(
             errors.extend(unicode_errors)
             return result, errors
         except UnicodeDecodeError as error:
-            data = _repair_msgpack_unicode(data, error, attempt)
-            unicode_errors.append(parse_msgspec_error(error))
-            continue
+            if utf8_error in ('replace', 'ignore'):
+                data = _repair_msgpack_unicode(data, error, attempt, utf8_error=utf8_error)
+                unicode_errors.append(parse_msgspec_error(error))
+                continue
+            # strict or unknown → root error
+            result, errors = _handle_root_error(model, error)
+            errors.extend(unicode_errors)
+            return result, errors
 
     # Exhausted retries – shouldn't happen after the slow walker
     result = get_default(model, return_obj=True)
