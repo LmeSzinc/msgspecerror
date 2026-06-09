@@ -31,12 +31,12 @@ def _str_header_len(n):
         int: Header length: 1 (fixstr), 2 (str8), 3 (str16), or 5 (str32).
     """
     if n <= 31:
-        return 1          # fixstr
+        return 1  # fixstr
     if n < 256:
-        return 2          # str8
+        return 2  # str8
     if n < 65536:
-        return 3          # str16
-    return 5               # str32
+        return 3  # str16
+    return 5  # str32
 
 
 def _make_str_header(n):
@@ -408,16 +408,18 @@ def fixup_msgpack_unicode_fast(
 
     # Decode with the requested error handler and re-encode
     fixed_payload = payload.decode('utf-8', utf8_error).encode('utf-8', utf8_error)
-    new_strlen = len(fixed_payload)
-    new_header_len = _str_header_len(new_strlen)
-    new_header = _make_str_header(new_strlen)
+    new_header = _make_str_header(len(fixed_payload))
 
     old_total = header_len + str_len
-    new_total = new_header_len + new_strlen
 
-    ba = bytearray(data)
-    ba[payload_start - header_len:payload_start - header_len + old_total] = new_header + fixed_payload
-    return bytes(ba)
+    # ba = bytearray(data)
+    # ba[payload_start - header_len:payload_start - header_len + old_total] = new_header + fixed_payload
+    # return bytes(ba)
+
+    # joining bytes is faster than converting to bytearray then convert back to bytes
+    start = payload_start - header_len
+    end = start + old_total
+    return b''.join((data[:start], new_header, fixed_payload, data[end:]))
 
 
 # ── slow method ─────────────────────────────────────────────────────────
