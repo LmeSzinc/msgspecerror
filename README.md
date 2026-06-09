@@ -56,7 +56,7 @@ print(errors)
 #               ctx=ErrorCtx())]
 ```
 
-## Installation
+## 1. Installation
 
 ```bash
 pip install msgspecerror
@@ -66,7 +66,7 @@ msgspecerror versions are tightly coupled to msgspec versions. If your project u
 
 `msgspecerror==0.21.1.0` supports parsing errors from `msgspec>=0.18.6,<=0.21.1`.
 
-## How It Works
+## 2. How It Works
 
 msgspecerror scans msgspec's C source code for error message formats and maintains a high-performance string parsing module.
 
@@ -82,9 +82,9 @@ The auto-repair process is also high-performance and precise:
 3. Walks the error path, replacing the failing field with its default value (if one exists)
 4. Re-validates, repeating until validation passes or repair is no longer possible
 
-## Using msgspecerror
+## 3. Using msgspecerror
 
-### Parsing exceptions into structured objects
+### 3.1 Parsing exceptions into structured objects
 
 Use `parse_msgspec_error` to parse any exception.
 
@@ -146,7 +146,7 @@ class ErrorCtx(Struct, omit_defaults=True):
     tz: Optional[bool] = None
 ```
 
-### Auto-repair JSON parsing with defaults
+### 3.2 Auto-repair JSON parsing with defaults
 
 Pass a model or `msgspec.json.Decoder` object; returns the validated object and a list of errors collected during repair. On failure, returns `msgspec.NODEFAULT` and the collected errors.
 
@@ -175,23 +175,25 @@ The repair logic of `load_json_with_default`:
 
 It is recommended to set default values on every field in your model to ensure repair succeeds.
 
-### Auto-repair msgpack parsing with defaults
+### 3.3 Auto-repair msgpack parsing with defaults
 
 ```python
 def load_msgpack_with_default(
         data: bytes,
         model_or_decoder: Any,
+        *,
+        utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
 ) -> Tuple[Any, List[MsgspecError]]: ...
 result, errors = load_msgpack_with_default(data, MyStruct)
 ```
 
 Same usage as `load_json_with_default`, but without the `utf8_error` parameter. Since msgpack is binary data, it cannot be converted to str for unicode repair. `UnicodeDecodeError` is treated as a root-path error, equivalent to `utf8_error=='strict'`.
 
-## ErrorType Reference
+## 4. ErrorType Reference
 
 All `ErrorType` enum members and their corresponding error message formats. `<Path>` represents a JSONPath-like string (e.g., `$.field`).
 
-### Group 1: Type Mismatch Errors
+### 4.1 Group 1: Type Mismatch Errors
 
 **`TYPE_MISMATCH`** — Value type does not match expected type
 - Format: `` Expected `<A>`, got `<B>` - at <Path> ``
@@ -217,7 +219,7 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
   2. **Map Key Mismatch** (convert): A dict key in `msgspec.convert()` is not a string — the target type (Struct/TypedDict/dataclass) only has string field names
   3. **Token Type Mismatch** (JSON): The decoder expects an `int` or `str` at the current JSON decode position, but the next JSON token has a different type
 
-### Group 2: Structural Errors
+### 4.2 Group 2: Structural Errors
 
 **`MISSING_FIELD`** — Missing required field
 - Format: `` Object missing required field `<field_name>` - at `<Path>` ``
@@ -229,7 +231,7 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
 - Example: `` Object contains unknown field 'favorite_color' - at `$` ``
 - Triggered by: Decoding a Struct with `forbid_unknown_fields=True` and encountering a field not defined on the struct
 
-### Group 3: Constraint and Length Errors
+### 4.3 Group 3: Constraint and Length Errors
 
 **`ARRAY_LENGTH_CONSTRAINT`** — Array length mismatch
 - Formats:
@@ -268,7 +270,7 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
   - `` Expected `time` with (a|no) timezone component - at <Path> ``
 - Triggered by: A datetime/time object does not satisfy `tz=True` or `tz=False` constraint from a `Meta` object
 
-### Group 4: Invalid Value Errors
+### 4.4 Group 4: Invalid Value Errors
 
 **`INVALID_ENUM_VALUE`** — Invalid enum value
 - Format: `` Invalid enum value <value> - at <Path> ``
@@ -324,7 +326,7 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
 - Format: `` Invalid epoch timestamp - at <Path> ``
 - Triggered by: A non-finite float (inf, -inf, nan) is being decoded as a datetime object
 
-### Group 5: Out of Range Errors
+### 4.5 Group 5: Out of Range Errors
 
 **`TIMESTAMP_OUT_OF_RANGE`** — Timestamp out of range
 - Format: `` Timestamp is out of range - at <Path> ``
@@ -342,7 +344,7 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
 - Format: `` Number out of range - at <Path> ``
 - Triggered by: A string representing a number exceeds the range of a `double` precision float
 
-### Group 6: Wrapped Errors & Others
+### 4.6 Group 6: Wrapped Errors & Others
 
 **`WRAPPED_ERROR`** — Wrapped user code error
 - Format: `` <original error message> - at <Path> ``
@@ -383,9 +385,9 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
 - Triggered by: The msgspecerror auto-repair loop cannot fix the input
 - Note: This type is internal to msgspecerror; msgspec itself never produces this error
 
-## Limitations
+## 5. Limitations
 
-### Type hints may not be accurate
+### 5.1 Type hints may not be accurate
 
 Both `load_json_with_default` and `load_msgpack_with_default` accept `model_or_decoder`. Some IDEs or type checkers may not correctly infer the return type.
 
@@ -399,7 +401,7 @@ result, errors = load_json_with_default(..., decoder)
 # result: ItemInfo
 ```
 
-### Cannot resolve specific dict keys
+### 5.2 Cannot resolve specific dict keys
 
 When a dict value fails validation, msgspec can only report the path as `[...]`, not the specific key. msgspecerror parses this as `...`.
 
@@ -422,9 +424,14 @@ except DECODE_ERRORS as e:
     #              ctx=ErrorCtx(expected='int', got='str'))
 ```
 
-### Auto-repair may have poor performance with dicts
+### 5.3 Auto-repair may have poor performance with dicts
 
-Since msgspec cannot report which specific dict key failed, auto-repair iterates over every key-value pair to find the error. For very large dicts this may be slow. To avoid this, use `msgspec.Struct` for nested data structures — msgspecerror can then locate errors precisely from the path.
+Since msgspec cannot report which specific dict key failed, auto-repair iterates over every key-value pair to find the error. For very large dicts this may be slow.
+
+To avoid this issue:
+
+1. Use `msgspec.Struct` for all data structures — msgspecerror can then locate errors precisely from the error path.
+2. Avoid string type annotations like `user: "str | None"`. Use `user: Optional[str]` instead, to avoid the overhead of `typing._eval_type` resolving string annotations from forward references.
 
 ```python
 class ItemInfo(msgspec.Struct):
@@ -442,11 +449,16 @@ print(errors)
 #               ctx=ErrorCtx(expected='int', got='str'))]
 ```
 
-### Cannot handle UnicodeDecodeError when decoding msgpack
+### 5.4 Auto-repair may have poor performance with large msgpack containing multiple UnicodeDecodeErrors
 
-Since msgpack is binary data, it cannot be converted to str to repair invalid unicode.
+Since msgpack is binary data, it cannot be directly converted to str to repair invalid unicode.
 
-### Path ambiguity
+1. On `UnicodeDecodeError`, msgspecerror first enters fast repair mode: it locates the offending unicode bytes, and if the byte region belongs to a msgpack string and occurs only once, performs a precise repair.
+2. If the fast repair still leaves `UnicodeDecodeError`, or random binary content collides with the invalid unicode bytes, it enters slow repair mode that manually parses the msgpack structure to find and repair each string.
+
+The slow repair guarantees linear-time inspection of all string objects — no malicious input with excessive bad characters can cause repair overhead to explode. However, the slow repair is implemented in pure Python; if your input structure is very complex, repair performance may suffer.
+
+### 5.5 Path ambiguity
 
 msgspec allows setting field aliases via `field(name=...)`. Some names may cause ambiguity in msgspecerror's path parsing.
 
