@@ -8,7 +8,6 @@ Provides two strategies:
   fix every string with invalid UTF-8 (O(N) one-pass).
 """
 import struct
-from typing import Literal, Optional, Union
 
 from .const import T_utf8_error
 
@@ -17,13 +16,19 @@ from .const import T_utf8_error
 _U16BE = struct.Struct('>H')
 _U32BE = struct.Struct('>I')
 
-_utf8_error_values = Union[T_utf8_error, Literal['surrogateescape']]
-
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
-def _str_header_len(n: int) -> int:
-    """Byte length of the msgpack str header for a payload of *n* bytes."""
+def _str_header_len(n):
+    """
+    Byte length of the msgpack str header for a payload of *n* bytes.
+
+    Args:
+        n (int): Payload length in bytes.
+
+    Returns:
+        int: Header length: 1 (fixstr), 2 (str8), 3 (str16), or 5 (str32).
+    """
     if n <= 31:
         return 1          # fixstr
     if n < 256:
@@ -33,8 +38,16 @@ def _str_header_len(n: int) -> int:
     return 5               # str32
 
 
-def _make_str_header(n: int) -> bytes:
-    """Build the msgpack str header bytes for a payload of *n* bytes."""
+def _make_str_header(n):
+    """
+    Build the msgpack str header bytes for a payload of *n* bytes.
+
+    Args:
+        n (int): Payload length in bytes.
+
+    Returns:
+        bytes: Header bytes (fixstr, str8, str16, or str32 as appropriate).
+    """
     if n <= 31:
         return bytes([0xa0 | n])
     if n < 256:
@@ -46,13 +59,18 @@ def _make_str_header(n: int) -> bytes:
 
 # ── header detection (fast method) ───────────────────────────────────────
 
-def _check_str_header_at(data: bytes, payload_start: int, str_len: int
-                         ) -> Optional[bytes]:
+def _check_str_header_at(data, payload_start, str_len):
     """
     Check whether the bytes immediately before *payload_start* form a valid
     msgpack string header for a string of length *str_len*.
 
-    Returns the header bytes when valid, ``None`` otherwise.
+    Args:
+        data (bytes): The raw msgpack buffer.
+        payload_start (int): Byte offset where the string payload begins.
+        str_len (int): Expected payload length.
+
+    Returns:
+        bytes | None: The header bytes when valid, ``None`` otherwise.
     """
     # fixstr (0xa0-0xbf)
     if payload_start >= 1:
@@ -86,30 +104,24 @@ def _check_str_header_at(data: bytes, payload_start: int, str_len: int
 
 # ── slow-walker helpers ─────────────────────────────────────────────────
 
-def _str_header_len_peek(ba: bytearray, start: int) -> "tuple[int, int]":
-    """
-    Read a msgpack str header at *start* and return ``(header_len, str_len)``.
-    """
-    op = ba[start]
-    if 0xa0 <= op <= 0xbf:                     # fixstr
-        return 1, op & 0x1f
-    if op == 0xd9:                              # str8
-        return 2, ba[start + 1]
-    if op == 0xda:                              # str16
-        return 3, _U16BE.unpack_from(ba, start + 1)[0]
-    if op == 0xdb:                              # str32
-        return 5, _U32BE.unpack_from(ba, start + 1)[0]
-    raise ValueError(f"Not a str header at offset {start}")
 
-
-def _try_fix_string(ba: bytearray, header_len: int, str_len: int,
-                    item_start: int, utf8_error: str) -> int:
+def _try_fix_string(ba, header_len, str_len, item_start, utf8_error):
     """
-    Try to decode the string at *item_start*.  If it contains invalid UTF-8
-    the payload is replaced with the ``utf8_error``-decoded version and the
-    header is updated if necessary.
+    Try to decode the string at *item_start*.
 
-    Returns the byte position immediately after this item.
+    If it contains invalid UTF-8 the payload is replaced with the
+    ``utf8_error``-decoded version and the header is updated if necessary.
+
+    Args:
+        ba (bytearray): Mutable msgpack buffer.
+        header_len (int): Byte length of the str header.
+        str_len (int): Byte length of the payload.
+        item_start (int): Offset of the entire item (header + payload).
+        utf8_error (str): Error handler passed to ``bytes.decode()`` /
+            ``.encode()`` (e.g. ``'replace'``, ``'ignore'``).
+
+    Returns:
+        int: The byte position immediately after this item.
     """
     payload_start = item_start + header_len
     payload = bytes(ba[payload_start:payload_start + str_len])
@@ -127,11 +139,18 @@ def _try_fix_string(ba: bytearray, header_len: int, str_len: int,
     return item_start + header_len + str_len
 
 
-def _walk_fix(ba: bytearray, start: int, utf8_error: str) -> int:
+def _walk_fix(ba, start, utf8_error):
     """
-    Walk one msgpack item starting at *start*, fixing any string with invalid
-    UTF-8 encountered along the way.  Returns the byte position immediately
-    after this item.
+    Walk one msgpack item starting at *start*, fixing any string with
+    invalid UTF-8 encountered along the way.
+
+    Args:
+        ba (bytearray): Mutable msgpack buffer.
+        start (int): Offset of the item to process.
+        utf8_error (str): Error handler for bytes decode/encode.
+
+    Returns:
+        int: The byte position immediately after this item.
     """
     if start >= len(ba):
         return start
@@ -323,34 +342,32 @@ def _walk_fix(ba: bytearray, start: int, utf8_error: str) -> int:
 # ── fast method ─────────────────────────────────────────────────────────
 
 def fixup_msgpack_unicode_fast(
-        data: bytes,
+        data,
         error: UnicodeDecodeError,
-        utf8_error: _utf8_error_values = 'replace',
-) -> Optional[bytes]:
+        utf8_error: T_utf8_error = 'replace',
+):
     """
-    Locate the exact msgpack string that caused *error* and fix it with
-    the given *utf8_error* handler.
+    Locate the exact msgpack string that caused *error* and fix it.
 
-    The function searches the raw msgpack buffer for the failing string's
-    payload (``error.object``) and validates that the preceding bytes form a
-    valid msgpack string header.  If exactly **one** candidate is found the
+    Searches the raw msgpack buffer for the failing string's payload
+    (``error.object``) and validates that the preceding bytes form a valid
+    msgpack string header.  If exactly **one** candidate is found the
     payload is repaired in place and the fixed buffer is returned.
 
-    Parameters
-    ----------
-    data:
-        The original msgpack buffer.
-    error:
-        The ``UnicodeDecodeError`` raised during decoding.
-    utf8_error:
-        Error handling scheme for the string fix.  ``'replace'`` substitutes
-        U+FFFD, ``'ignore'`` drops invalid bytes, ``'surrogateescape'``
-        preserves surrogates, ``'strict'`` re-raises (not useful here).
+    When there are multiple candidates (e.g. the same payload appears inside
+    a binary blob, or there are duplicate strings) the function returns
+    ``None`` and the caller should fall back to the slow walker.
 
-    Returns
-    -------
-    The fixed ``bytes`` on success, ``None`` when the failing string cannot
-    be unambiguously located (multiple candidates or no match).
+    Args:
+        data (bytes): The original msgpack buffer.
+        error: The ``UnicodeDecodeError`` raised during decoding.
+        utf8_error: Error handling scheme.  ``'replace'`` substitutes
+            U+FFFD, ``'ignore'`` drops invalid bytes, ``'strict'``
+            re-raises (not useful here).
+
+    Returns:
+        bytes | None: The fixed ``bytes`` on success, ``None`` when the failing string
+            cannot be unambiguously located.
     """
     payload: bytes = error.object
     str_len = len(payload)
@@ -392,30 +409,26 @@ def fixup_msgpack_unicode_fast(
 # ── slow method ─────────────────────────────────────────────────────────
 
 def fixup_msgpack_unicode_slow(
-        data: bytes,
-        utf8_error: _utf8_error_values = 'replace',
-) -> bytes:
+        data,
+        utf8_error: T_utf8_error = 'replace',
+):
     """
-    Walk the entire msgpack structure, find every string whose payload is not
-    valid UTF-8, and fix with the given *utf8_error* handler.
+    Walk the entire msgpack structure and fix every string with invalid UTF-8.
 
     This is a **one-pass O(N)** walk — the entire buffer is traversed once
     regardless of how many strings are repaired.  Binary segments (``bin``,
     ``ext``) are skipped, so opaque payloads are never touched.
 
-    Parameters
-    ----------
-    data:
-        The msgpack buffer to repair.
-    utf8_error:
-        Error handling scheme passed to ``bytes.decode()`` when a string is
-        not valid UTF-8.  ``'replace'`` (default) substitutes U+FFFD,
-        ``'ignore'`` drops invalid bytes, ``'surrogateescape'`` preserves
-        surrogates.  ``'strict'`` would re-raise and is not useful here.
+    Args:
+        data (bytes): The msgpack buffer to repair.
+        utf8_error: Error handling scheme passed to ``bytes.decode()`` /
+            ``.encode()`` when a string is not valid UTF-8.
+            ``'replace'`` (default) substitutes U+FFFD,
+            ``'ignore'`` drops invalid bytes.
+            ``'strict'`` would re-raise and is not useful here.
 
-    Returns
-    -------
-    The fully repaired msgpack bytes.
+    Returns:
+        bytes: The fully repaired msgpack bytes.
     """
     ba = bytearray(data)
     if ba:

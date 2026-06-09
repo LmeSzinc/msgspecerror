@@ -21,8 +21,6 @@ from msgspecerror.parse_msgpack import (
 
 _BAD_BYTE = b'\xff'
 
-_REPLACEMENT_UTF8 = '\ufffd'.encode('utf-8')  # 3 bytes: ef bf bd
-
 
 def _msgpack(obj) -> bytes:
     return msgspec.msgpack.encode(obj)
@@ -162,17 +160,6 @@ class TestFastMethod:
         fixed = fixup_msgpack_unicode_fast(data, self._bad_error(payload, 4), utf8_error='ignore')
         assert fixed is not None
         assert msgspec.msgpack.decode(fixed) == 'hell'
-
-    def test_utf8_error_surrogateescape(self):
-        """``surrogateescape`` round-trips — original bytes preserved raw."""
-        payload = b'hell' + _BAD_BYTE
-        data = bytes([0xa5]) + payload
-        fixed = fixup_msgpack_unicode_fast(data, self._bad_error(payload, 4), utf8_error='surrogateescape')
-        assert fixed is not None
-        # surrogateescape encode re-writes surrogates back to original bytes,
-        # so the output still contains the raw \xff — the header+payload are
-        # byte-identical to the original (with header size unchanged).
-        assert bytes(fixed) == data  # round-trip preserves original bytes
 
     def test_multiple_candidates_returns_none(self):
         """Two identical bad strings — fast aborts, caller falls back to slow."""

@@ -134,16 +134,6 @@ class TestWalkFixStrings:
         _walk_fix(ba, 0, 'ignore')
         assert msgspec.msgpack.decode(bytes(ba)) == 'good'
 
-    def test_utf8_error_surrogateescape(self):
-        """"surrogateescape" round-trips — original bytes preserved."""
-        payload = _BAD_BYTE + b'abc'
-        ba = bytearray(bytes([0xd9, len(payload)]) + payload)
-        _walk_fix(ba, 0, 'surrogateescape')
-        # Header format may change (str8 → fixstr), but the payload must be
-        # byte-identical to the original since surrogateescape maps surrogates
-        # back to their original bytes.
-        assert bytes(ba).endswith(payload)
-
 
 # ── slow walker: containers ───────────────────────────────────────────
 
