@@ -7,6 +7,7 @@ from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 from . import const
 from .const import ErrorType
 from .parse_error import MsgspecError, parse_msgspec_error
+from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 from .parse_struct import get_field_default, get_field_typehint
 from .parse_type import get_default, is_struct_type, origin_args
 from .repair_unicode import _collect_unicode_replace
@@ -434,7 +435,20 @@ def load_msgpack_with_default(
 ) -> Tuple[Any, List[MsgspecError]]:
     """
     Decodes bytes, substituting defaults for fields that fail validation.
-    Note that load_msgpack_with_default can't handle UnicodeDecodeError, will act like utf8_error='strict'
+
+    Unlike the JSON variant, msgpack does not have a ``utf8_error`` parameter
+    at the Python API level.  Instead, ``UnicodeDecodeError`` is handled
+    transparently by:
+
+    1. **Fast fix**: locate the exact string that failed (via
+       ``fixup_msgpack_unicode_fast``) and fix it with UTF-8 ``'replace'``
+       semantics.
+    2. **Slow fallback**: if the fast method is ambiguous or the data still
+       contains bad strings, the entire msgpack structure is walked once
+       (O(N)) and every invalid string is repaired in a single pass.
+
+    This two-level strategy prevents attackers from forcing O(N*M) behaviour
+    by injecting many bad strings.
 
     Args:
         data (bytes): The input bytes to decode.
@@ -455,22 +469,65 @@ def load_msgpack_with_default(
         decoder = None
         model = model_or_decoder
 
-    try:
-        # happy path, return directly
-        if decoder is None:
-            return decode_msgpack(data, type=model), []
-        else:
-            return decoder.decode(data), []
-    except ValidationError as e:
+    unicode_errors: List[MsgspecError] = []
+
+    for attempt in range(2):
         try:
-            raw_obj = decode_msgpack(data)
+            # happy path, return directly
+            if decoder is None:
+                return decode_msgpack(data, type=model), unicode_errors
+            else:
+                return decoder.decode(data), unicode_errors
+        except ValidationError as e:
+            try:
+                raw_obj = decode_msgpack(data)
+            except UnicodeDecodeError as error:
+                # Fix unicode and retry on the next loop iteration
+                data = _repair_msgpack_unicode(data, error, attempt)
+                unicode_errors.append(parse_msgspec_error(error))
+                continue
+            except DecodeError as error:
+                result, errors = _handle_root_error(model, error)
+                errors.extend(unicode_errors)
+                return result, errors
+            # Most errors will enter here
+            return _handle_obj_repair(raw_obj, model, e)
         except DecodeError as error:
-            return _handle_root_error(model, error)
+            result, errors = _handle_root_error(model, error)
+            errors.extend(unicode_errors)
+            return result, errors
         except UnicodeDecodeError as error:
-            return _handle_root_error(model, error)
-        # Most errors will enter here
-        return _handle_obj_repair(raw_obj, model, e)
-    except DecodeError as error:
-        return _handle_root_error(model, error)
-    except UnicodeDecodeError as error:
-        return _handle_root_error(model, error)
+            data = _repair_msgpack_unicode(data, error, attempt)
+            unicode_errors.append(parse_msgspec_error(error))
+            continue
+
+    # Exhausted retries – shouldn't happen after the slow walker
+    result = get_default(model, return_obj=True)
+    rejected = MsgspecError(
+        'Input rejected: failed to solve UnicodeDecodeError',
+        type=ErrorType.INPUT_REJECTED, loc=())
+    return result, unicode_errors + [rejected]
+
+
+def _repair_msgpack_unicode(
+        data: bytes,
+        error: UnicodeDecodeError,
+        attempt: int,
+        utf8_error: str = 'replace',
+) -> bytes:
+    """
+    Repair msgpack bytes with invalid UTF-8.
+
+    *Attempt 0*: use ``fixup_msgpack_unicode_fast`` to pinpoint the exact
+    failing string.  If the search is ambiguous, fall back to the slow
+    one-pass walker.
+
+    *Attempt 1*: use ``fixup_msgpack_unicode_slow`` directly – this
+    guarantees a single O(N) pass regardless of how many strings need
+    repair, preventing attackers from causing O(N*M) re-decode cycles.
+    """
+    if attempt == 0:
+        fixed = fixup_msgpack_unicode_fast(data, error, utf8_error=utf8_error)
+        if fixed is not None:
+            return fixed
+    return fixup_msgpack_unicode_slow(data, utf8_error=utf8_error)
