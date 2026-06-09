@@ -358,7 +358,7 @@ def fixup_msgpack_unicode_fast(
 
     # Collect all (position, header) candidates by searching for the payload
     # and checking the bytes before it.
-    candidates: list[tuple[int, bytes]] = []
+    candidates: "list[tuple[int, bytes]]" = []
     pos = 0
     while True:
         pos = data.find(payload, pos)
@@ -386,8 +386,7 @@ def fixup_msgpack_unicode_fast(
     new_total = new_header_len + new_strlen
 
     ba = bytearray(data)
-    ba[payload_start - header_len:payload_start - header_len + old_total] = \
-        new_header + fixed_payload
+    ba[payload_start - header_len:payload_start - header_len + old_total] = new_header + fixed_payload
     return bytes(ba)
 
 

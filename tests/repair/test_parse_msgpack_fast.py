@@ -5,9 +5,6 @@ Covers header detection (``_check_str_header_at``), string header helpers,
 and ``fixup_msgpack_unicode_fast`` with all four msgpack string codecs
 (fixstr, str8, str16, str32).
 """
-
-from __future__ import annotations
-
 import struct
 
 import msgspec.msgpack
@@ -162,8 +159,7 @@ class TestFastMethod:
         """With ``utf8_error='ignore'`` the bad byte is removed entirely."""
         payload = b'hell' + _BAD_BYTE
         data = bytes([0xa5]) + payload
-        fixed = fixup_msgpack_unicode_fast(data, self._bad_error(payload, 4),
-                                            utf8_error='ignore')
+        fixed = fixup_msgpack_unicode_fast(data, self._bad_error(payload, 4), utf8_error='ignore')
         assert fixed is not None
         assert msgspec.msgpack.decode(fixed) == 'hell'
 
@@ -171,8 +167,7 @@ class TestFastMethod:
         """``surrogateescape`` round-trips — original bytes preserved raw."""
         payload = b'hell' + _BAD_BYTE
         data = bytes([0xa5]) + payload
-        fixed = fixup_msgpack_unicode_fast(data, self._bad_error(payload, 4),
-                                            utf8_error='surrogateescape')
+        fixed = fixup_msgpack_unicode_fast(data, self._bad_error(payload, 4), utf8_error='surrogateescape')
         assert fixed is not None
         # surrogateescape encode re-writes surrogates back to original bytes,
         # so the output still contains the raw \xff — the header+payload are

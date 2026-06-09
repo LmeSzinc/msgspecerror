@@ -4,9 +4,6 @@ Tests for the **slow** walker in ``msgspecerror.parse_msgpack``.
 Covers ``_walk_fix`` with all 24 msgpack opcodes, container traversal,
 ext/bin untouched, and ``fixup_msgpack_unicode_slow`` round-trips.
 """
-
-from __future__ import annotations
-
 import struct
 
 import msgspec
@@ -165,7 +162,7 @@ class TestWalkFixContainers:
         # {"lvl1": {"lvl2": "\xff"}}
         data = bytes([0x81, 0xa4, 0x6c, 0x76, 0x6c, 0x31,  # fixmap(1) fixstr(4)"lvl1"
                       0x81, 0xa4, 0x6c, 0x76, 0x6c, 0x32,  # fixmap(1) fixstr(4)"lvl2"
-                      0xa1]) + _BAD_BYTE                     # fixstr(1)"\xff"
+                      0xa1]) + _BAD_BYTE  # fixstr(1)"\xff"
         fixed = fixup_msgpack_unicode_slow(data)
         assert msgspec.msgpack.decode(fixed) == {"lvl1": {"lvl2": "\ufffd"}}
 
@@ -173,14 +170,14 @@ class TestWalkFixContainers:
         # {"key": ["ok", "\xff"]}
         data = bytes([0x81, 0xa3, 0x6b, 0x65, 0x79,  # fixmap(1) fixstr(3)"key"
                       0x92, 0xa2, 0x6f, 0x6b,        # fixarray(2) fixstr(2)"ok"
-                      0xa1]) + _BAD_BYTE               # fixstr(1)"\xff"
+                      0xa1]) + _BAD_BYTE             # fixstr(1)"\xff"
         fixed = fixup_msgpack_unicode_slow(data)
         assert msgspec.msgpack.decode(fixed) == {"key": ["ok", "\ufffd"]}
 
     def test_map_in_array(self):
         # [{"val": "\xff"}]
         data = bytes([0x91, 0x81, 0xa3, 0x76, 0x61, 0x6c,  # fixarray(1) fixmap(1) fixstr(3)"val"
-                      0xa1]) + _BAD_BYTE                     # fixstr(1)"\xff"
+                      0xa1]) + _BAD_BYTE                   # fixstr(1)"\xff"
         fixed = fixup_msgpack_unicode_slow(data)
         assert msgspec.msgpack.decode(fixed) == [{"val": "\ufffd"}]
 
