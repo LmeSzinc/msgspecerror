@@ -277,7 +277,7 @@ def _handle_root_error(
 def _handle_json_unicode_repair(
         data: bytes,
         *,
-        utf8_error: "Literal['replace', 'ignore']"
+        utf8_error: T_utf8_error,
 ) -> "tuple[bytes | str, list[MsgspecError]]":
     """
     Helper function to repair json data that has unicode error
@@ -538,7 +538,7 @@ def _repair_msgpack_unicode(
         data: bytes,
         error: UnicodeDecodeError,
         attempt: int,
-        utf8_error: str = 'replace',
+        utf8_error: T_utf8_error = 'replace',
 ) -> bytes:
     """
     Repair msgpack bytes with invalid UTF-8.
