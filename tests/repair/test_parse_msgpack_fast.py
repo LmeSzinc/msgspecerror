@@ -70,19 +70,19 @@ class TestMakeStrHeader:
 class TestCheckStrHeaderAt:
     def test_fixstr_detected(self):
         data = bytes([0xa5]) + b'hello'
-        assert _check_str_header_at(data, 1, 5) == bytes([0xa5])
+        assert _check_str_header_at(data, 1, 5) == 1  # fixstr header length
 
     def test_str8_detected(self):
         data = bytes([0xd9, 5]) + b'hello'
-        assert _check_str_header_at(data, 2, 5) == bytes([0xd9, 5])
+        assert _check_str_header_at(data, 2, 5) == 2  # str8 header length
 
     def test_str16_detected(self):
         data = bytes([0xda, 0x00, 0x05]) + b'hello'
-        assert _check_str_header_at(data, 3, 5) == bytes([0xda, 0x00, 0x05])
+        assert _check_str_header_at(data, 3, 5) == 3  # str16 header length
 
     def test_str32_detected(self):
         data = bytes([0xdb, 0x00, 0x00, 0x00, 0x05]) + b'hello'
-        assert _check_str_header_at(data, 5, 5) == bytes([0xdb, 0x00, 0x00, 0x00, 0x05])
+        assert _check_str_header_at(data, 5, 5) == 5  # str32 header length
 
     def test_no_match_when_length_mismatch(self):
         data = bytes([0xa3]) + b'hello'

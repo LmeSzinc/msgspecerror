@@ -71,34 +71,35 @@ def _check_str_header_at(data, payload_start, str_len):
         str_len (int): Expected payload length.
 
     Returns:
-        bytes | None: The header bytes when valid, ``None`` otherwise.
+        int | None: Header byte length (1, 2, 3, or 5) when valid,
+        ``None`` otherwise.
     """
     # fixstr (0xa0-0xbf)
     if payload_start >= 1:
         h = data[payload_start - 1]
         if 0xa0 <= h <= 0xbf and (h - 0xa0) == str_len:
-            return bytes([h])
+            return 1
 
     # str8  (0xd9 + 1-byte length)
     if payload_start >= 2 and str_len < 256:
         h1 = data[payload_start - 2]
         h2 = data[payload_start - 1]
         if h1 == 0xd9 and h2 == str_len:
-            return bytes([0xd9, str_len])
+            return 2
 
     # str16 (0xda + 2-byte big-endian length)
     if payload_start >= 3 and str_len < 65536:
         if data[payload_start - 3] == 0xda:
             actual_len = _U16BE.unpack_from(data, payload_start - 2)[0]
             if actual_len == str_len:
-                return data[payload_start - 3:payload_start]
+                return 3
 
     # str32 (0xdb + 4-byte big-endian length)
     if payload_start >= 5:
         if data[payload_start - 5] == 0xdb:
             actual_len = _U32BE.unpack_from(data, payload_start - 4)[0]
             if actual_len == str_len:
-                return data[payload_start - 5:payload_start]
+                return 5
 
     return None
 
@@ -166,8 +167,8 @@ def _walk_fix(ba, start, utf8_error):
     # Cached count of remaining items in the current (top) container.
     # 0 means no container context (stack is empty or all finished).
     remain = 0
-
     total = len(ba)
+
     while True:
         if pos >= total:
             return pos
@@ -197,6 +198,7 @@ def _walk_fix(ba, start, utf8_error):
         # ── fixstr 0xa0 .. 0xbf ──
         elif 0xa0 <= op <= 0xbf:
             pos = _try_fix_string(ba, 1, op - 0xa0, pos, utf8_error)
+            total = len(ba)
         # ── nil 0xc0 ──
         elif op == 0xc0:
             pos += 1
@@ -277,14 +279,17 @@ def _walk_fix(ba, start, utf8_error):
         # ── str8 0xd9 ──
         elif op == 0xd9:
             pos = _try_fix_string(ba, 2, ba[pos + 1], pos, utf8_error)
+            total = len(ba)
         # ── str16 0xda ──
         elif op == 0xda:
             slen = _U16BE.unpack_from(ba, pos + 1)[0]
             pos = _try_fix_string(ba, 3, slen, pos, utf8_error)
+            total = len(ba)
         # ── str32 0xdb ──
         elif op == 0xdb:
             slen = _U32BE.unpack_from(ba, pos + 1)[0]
             pos = _try_fix_string(ba, 5, slen, pos, utf8_error)
+            total = len(ba)
 
         # ── array16 / array32 / map16 / map32 ──
         elif op == 0xdc:
@@ -383,25 +388,23 @@ def fixup_msgpack_unicode_fast(
     payload = error.object
     str_len = len(payload)
 
-    # Collect all (position, header) candidates by searching for the payload
-    # and checking the bytes before it.
-    candidates: "list[tuple[int, bytes]]" = []
+    # Collect all (position, header_len) candidates
+    candidates = []
     pos = 0
     while True:
         pos = data.find(payload, pos)
         if pos == -1:
             break
-        hdr = _check_str_header_at(data, pos, str_len)
-        if hdr is not None:
-            candidates.append((pos, hdr))
+        hdr_len = _check_str_header_at(data, pos, str_len)
+        if hdr_len is not None:
+            candidates.append((pos, hdr_len))
         pos += 1
 
     if len(candidates) != 1:
         # Ambiguous – let the caller fall back to the slow walker.
         return None
 
-    payload_start, header = candidates[0]
-    header_len = len(header)
+    payload_start, header_len = candidates[0]
 
     # Decode with the requested error handler and re-encode
     fixed_payload = payload.decode('utf-8', utf8_error).encode('utf-8', utf8_error)
