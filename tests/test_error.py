@@ -8,7 +8,7 @@ import pytest
 
 from msgspecerror.const import ErrorType
 from msgspecerror.parse_ctx import ErrorCtx
-from msgspecerror.parse_error import MsgspecError, get_error_type
+from msgspecerror.parse_error import ErrorInfo, get_error_type
 
 
 # ------------------------------------------------------------------
@@ -18,7 +18,7 @@ from msgspecerror.parse_error import MsgspecError, get_error_type
 def check(msg, expected_type, expected_ctx=None):
     """Assert get_error_type returns correct type and ctx. loc is always ()."""
     result = get_error_type(msg)
-    assert isinstance(result, MsgspecError), f"Expected MsgspecError, got {type(result)}"
+    assert isinstance(result, ErrorInfo), f"Expected ErrorInfo, got {type(result)}"
     assert result.type == expected_type, (
         f"msg={msg!r}: expected {expected_type}, got {result.type}"
     )
@@ -518,7 +518,7 @@ class TestHelperNODEFAULTFallback:
     """
     When get_length_ctx / get_number_ctx / get_pattern_ctx return NODEFAULT
     (e.g. unparseable constraints), get_error_type should still return the
-    correct MsgspecError with default empty ErrorCtx.
+    correct ErrorInfo with default empty ErrorCtx.
     """
 
     @pytest.mark.parametrize("msg, expected_type, expected_ctx", [
@@ -640,7 +640,7 @@ class TestEdgeCases:
 
 
 class TestReturnType:
-    """Verify get_error_type always returns a MsgspecError."""
+    """Verify get_error_type always returns an ErrorInfo."""
 
     @pytest.mark.parametrize("msg", [
         "Expected `int`, got `str`",
@@ -652,7 +652,7 @@ class TestReturnType:
     ])
     def test_always_returns_msgspec_error(self, msg):
         result = get_error_type(msg)
-        assert isinstance(result, MsgspecError)
+        assert isinstance(result, ErrorInfo)
         assert isinstance(result.msg, str)
         assert isinstance(result.type, ErrorType)
         assert isinstance(result.ctx, ErrorCtx)

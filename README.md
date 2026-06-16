@@ -27,10 +27,10 @@ except DECODE_ERRORS as e:
     # Expected `int`, got `str` - at `$.user.age`
     error = parse_msgspec_error(e)
     print(error)
-    # MsgspecError(msg='Expected `int`, got `str` - at `$.user.age`',
-    #              type=<ErrorType.TYPE_MISMATCH>,
-    #              loc=('user', 'age'),
-    #              ctx=ErrorCtx(expected='int', got='str'))
+    # ErrorInfo(msg='Expected `int`, got `str` - at `$.user.age`',
+    #           type=<ErrorType.TYPE_MISMATCH>,
+    #           loc=('user', 'age'),
+    #           ctx=ErrorCtx(expected='int', got='str'))
 ```
 
 **Typical use case 2: fall back to defaults on validation error**
@@ -50,10 +50,10 @@ result, errors = load_json_with_default(data, BotConfig)
 print(result)
 # BotConfig(provider='deepseek', mode='agent')
 print(errors)
-# [MsgspecError(msg="Invalid enum value 'deepsleep' - at `$.provider`",
-#               type=<ErrorType.INVALID_ENUM_VALUE>,
-#               loc=('provider',),
-#               ctx=ErrorCtx())]
+# [ErrorInfo(msg="Invalid enum value 'deepsleep' - at `$.provider`",
+#            type=<ErrorType.INVALID_ENUM_VALUE>,
+#            loc=('provider',),
+#            ctx=ErrorCtx())]
 ```
 
 ## 1. Installation
@@ -89,11 +89,11 @@ The auto-repair process is also high-performance and precise:
 Use `parse_msgspec_error` to parse any exception.
 
 ```python
-def parse_msgspec_error(error: Union[str, Exception]) -> MsgspecError: ...
+def parse_msgspec_error(error: Union[str, Exception]) -> ErrorInfo: ...
 DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError)
 ```
 
-Note: use `except DECODE_ERRORS as e:` rather than `except msgspec.ValidationError as e:` to catch exceptions. msgspecerror can wrap more error types into MsgspecError objects, such as `UnicodeDecodeError`.
+Note: use `except DECODE_ERRORS as e:` rather than `except msgspec.ValidationError as e:` to catch exceptions. msgspecerror can wrap more error types into ErrorInfo objects, such as `UnicodeDecodeError`.
 
 ```python
 import msgspec
@@ -104,10 +104,10 @@ except DECODE_ERRORS as e:
     error = parse_msgspec_error(e)
 ```
 
-**MsgspecError class:**
+**ErrorInfo class:**
 
 ```python
-class MsgspecError(Struct, omit_defaults=True):
+class ErrorInfo(Struct, omit_defaults=True):
     # Original error message
     msg: str
     # Error type
@@ -156,7 +156,7 @@ def load_json_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
-) -> Tuple[Any, List[MsgspecError]]: ...
+) -> Tuple[Any, List[ErrorInfo]]: ...
 result, errors = load_json_with_default(data, MyStruct)
 ```
 
@@ -183,7 +183,7 @@ def load_msgpack_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
-) -> Tuple[Any, List[MsgspecError]]: ...
+) -> Tuple[Any, List[ErrorInfo]]: ...
 result, errors = load_msgpack_with_default(data, MyStruct)
 ```
 
@@ -418,10 +418,10 @@ except DECODE_ERRORS as e:
     # Expected `int`, got `str` - at `$.items[...].amount`
     error = parse_msgspec_error(e)
     print(error)
-    # MsgspecError(msg='Expected `int`, got `str` - at `$.items[...].amount`',
-    #              type=<ErrorType.TYPE_MISMATCH>,
-    #              loc=('items', '...', 'amount'),
-    #              ctx=ErrorCtx(expected='int', got='str'))
+    # ErrorInfo(msg='Expected `int`, got `str` - at `$.items[...].amount`',
+    #           type=<ErrorType.TYPE_MISMATCH>,
+    #           loc=('items', '...', 'amount'),
+    #           ctx=ErrorCtx(expected='int', got='str'))
 ```
 
 ### 5.3 Auto-repair may have poor performance with dicts
@@ -443,10 +443,10 @@ result, errors = load_json_with_default(data, Inventory)
 print(result)
 # Inventory(items={'apple': ItemInfo(amount=0)})
 print(errors)
-# [MsgspecError(msg='Expected `int`, got `str` - at `$.items[...].amount`',
-#               type=<ErrorType.TYPE_MISMATCH>,
-#               loc=('items', 'apple', 'amount'),
-#               ctx=ErrorCtx(expected='int', got='str'))]
+# [ErrorInfo(msg='Expected `int`, got `str` - at `$.items[...].amount`',
+#            type=<ErrorType.TYPE_MISMATCH>,
+#            loc=('items', 'apple', 'amount'),
+#            ctx=ErrorCtx(expected='int', got='str'))]
 ```
 
 ### 5.4 Auto-repair may have poor performance with large msgpack containing multiple UnicodeDecodeErrors

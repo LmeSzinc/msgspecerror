@@ -9,7 +9,7 @@ import pytest
 
 from msgspecerror.const import ErrorType
 from msgspecerror.parse_ctx import ErrorCtx
-from msgspecerror.parse_error import MsgspecError, get_error_type
+from msgspecerror.parse_error import ErrorInfo, get_error_type
 
 
 # ------------------------------------------------------------------
@@ -19,7 +19,7 @@ from msgspecerror.parse_error import MsgspecError, get_error_type
 def check(msg, expected_type, expected_ctx=None):
     """Assert get_error_type returns correct type and ctx. loc is always ()."""
     result = get_error_type(msg)
-    assert isinstance(result, MsgspecError), f"Expected MsgspecError, got {type(result)}"
+    assert isinstance(result, ErrorInfo), f"Expected ErrorInfo, got {type(result)}"
     assert result.type == expected_type, (
         f"msg={msg!r}: expected {expected_type}, got {result.type}"
     )

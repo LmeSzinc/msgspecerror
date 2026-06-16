@@ -6,7 +6,7 @@ from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
 from . import const
 from .const import ErrorType, T_utf8_error
-from .parse_error import MsgspecError, parse_msgspec_error
+from .parse_error import ErrorInfo, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 from .parse_struct import get_field_default, get_field_typehint
 from .parse_type import get_default, is_struct_type, origin_args
@@ -14,8 +14,8 @@ from .repair_unicode import _collect_unicode_replace
 
 
 def _repair_once(
-        raw_obj, model, error: MsgspecError
-) -> "tuple[Any, MsgspecError | Type[NODEFAULT]]":
+        raw_obj, model, error: ErrorInfo
+) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
     """
     Args:
         raw_obj:
@@ -23,7 +23,7 @@ def _repair_once(
         error:
 
     Returns:
-        tuple[Any, MsgspecError | _NoDefault]: (obj, error) the repaired object and fixed error.
+        tuple[Any, ErrorInfo | _NoDefault]: (obj, error) the repaired object and fixed error.
             If repair failed, obj will be NODEFAULT.
             If this error is not consider as an error, error will be NODEFAULT and won't be collected.
     """
@@ -214,7 +214,7 @@ def _repair_once(
 
 def _handle_obj_repair(
         raw_obj, model, error: ValidationError
-) -> "tuple[Any, list[MsgspecError]]":
+) -> "tuple[Any, list[ErrorInfo]]":
     """
     Args:
         raw_obj (Any):
@@ -222,7 +222,7 @@ def _handle_obj_repair(
         error (ValidationError):
 
     Returns:
-        tuple[any, list[MsgspecError]]:
+        tuple[any, list[ErrorInfo]]:
     """
     error = parse_msgspec_error(error)
     collected_errors = []
@@ -244,14 +244,14 @@ def _handle_obj_repair(
             # User-code errors (__post_init__, dec_hook, etc.) are wrapped as
             # WRAPPED_ERROR. Retrying the same fix won't help — bail immediately.
             if error.type is ErrorType.WRAPPED_ERROR:
-                rejected = MsgspecError(
+                rejected = ErrorInfo(
                     'Input rejected: validation failed on struct defaults',
                     type=ErrorType.INPUT_REJECTED, loc=())
                 collected_errors.append(rejected)
                 return get_default(model, return_obj=True), collected_errors
 
     # Too many iterations — possible malicious input
-    rejected = MsgspecError(
+    rejected = ErrorInfo(
         'Input rejected: too many repair cycles',
         type=ErrorType.INPUT_REJECTED, loc=())
     collected_errors.append(rejected)
@@ -260,14 +260,14 @@ def _handle_obj_repair(
 
 def _handle_root_error(
         model: Any, error
-) -> "tuple[Any, list[MsgspecError]]":
+) -> "tuple[Any, list[ErrorInfo]]":
     """
     Args:
         model (type): The target type to decode into.
         error (str | Exception):
 
     Returns:
-        tuple[any, list[MsgspecError]]:
+        tuple[any, list[ErrorInfo]]:
     """
     collected_errors = [parse_msgspec_error(error)]
     # try if model can be default constructed
@@ -278,7 +278,7 @@ def _handle_json_unicode_repair(
         data: bytes,
         *,
         utf8_error: T_utf8_error,
-) -> "tuple[bytes | str, list[MsgspecError]]":
+) -> "tuple[bytes | str, list[ErrorInfo]]":
     """
     Helper function to repair json data that has unicode error
     """
@@ -308,7 +308,7 @@ def load_json_with_default(
         model_or_decoder: Type[T],
         *,
         utf8_error: T_utf8_error = ...,
-) -> Tuple[T, List[MsgspecError]]: ...
+) -> Tuple[T, List[ErrorInfo]]: ...
 
 
 @overload
@@ -317,7 +317,7 @@ def load_json_with_default(
         model_or_decoder: "JsonDecoder[T]",
         *,
         utf8_error: T_utf8_error = ...,
-) -> Tuple[T, List[MsgspecError]]: ...
+) -> Tuple[T, List[ErrorInfo]]: ...
 
 
 def load_json_with_default(
@@ -325,7 +325,7 @@ def load_json_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: T_utf8_error = 'replace',
-) -> Tuple[Any, List[MsgspecError]]:
+) -> Tuple[Any, List[ErrorInfo]]:
     """
     Decodes bytes, substituting defaults for fields that fail validation or have invalid unicode.
 
@@ -342,7 +342,7 @@ def load_json_with_default(
                 Most data will be preserved, but you may lose the error data
 
     Returns:
-        tuple[any, list[MsgspecError]]: (result, errors) validated result and a list of collected errors
+        tuple[any, list[ErrorInfo]]: (result, errors) validated result and a list of collected errors
             If validate failed and model (or any deeply nested field) can't be default constructed,
             (e.g. model has a required field) result would be NODEFAULT
             Note that it's function caller's duty to check if result is NODEFAULT,
@@ -360,7 +360,7 @@ def load_json_with_default(
         print(result)
         # NestedStruct(s=SimpleStruct(a=0, b='good'), c=123)
         print(errors)
-        # [MsgspecError(msg='Expected `int`, got `str` - at `$.s.a`',
+        # [ErrorInfo(msg='Expected `int`, got `str` - at `$.s.a`',
         # type=<ErrorType.TYPE_MISMATCH>, loc=('s', 'a'), ctx=ErrorCtx())]
     """
     # since there's no BASETYPE flag on decoder classes, subclassing is impossible,
@@ -408,7 +408,7 @@ def load_json_with_default(
 
     # this shouldn't happen
     result = get_default(model, return_obj=True)
-    rejected = MsgspecError(
+    rejected = ErrorInfo(
         'Input rejected: failed to solve UnicodeDecodeError',
         type=ErrorType.INPUT_REJECTED, loc=())
     collected_errors.append(rejected)
@@ -421,7 +421,7 @@ def load_msgpack_with_default(
         model_or_decoder: Type[T],
         *,
         utf8_error: T_utf8_error = 'replace',
-) -> Tuple[Any, List[MsgspecError]]: ...
+) -> Tuple[Any, List[ErrorInfo]]: ...
 
 
 @overload
@@ -430,7 +430,7 @@ def load_msgpack_with_default(
         model_or_decoder: "MsgpackDecoder[T]",
         *,
         utf8_error: T_utf8_error = 'replace',
-) -> Tuple[Any, List[MsgspecError]]: ...
+) -> Tuple[Any, List[ErrorInfo]]: ...
 
 
 def load_msgpack_with_default(
@@ -438,7 +438,7 @@ def load_msgpack_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: T_utf8_error = 'replace',
-) -> Tuple[Any, List[MsgspecError]]:
+) -> Tuple[Any, List[ErrorInfo]]:
     """
     Decodes bytes, substituting defaults for fields that fail validation or have invalid unicode.
 
@@ -468,7 +468,7 @@ def load_msgpack_with_default(
             - ``"ignore"`` — remove error bytes entirely.
 
     Returns:
-        tuple[any, list[MsgspecError]]: (result, errors) validated result and a list of collected errors
+        tuple[any, list[ErrorInfo]]: (result, errors) validated result and a list of collected errors
             If validate failed and model (or any deeply nested field) can't be default constructed,
             (e.g. model has a required field) result would be NODEFAULT
             Note that it's function caller's duty to check if result is NODEFAULT,
@@ -485,7 +485,7 @@ def load_msgpack_with_default(
         decoder = None
         model = model_or_decoder
 
-    unicode_errors: List[MsgspecError] = []
+    unicode_errors: List[ErrorInfo] = []
 
     for attempt in range(2):
         try:
@@ -528,7 +528,7 @@ def load_msgpack_with_default(
 
     # Exhausted retries – shouldn't happen after the slow walker
     result = get_default(model, return_obj=True)
-    rejected = MsgspecError(
+    rejected = ErrorInfo(
         'Input rejected: failed to solve UnicodeDecodeError',
         type=ErrorType.INPUT_REJECTED, loc=())
     return result, unicode_errors + [rejected]

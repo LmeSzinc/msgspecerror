@@ -16,9 +16,9 @@ try:
 except msgspec.ValidationError as e:
     err = parse_msgspec_error(e)
     print(err)
-    # MsgspecError(msg='Expected `int`, got `str` - at `$.user.age`',
-    #              type=<ErrorType.TYPE_MISMATCH>,
-    #              loc=('user', 'age'))
+    # ErrorInfo(msg='Expected `int`, got `str` - at `$.user.age`',
+    #           type=<ErrorType.TYPE_MISMATCH>,
+    #           loc=('user', 'age'))
 ```
 
 

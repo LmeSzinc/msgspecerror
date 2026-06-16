@@ -2,10 +2,10 @@ from collections import deque
 from typing import Any
 
 from .const import ErrorType
-from .parse_error import MsgspecError
+from .parse_error import ErrorInfo
 
 
-def _collect_unicode_replace(obj: Any) -> "list[MsgspecError]":
+def _collect_unicode_replace(obj: Any) -> "list[ErrorInfo]":
     """
     Iteratively finds all locations within a Python object that contain a
     Unicode replacement character (U+FFFD). Use this after decoding JSON data
@@ -15,7 +15,7 @@ def _collect_unicode_replace(obj: Any) -> "list[MsgspecError]":
         obj: A Python object decoded from JSON (or equivalent) to scan.
 
     Returns:
-        A list of ``MsgspecError`` objects, one per string field that contains
+        A list of ``ErrorInfo`` objects, one per string field that contains
         at least one U+FFFD replacement character. Each error has
         ``type=ErrorType.UNICODE_DECODE_ERROR`` and a ``loc`` pointing to the
         field path.
@@ -25,7 +25,7 @@ def _collect_unicode_replace(obj: Any) -> "list[MsgspecError]":
     # --- Guard Clauses for Non-Container Root Objects ---
     if obj_type is str:
         if '\ufffd' in obj:
-            error = MsgspecError(
+            error = ErrorInfo(
                 'Invalid UTF-8 sequence in root',
                 type=ErrorType.UNICODE_DECODE_ERROR, loc=())
             return [error]
@@ -49,14 +49,14 @@ def _collect_unicode_replace(obj: Any) -> "list[MsgspecError]":
                     value_type = type(value)
 
                     if type(key) is str and replacement_char in key:
-                        error = MsgspecError(
+                        error = ErrorInfo(
                             'Invalid UTF-8 sequence in dict key',
                             type=ErrorType.UNICODE_DECODE_ERROR, loc=path + (key,))
                         errors.append(error)
 
                     if value_type is str:
                         if replacement_char in value:
-                            error = MsgspecError(
+                            error = ErrorInfo(
                                 'Invalid UTF-8 sequence in dict value',
                                 type=ErrorType.UNICODE_DECODE_ERROR, loc=path + (key,))
                             errors.append(error)
@@ -68,7 +68,7 @@ def _collect_unicode_replace(obj: Any) -> "list[MsgspecError]":
 
                     if item_type is str:
                         if replacement_char in item:
-                            error = MsgspecError(
+                            error = ErrorInfo(
                                 'Invalid UTF-8 sequence in list item',
                                 type=ErrorType.UNICODE_DECODE_ERROR, loc=path + (i,))
                             errors.append(error)
