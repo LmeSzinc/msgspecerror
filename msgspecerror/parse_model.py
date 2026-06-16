@@ -21,6 +21,8 @@ def get_model_changes(old: T, new: T) -> Dict[str, Any]:
 
     Raises:
         TypeError: If ``old`` is not a msgspec Struct instance.
+        AttributeError: If ``new`` is a different struct type missing fields
+            that ``old`` has.
     """
     try:
         fields = old.__class__.__struct_fields__

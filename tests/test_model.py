@@ -212,3 +212,40 @@ class TestGetModelChanges:
         old = EmptyStruct()
         new = EmptyStruct()
         assert get_model_changes(old, new) == {}
+
+    def test_different_struct_missing_field_raises_attribute_error(self):
+        """Different struct types where old has fields new lacks → AttributeError."""
+
+        class StructA(Struct):
+            a: int
+            b: str
+
+        class StructB(Struct):
+            a: int
+
+        old = StructA(a=1, b="x")
+        new = StructB(a=99)
+        with pytest.raises(AttributeError):
+            get_model_changes(old, new)
+
+    def test_different_struct_with_superset_fields_works(self):
+        """Different struct types where new has all fields from old should work."""
+
+        class Base(Struct):
+            a: int
+            b: str
+
+        class Extended(Struct):
+            a: int
+            b: str
+            c: float
+
+        old = Base(a=1, b="hello")
+        new = Extended(a=1, b="hello", c=3.14)
+        # All old fields exist on new and are equal → empty dict
+        assert get_model_changes(old, new) == {}
+
+        old2 = Base(a=1, b="hello")
+        new2 = Extended(a=99, b="world", c=3.14)
+        # Fields differ → only old's fields are compared
+        assert get_model_changes(old2, new2) == {"a": 1, "b": "hello"}
