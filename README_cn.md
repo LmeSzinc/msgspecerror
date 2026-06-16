@@ -1,4 +1,4 @@
-# msgspecerror
+# msgspecerror ![PyPI - Version](https://img.shields.io/pypi/v/msgspecerror)
 
 **| [English](README.md) | 简体中文 |**
 
