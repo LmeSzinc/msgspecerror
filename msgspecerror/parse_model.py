@@ -7,7 +7,7 @@ def get_model_changes(old: T, new: T) -> Dict[str, Any]:
     """
     Compare two msgspec Struct instances field-by-field at the top level.
 
-    Returns a dict mapping each differing field name to its value from ``old``.
+    Returns a dict mapping each differing field name to its value from ``new``.
     Nested objects are compared by value equality (``==``), not recursed into
     for further sub-diffs.
 
@@ -16,7 +16,7 @@ def get_model_changes(old: T, new: T) -> Dict[str, Any]:
         new: New msgspec Struct instance.
 
     Returns:
-        dict[str, Any]: Dict of ``{field_name: value_from_old}`` for fields
+        dict[str, Any]: Dict of ``{field_name: value_from_new}`` for fields
             where ``getattr(old, field) != getattr(new, field)``.
 
     Raises:
@@ -37,5 +37,5 @@ def get_model_changes(old: T, new: T) -> Dict[str, Any]:
         vo = getattr(old, f)
         vn = getattr(new, f)
         if vo != vn:
-            result[f] = vo
+            result[f] = vn
     return result

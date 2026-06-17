@@ -74,17 +74,17 @@ class TestGetModelChanges:
             (
                     SimpleStruct(x=1, y="hello", z=3.14),
                     SimpleStruct(x=2, y="hello", z=3.14),
-                    {"x": 1},
+                    {"x": 2},
             ),
             (
                     SimpleStruct(x=1, y="hello", z=3.14),
                     SimpleStruct(x=1, y="world", z=3.14),
-                    {"y": "hello"},
+                    {"y": "world"},
             ),
             (
                     SimpleStruct(x=1, y="hello", z=3.14),
                     SimpleStruct(x=1, y="hello", z=2.71),
-                    {"z": 3.14},
+                    {"z": 2.71},
             ),
         ],
     )
@@ -96,19 +96,19 @@ class TestGetModelChanges:
         """All changed fields should be in the result dict."""
         old = SimpleStruct(x=1, y="hello", z=3.14)
         new = SimpleStruct(x=99, y="world", z=2.71)
-        assert get_model_changes(old, new) == {"x": 1, "y": "hello", "z": 3.14}
+        assert get_model_changes(old, new) == {"x": 99, "y": "world", "z": 2.71}
 
     def test_bool_fields(self):
         """Bool fields should be correctly compared."""
         old = MixedStruct(a=1, b="x", c=1.0, d=True, e=b"data")
         new = MixedStruct(a=1, b="x", c=1.0, d=False, e=b"data")
-        assert get_model_changes(old, new) == {"d": True}
+        assert get_model_changes(old, new) == {"d": False}
 
     def test_bytes_fields(self):
         """Bytes fields should be correctly compared."""
         old = MixedStruct(a=1, b="x", c=1.0, d=True, e=b"alpha")
         new = MixedStruct(a=1, b="x", c=1.0, d=True, e=b"beta")
-        assert get_model_changes(old, new) == {"e": b"alpha"}
+        assert get_model_changes(old, new) == {"e": b"beta"}
 
     def test_none_field(self):
         """None values should be correctly compared."""
@@ -119,7 +119,7 @@ class TestGetModelChanges:
 
         old = NullableStruct(v=1, w=None)
         new = NullableStruct(v=1, w="not_null")
-        assert get_model_changes(old, new) == {"w": None}
+        assert get_model_changes(old, new) == {"w": "not_null"}
 
         same_old = NullableStruct(v=1, w=None)
         same_new = NullableStruct(v=1, w=None)
@@ -151,9 +151,9 @@ class TestGetModelChanges:
         old = NestedStruct(inner=inner_old, label="test")
         new = NestedStruct(inner=inner_new, label="test")
         diff = get_model_changes(old, new)
-        assert diff == {"inner": inner_old}
-        # The value should be the old struct's inner, not a sub-diff
-        assert diff["inner"] is inner_old
+        assert diff == {"inner": inner_new}
+        # The value should be the new struct's inner, not a sub-diff
+        assert diff["inner"] is inner_new
 
     def test_same_nested_struct_ignored(self):
         """When both share the same nested struct object, there is no diff."""
@@ -167,13 +167,13 @@ class TestGetModelChanges:
         inner = SimpleStruct(x=1, y="hello", z=3.14)
         old = NestedStruct(inner=inner, label="alpha")
         new = NestedStruct(inner=inner, label="beta")
-        assert get_model_changes(old, new) == {"label": "alpha"}
+        assert get_model_changes(old, new) == {"label": "beta"}
 
     def test_frozen_structs(self):
         """Frozen structs should work identically."""
         old = FreezableStruct(x=1, y="hello")
         new = FreezableStruct(x=2, y="hello")
-        assert get_model_changes(old, new) == {"x": 1}
+        assert get_model_changes(old, new) == {"x": 2}
 
         same_old = FreezableStruct(x=1, y="hello")
         same_new = FreezableStruct(x=1, y="hello")
@@ -183,7 +183,7 @@ class TestGetModelChanges:
         """UNSET and an actual value should be detected as different."""
         old = StructWithUnset(value=42)
         new = StructWithUnset()
-        assert get_model_changes(old, new) == {"value": 42}
+        assert get_model_changes(old, new) == {"value": UNSET}
 
     def test_both_unset(self):
         """Two structs with both fields unset should have no diff."""
@@ -199,7 +199,7 @@ class TestGetModelChanges:
 
         old = HasOptional(v=None)
         new = HasOptional()
-        assert get_model_changes(old, new) == {"v": None}
+        assert get_model_changes(old, new) == {"v": UNSET}
 
     def test_float_precision(self):
         """Float comparison should use normal == semantics."""
@@ -248,4 +248,4 @@ class TestGetModelChanges:
         old2 = Base(a=1, b="hello")
         new2 = Extended(a=99, b="world", c=3.14)
         # Fields differ → only old's fields are compared
-        assert get_model_changes(old2, new2) == {"a": 1, "b": "hello"}
+        assert get_model_changes(old2, new2) == {"a": 99, "b": "world"}
