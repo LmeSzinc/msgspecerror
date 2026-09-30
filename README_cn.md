@@ -154,9 +154,15 @@ def load_json_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
+        guess_default: bool = False,
 ) -> Tuple[Any, List[ErrorInfo]]: ...
 result, errors = load_json_with_default(data, MyStruct)
 ```
+
+`guess_default` 控制模型没有提供默认值时，校验失败的值如何修复：
+
+- `guess_default=False`（默认）：校验失败的字典键值对或者列表元素将被删除，作为最小修复，其他数据保持不变。
+- `guess_default=True`：校验失败的字典值或者列表元素将被替换为推测的默认值（`int` 为 `0`，`str` 为 `""`，`list` 为 `[]`，`Optional` 为 `None` 等），如果该类型没有可推测的默认值（如 Enum、`Literal`、datetime）或者推测的默认值校验失败（如 `Annotated[int, Meta(ge=18)]`）则删除该键值对或者元素。没有默认值的结构体字段也会被推测的默认值修复。
 
 load_json_with_default 的具体修复逻辑如下：
 
@@ -164,9 +170,9 @@ load_json_with_default 的具体修复逻辑如下：
 
 2. 当目标路径的类型是 msgspec.Struct 时，尝试进行默认构建 (default construct)，如果 Struct 所有字段都有默认值则默认构建成功
 
-3. 当字典中的某个值校验错误时，遍历所有键值对进行二次校验，寻找到校验失败的值，尝试 1 与 2 进行修复
+3. 当字典中的某个值校验错误时，遍历所有键值对进行二次校验，寻找到校验失败的值，然后删除该键值对（当 `guess_default=True` 时替换为推测的默认值）
 4. 当字典中的某个键校验错误时，遍历所有键进行二次校验，寻找到校验失败的值，尝试 1 与 2 进行修复，如果修复失败则删除键。
-5. 当列表中的某个元素校验错误时，根据列表索引查找元素，尝试 1 与 2 进行修复，如果修复失败则删除元素。
+5. 当列表中的某个元素校验错误时，根据列表索引查找元素，然后删除该元素（当 `guess_default=True` 时替换为推测的默认值）
 6. 当发生UnicodeDecodeError时，尝试手动解码再进行二次校验
    - `utf8_error=='strict'`：UnicodeDecodeError 将被视为跟路径上的错误，会尝试默认构建根模型。你可能因为一个unicode错误而丢失全部数据。
    - `utf8_error=='replace'`：将错误的unicode替换为 `�`（U+FFFD），大部分数据将成功解析，但你可能多出一些问号字符。
@@ -183,6 +189,7 @@ def load_msgpack_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
+        guess_default: bool = False,
 ) -> Tuple[Any, List[ErrorInfo]]: ...
 result, errors = load_msgpack_with_default(data, MyStruct)
 ```

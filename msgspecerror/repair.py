@@ -13,14 +13,66 @@ from .parse_type import get_default, is_struct_type, origin_args
 from .repair_unicode import _collect_unicode_replace
 
 
+def _guess_validated_default(model):
+    """
+    Guess a default value for a typehint, and make sure it passes validation
+
+    Args:
+        model (Any): The target typehint
+
+    Returns:
+        Any: The guessed value, or NODEFAULT if the type can't be guessed
+            or the guessed value is rejected by `model`
+    """
+    value = get_default(model, guess_default=True)
+    if value is NODEFAULT:
+        return NODEFAULT
+    try:
+        convert(value, type=model)
+    except ValidationError:
+        return NODEFAULT
+    return value
+
+
+def _get_item_model(model_origin, model_args, index):
+    """
+    Get the typehint of one item in a sequence typehint
+
+    Args:
+        model_origin (type): Origin of the sequence typehint, e.g. list, tuple, set
+        model_args (tuple | None): Args of the sequence typehint, None for bare typehints
+        index (int): Index of the item
+
+    Returns:
+        Any: The item typehint, or NODEFAULT if it can't be determined
+    """
+    if not model_args:
+        # Bare `list` / `tuple` / `set` typehint without an item type
+        return NODEFAULT
+    if model_origin is tuple and Ellipsis not in model_args:
+        # Fixed-length tuple, the item type is per index
+        try:
+            return model_args[index]
+        except IndexError:
+            return NODEFAULT
+    # list / set / frozenset / variable-length tuple, all items share one type
+    return model_args[0]
+
+
 def _repair_once(
-        raw_obj, model, error: ErrorInfo
+        raw_obj, model, error: ErrorInfo, guess_default=False
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
     """
     Args:
         raw_obj:
         model:
         error:
+        guess_default (bool): Defaults to False.
+            If False, a dict entry or list item that fails validation is deleted
+                as the minimal repair.
+            If True, a failing dict value or list item is replaced by a guessed default
+                (e.g. 0 for int, "" for str), falling back to deletion if the type has no
+                guessable default or the guessed value fails validation.
 
     Returns:
         tuple[Any, ErrorInfo | _NoDefault]: (obj, error) the repaired object and fixed error.
@@ -29,7 +81,7 @@ def _repair_once(
     """
     # handle root error
     if not error.loc:
-        value = get_default(model)
+        value = get_default(model, guess_default=guess_default)
         return value, error
 
     # handle errors in deep path
@@ -69,10 +121,17 @@ def _repair_once(
             error.loc = loc[:i] + (key,) + loc[i + 1:]
             if is_last:
                 # fix obj
-                value = get_default(child_model)
-                if value is NODEFAULT:
+                if guess_default:
+                    value = _guess_validated_default(child_model)
+                    if value is not NODEFAULT:
+                        obj[key] = value
+                        return raw_obj, error
+                # minimal repair, delete the invalid key-value pair
+                try:
+                    del obj[key]
+                except KeyError:
+                    # this should happen, unless raw_obj and error.loc don't match
                     return NODEFAULT, error
-                obj[key] = value
                 return raw_obj, error
             else:
                 # go deeper
@@ -151,8 +210,19 @@ def _repair_once(
             if type(obj) is not list:
                 # Error path like `0` implies a list, but obj doesn't match.
                 return NODEFAULT, error
+            item_model = _get_item_model(model_origin, model_args, part)
             if is_last:
-                # fix obj, just pop the item
+                # fix obj
+                if guess_default and item_model is not NODEFAULT:
+                    value = _guess_validated_default(item_model)
+                    if value is not NODEFAULT:
+                        try:
+                            obj[part] = value
+                        except IndexError:
+                            # this should happen, unless raw_obj and error.loc don't match
+                            return NODEFAULT, error
+                        return raw_obj, error
+                # minimal repair, delete the invalid item
                 try:
                     obj.pop(part)
                 except IndexError:
@@ -161,12 +231,15 @@ def _repair_once(
                 return raw_obj, error
             else:
                 # go deeper
+                if item_model is NODEFAULT:
+                    # The item type is unknown, we don't know how to repair the deeper path
+                    return NODEFAULT, error
                 try:
                     obj = obj[part]
                 except IndexError:
                     # this should happen, unless raw_obj and error.loc don't match
                     return NODEFAULT, error
-                model = model_args[0]
+                model = item_model
                 continue
 
         # 4. Invalid object field
@@ -185,7 +258,11 @@ def _repair_once(
                 # if field doesn't have a default, try to get from type
                 if value is NODEFAULT:
                     child_model = get_field_typehint(model, part)
-                    value = get_default(child_model)
+                    if guess_default:
+                        # a guessed value is useless if it fails validation
+                        value = _guess_validated_default(child_model)
+                    else:
+                        value = get_default(child_model)
                     # still no default?
                     if value is NODEFAULT:
                         return NODEFAULT, error
@@ -208,18 +285,19 @@ def _repair_once(
         # 5. Fallback
         # This shouldn't happen unless raw_obj, model, error don't match
         # If it really happens, we trust `model` and do the best we can
-        value = get_default(model)
+        value = get_default(model, guess_default=guess_default)
         return value, error
 
 
 def _handle_obj_repair(
-        raw_obj, model, error: ValidationError
+        raw_obj, model, error: ValidationError, guess_default=False
 ) -> "tuple[Any, list[ErrorInfo]]":
     """
     Args:
         raw_obj (Any):
         model (type): The target type to decode into.
         error (ValidationError):
+        guess_default (bool): Defaults to False, see `_repair_once`
 
     Returns:
         tuple[any, list[ErrorInfo]]:
@@ -228,13 +306,13 @@ def _handle_obj_repair(
     collected_errors = []
     for _ in range(const.MAXIMUM_REPAIR):
         # repair once
-        raw_obj, error = _repair_once(raw_obj, model, error)
+        raw_obj, error = _repair_once(raw_obj, model, error, guess_default=guess_default)
         if error is not NODEFAULT:
             collected_errors.append(error)
 
         # repair failed
         if raw_obj is NODEFAULT:
-            return get_default(model, return_obj=True), collected_errors
+            return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
 
         # try if all repaired
         try:
@@ -248,30 +326,31 @@ def _handle_obj_repair(
                     'Input rejected: validation failed on struct defaults',
                     type=ErrorType.INPUT_REJECTED, loc=())
                 collected_errors.append(rejected)
-                return get_default(model, return_obj=True), collected_errors
+                return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
 
     # Too many iterations — possible malicious input
     rejected = ErrorInfo(
         'Input rejected: too many repair cycles',
         type=ErrorType.INPUT_REJECTED, loc=())
     collected_errors.append(rejected)
-    return get_default(model, return_obj=True), collected_errors
+    return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
 
 
 def _handle_root_error(
-        model: Any, error
+        model: Any, error, guess_default=False
 ) -> "tuple[Any, list[ErrorInfo]]":
     """
     Args:
         model (type): The target type to decode into.
         error (str | Exception):
+        guess_default (bool): Defaults to False, see `_repair_once`
 
     Returns:
         tuple[any, list[ErrorInfo]]:
     """
     collected_errors = [parse_msgspec_error(error)]
     # try if model can be default constructed
-    return get_default(model, return_obj=True), collected_errors
+    return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
 
 
 def _handle_json_unicode_repair(
@@ -308,6 +387,7 @@ def load_json_with_default(
         model_or_decoder: Type[T],
         *,
         utf8_error: T_utf8_error = ...,
+        guess_default: bool = ...,
 ) -> Tuple[T, List[ErrorInfo]]: ...
 
 
@@ -317,6 +397,7 @@ def load_json_with_default(
         model_or_decoder: "JsonDecoder[T]",
         *,
         utf8_error: T_utf8_error = ...,
+        guess_default: bool = ...,
 ) -> Tuple[T, List[ErrorInfo]]: ...
 
 
@@ -325,6 +406,7 @@ def load_json_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: T_utf8_error = 'replace',
+        guess_default: bool = False,
 ) -> Tuple[Any, List[ErrorInfo]]:
     """
     Decodes bytes, substituting defaults for fields that fail validation or have invalid unicode.
@@ -340,6 +422,14 @@ def load_json_with_default(
                 Most data will be preserved, but you may have a U+FFFD in string.
             - "ignore", remove error bytes.
                 Most data will be preserved, but you may lose the error data
+        guess_default (bool): Defaults to False.
+            False by default for safety. If True, a failing value is replaced by a guessed
+            default (e.g. 0 for int, "" for str) when no explicit default is available.
+            - A struct field with no default is replaced by the guessed default.
+            - A dict value or list item is replaced by the guessed default, or deleted if
+                the type has no guessable default or the guessed value fails validation.
+            If False, a failing dict entry or list item is deleted as the minimal repair,
+            and a repair that can't find a default fails, falling back to the root default.
 
     Returns:
         tuple[any, list[ErrorInfo]]: (result, errors) validated result and a list of collected errors
@@ -384,30 +474,30 @@ def load_json_with_default(
             try:
                 raw_obj = decode_json(data)
             except DecodeError as error:
-                return _handle_root_error(model, error)
+                return _handle_root_error(model, error, guess_default=guess_default)
             except UnicodeDecodeError as error:
                 if utf8_error in ['replace', 'ignore']:
                     data, new_errors = _handle_json_unicode_repair(data, utf8_error=utf8_error)
                     collected_errors.extend(new_errors)
                     continue
                 else:
-                    return _handle_root_error(model, error)
+                    return _handle_root_error(model, error, guess_default=guess_default)
             # Most errors will enter here
-            raw_obj, new_errors = _handle_obj_repair(raw_obj, model, e)
+            raw_obj, new_errors = _handle_obj_repair(raw_obj, model, e, guess_default=guess_default)
             collected_errors.extend(new_errors)
             return raw_obj, collected_errors
         except DecodeError as error:
-            return _handle_root_error(model, error)
+            return _handle_root_error(model, error, guess_default=guess_default)
         except UnicodeDecodeError as error:
             if utf8_error in ['replace', 'ignore']:
                 data, new_errors = _handle_json_unicode_repair(data, utf8_error=utf8_error)
                 collected_errors.extend(new_errors)
                 continue
             else:
-                return _handle_root_error(model, error)
+                return _handle_root_error(model, error, guess_default=guess_default)
 
     # this shouldn't happen
-    result = get_default(model, return_obj=True)
+    result = get_default(model, guess_default=guess_default, return_obj=True)
     rejected = ErrorInfo(
         'Input rejected: failed to solve UnicodeDecodeError',
         type=ErrorType.INPUT_REJECTED, loc=())
@@ -421,6 +511,7 @@ def load_msgpack_with_default(
         model_or_decoder: Type[T],
         *,
         utf8_error: T_utf8_error = 'replace',
+        guess_default: bool = ...,
 ) -> Tuple[Any, List[ErrorInfo]]: ...
 
 
@@ -430,6 +521,7 @@ def load_msgpack_with_default(
         model_or_decoder: "MsgpackDecoder[T]",
         *,
         utf8_error: T_utf8_error = 'replace',
+        guess_default: bool = ...,
 ) -> Tuple[Any, List[ErrorInfo]]: ...
 
 
@@ -438,6 +530,7 @@ def load_msgpack_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: T_utf8_error = 'replace',
+        guess_default: bool = False,
 ) -> Tuple[Any, List[ErrorInfo]]:
     """
     Decodes bytes, substituting defaults for fields that fail validation or have invalid unicode.
@@ -466,6 +559,7 @@ def load_msgpack_with_default(
               Most data is preserved, but strings may contain the replacement
               character.
             - ``"ignore"`` — remove error bytes entirely.
+        guess_default (bool): Defaults to False, see load_json_with_default for more info.
 
     Returns:
         tuple[any, list[ErrorInfo]]: (result, errors) validated result and a list of collected errors
@@ -503,17 +597,17 @@ def load_msgpack_with_default(
                     unicode_errors.append(parse_msgspec_error(error))
                     continue
                 # strict or unknown → root error
-                result, errors = _handle_root_error(model, error)
+                result, errors = _handle_root_error(model, error, guess_default=guess_default)
                 errors.extend(unicode_errors)
                 return result, errors
             except DecodeError as error:
-                result, errors = _handle_root_error(model, error)
+                result, errors = _handle_root_error(model, error, guess_default=guess_default)
                 errors.extend(unicode_errors)
                 return result, errors
             # Most errors will enter here
-            return _handle_obj_repair(raw_obj, model, e)
+            return _handle_obj_repair(raw_obj, model, e, guess_default=guess_default)
         except DecodeError as error:
-            result, errors = _handle_root_error(model, error)
+            result, errors = _handle_root_error(model, error, guess_default=guess_default)
             errors.extend(unicode_errors)
             return result, errors
         except UnicodeDecodeError as error:
@@ -522,12 +616,12 @@ def load_msgpack_with_default(
                 unicode_errors.append(parse_msgspec_error(error))
                 continue
             # strict or unknown → root error
-            result, errors = _handle_root_error(model, error)
+            result, errors = _handle_root_error(model, error, guess_default=guess_default)
             errors.extend(unicode_errors)
             return result, errors
 
     # Exhausted retries – shouldn't happen after the slow walker
-    result = get_default(model, return_obj=True)
+    result = get_default(model, guess_default=guess_default, return_obj=True)
     rejected = ErrorInfo(
         'Input rejected: failed to solve UnicodeDecodeError',
         type=ErrorType.INPUT_REJECTED, loc=())

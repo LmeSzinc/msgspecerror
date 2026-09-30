@@ -156,17 +156,23 @@ def load_json_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
+        guess_default: bool = False,
 ) -> Tuple[Any, List[ErrorInfo]]: ...
 result, errors = load_json_with_default(data, MyStruct)
 ```
+
+`guess_default` controls how a value that fails validation is repaired when the model provides no explicit default:
+
+- `guess_default=False` (default): a failing dict entry or list item is deleted, as the minimal repair, keeping all other data untouched.
+- `guess_default=True`: a failing dict value or list item is replaced by a guessed default (`0` for `int`, `""` for `str`, `[]` for `list`, `None` for `Optional`, ...), and deleted if the type has no guessable default (Enum, `Literal`, datetime, ...) or the guessed value fails validation (e.g. `Annotated[int, Meta(ge=18)]`). A struct field with no default is repaired by a guessed value too.
 
 The repair logic of `load_json_with_default`:
 
 1. On field validation error, attempts to use the field's default value
 2. If the target path is a `msgspec.Struct`, attempts a default construct — succeeds if all fields have defaults
-3. On dict value error, iterates all key-value pairs to find the failing value, then attempts 1 & 2
+3. On dict value error, iterates all key-value pairs to find the failing value, then deletes the pair (or repairs it with a guessed default when `guess_default=True`)
 4. On dict key error, iterates all keys to find the failing key, then attempts 1 & 2; removes the key if repair fails
-5. On list element error, finds the element by index, then attempts 1 & 2; removes the element if repair fails
+5. On list element error, finds the element by index, then deletes the element (or repairs it with a guessed default when `guess_default=True`)
 6. On `UnicodeDecodeError`, attempts manual decoding and re-validation
    - `utf8_error=='strict'`: Treats `UnicodeDecodeError` as a root-path error, attempts default construction of the root model
    - `utf8_error=='replace'`: Replaces invalid unicode with `\ufffd` (U+FFFD)
@@ -183,6 +189,7 @@ def load_msgpack_with_default(
         model_or_decoder: Any,
         *,
         utf8_error: Literal['strict', 'replace', 'ignore'] = 'replace',
+        guess_default: bool = False,
 ) -> Tuple[Any, List[ErrorInfo]]: ...
 result, errors = load_msgpack_with_default(data, MyStruct)
 ```

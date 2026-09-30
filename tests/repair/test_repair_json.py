@@ -1,8 +1,12 @@
-from typing import Dict, List, Optional
+from enum import Enum
+from typing import (AbstractSet, Collection, Dict, FrozenSet, List, Mapping, MutableMapping,
+                    MutableSet, Optional, Sequence, Set, Tuple)
 
 import msgspec
 import msgspec.json
+import pytest
 from msgspec import NODEFAULT, Struct, field
+from typing_extensions import Annotated
 
 from msgspecerror.repair import load_json_with_default
 
@@ -48,7 +52,7 @@ class DeepStruct1(Struct):
 
 class DeepDict(Struct):
     """Model for testing deeply nested dictionaries."""
-    data: Dict[str, Dict[str, Optional[int]]]  # Optional[int] can be repaired to None
+    data: Dict[str, Dict[str, Optional[int]]]  # Optional[int] can be repaired to None with guess_default=True
 
 
 class DeepList(Struct):
@@ -176,8 +180,8 @@ class TestLoadJsonWithDefault:
         data = b'{"data": {"level1": {"level2_ok": 123, "level2_bad": "not-an-int-or-null"}}}'
         result, errors = load_json_with_default(data, DeepDict)
 
-        # The value's type is Optional[int], which can be repaired to None.
-        expected = DeepDict(data={"level1": {"level2_ok": 123, "level2_bad": None}})
+        # The failing key-value pair is deleted, the valid pairs are kept.
+        expected = DeepDict(data={"level1": {"level2_ok": 123}})
         assert result == expected
         assert len(errors) == 1
         assert errors[0].loc == ("data", "level1", "level2_bad")
@@ -417,3 +421,306 @@ class TestLoadJsonWithDefault:
         assert result == WithDefaults(a=42, b="default", c=[])
         assert len(errors) == 1
         assert errors[0].loc == ()
+
+
+# --- Models for Testing guess_default ---
+
+class MyEnum(Enum):
+    """An enum type, enum values are never guessed."""
+    A = 1
+    B = 2
+
+
+class NoDefaultStruct(Struct):
+    """A struct that cannot be default-constructed."""
+    x: int
+
+
+class IntValueMap(Struct):
+    """A dict with int values, a failing value can be guessed as 0."""
+    mapping: Dict[str, int] = {}
+
+
+class EnumValueMap(Struct):
+    """A dict with enum values, which have no guessable default."""
+    mapping: Dict[str, MyEnum] = {}
+
+
+class ConstrainedValueMap(Struct):
+    """A dict with constrained int values, the guessed 0 fails `ge=18`."""
+    mapping: Dict[str, Annotated[int, msgspec.Meta(ge=18)]] = {}
+
+
+class StructValueMap(Struct):
+    """A dict with struct values that cannot be default-constructed."""
+    mapping: Dict[str, NoDefaultStruct] = {}
+
+
+class IntItemList(Struct):
+    """A list with int items, a failing item can be guessed as 0."""
+    items: List[int] = []
+
+
+class EnumItemList(Struct):
+    """A list with enum items, which have no guessable default."""
+    items: List[MyEnum] = []
+
+
+class TupleModel(Struct):
+    """A tuple whose item types differ per index."""
+    t: Tuple[int, str] = (0, "")
+
+
+class TestGuessDefaultRepair:
+    """Tests for the `guess_default` option, which controls how failing values are repaired."""
+
+    def test_dict_value_failure_deletes_pair_by_default(self):
+        """By default, a failing dict value is deleted, the valid pairs are kept."""
+        data = b'{"mapping": {"ok": 1, "bad": "not-an-int", "ok2": 3}}'
+        result, errors = load_json_with_default(data, IntValueMap)
+
+        assert result == IntValueMap(mapping={"ok": 1, "ok2": 3})
+        assert len(errors) == 1
+        assert errors[0].loc == ("mapping", "bad")
+
+    def test_dict_value_failure_becomes_guessed_default(self):
+        """With guess_default=True, a failing dict value becomes the guessed default."""
+        data = b'{"mapping": {"ok": 1, "bad": "not-an-int", "ok2": 3}}'
+        result, errors = load_json_with_default(data, IntValueMap, guess_default=True)
+
+        assert result == IntValueMap(mapping={"ok": 1, "bad": 0, "ok2": 3})
+        assert len(errors) == 1
+        assert errors[0].loc == ("mapping", "bad")
+
+    def test_dict_value_unguessable_type_is_deleted(self):
+        """An enum value has no safe default, so the pair is deleted even when guessing."""
+        data = b'{"mapping": {"ok": 1, "bad": 3}}'
+        result, errors = load_json_with_default(data, EnumValueMap, guess_default=True)
+
+        assert result == EnumValueMap(mapping={"ok": MyEnum.A})
+        assert len(errors) == 1
+        assert errors[0].loc == ("mapping", "bad")
+
+    def test_dict_value_invalid_guess_is_deleted(self):
+        """The guessed 0 is rejected by `ge=18`, so the pair is deleted."""
+        data = b'{"mapping": {"ok": 20, "bad": "not-an-int"}}'
+        result, errors = load_json_with_default(data, ConstrainedValueMap, guess_default=True)
+
+        assert result == ConstrainedValueMap(mapping={"ok": 20})
+        assert len(errors) == 1
+        assert errors[0].loc == ("mapping", "bad")
+
+    def test_dict_value_struct_without_defaults_is_deleted(self):
+        """A struct value that can't be default-constructed is deleted instead of being `{}`."""
+        data = b'{"mapping": {"ok": {"x": 1}, "bad": "not-a-struct"}}'
+        result, errors = load_json_with_default(data, StructValueMap, guess_default=True)
+
+        assert result == StructValueMap(mapping={"ok": NoDefaultStruct(x=1)})
+        assert len(errors) == 1
+        assert errors[0].loc == ("mapping", "bad")
+
+    def test_dict_key_failure_deletes_pair_when_guessing(self):
+        """Dict keys are never guessed, the failing pair is deleted in both modes."""
+        data = b'{"mapping": {"1": "val1", "not-an-int": "val2", "3": "val3"}}'
+        result, errors = load_json_with_default(data, IntKeyDictModel, guess_default=True)
+
+        assert result == IntKeyDictModel(mapping={1: "val1", 3: "val3"})
+        assert len(errors) == 1
+        assert errors[0].loc == ("mapping", "not-an-int")
+
+    def test_list_item_failure_deletes_item_by_default(self):
+        """By default, a failing list item is deleted, the valid items are kept."""
+        data = b'{"items": [1, "not-an-int", 3]}'
+        result, errors = load_json_with_default(data, IntItemList)
+
+        assert result == IntItemList(items=[1, 3])
+        assert len(errors) == 1
+        assert errors[0].loc == ("items", 1)
+
+    def test_list_item_failure_becomes_guessed_default(self):
+        """With guess_default=True, a failing list item becomes the guessed default."""
+        data = b'{"items": [1, "not-an-int", 3]}'
+        result, errors = load_json_with_default(data, IntItemList, guess_default=True)
+
+        assert result == IntItemList(items=[1, 0, 3])
+        assert len(errors) == 1
+        assert errors[0].loc == ("items", 1)
+
+    def test_list_item_unguessable_type_is_deleted(self):
+        """An enum item has no safe default, so it is deleted even when guessing."""
+        data = b'{"items": [1, 3]}'
+        result, errors = load_json_with_default(data, EnumItemList, guess_default=True)
+
+        assert result == EnumItemList(items=[MyEnum.A])
+        assert len(errors) == 1
+        assert errors[0].loc == ("items", 1)
+
+    def test_tuple_item_is_guessed_by_index(self):
+        """A tuple item is guessed with the type at the failing index."""
+        data = b'{"t": ["not-an-int", 2]}'
+        result, errors = load_json_with_default(data, TupleModel, guess_default=True)
+
+        assert result == TupleModel(t=(0, ""))
+        assert len(errors) == 2
+        assert errors[0].loc == ("t", 0)
+        assert errors[1].loc == ("t", 1)
+
+    def test_struct_field_without_default_is_guessed(self):
+        """With guess_default=True, a field with no default is repaired by a guessed value."""
+        data = b'{"a": "bad-int", "b": "good"}'
+        result, errors = load_json_with_default(data, Simple, guess_default=True)
+
+        assert result == Simple(a=0, b="good")
+        assert len(errors) == 1
+        assert errors[0].loc == ("a",)
+
+
+# --- Models for Testing Container Types ---
+
+class ListModel(Struct):
+    """A list field."""
+    v: List[int]
+
+
+class SequenceModel(Struct):
+    """An abstract Sequence field, msgspec decodes it as a list."""
+    v: Sequence[int]
+
+
+class CollectionModel(Struct):
+    """An abstract Collection field, msgspec decodes it as a list."""
+    v: Collection[int]
+
+
+class SetModel(Struct):
+    """A set field, msgspec decodes it as a list."""
+    v: Set[int]
+
+
+class MutableSetModel(Struct):
+    """A mutable set field."""
+    v: MutableSet[int]
+
+
+class AbstractSetModel(Struct):
+    """An abstract set field."""
+    v: AbstractSet[int]
+
+
+class FrozenSetModel(Struct):
+    """A frozenset field."""
+    v: FrozenSet[int]
+
+
+class VariadicTupleModel(Struct):
+    """A variable-length tuple field."""
+    v: Tuple[int, ...]
+
+
+class DictOfSetModel(Struct):
+    """A dict whose values are sets."""
+    v: Dict[str, Set[int]]
+
+
+class DictModel(Struct):
+    """A dict field."""
+    v: Dict[str, int]
+
+
+class MappingModel(Struct):
+    """An abstract Mapping field, msgspec decodes it as a dict."""
+    v: Mapping[str, int]
+
+
+class MutableMappingModel(Struct):
+    """An abstract MutableMapping field."""
+    v: MutableMapping[str, int]
+
+
+class IntKeyMappingModel(Struct):
+    """A Mapping with int keys."""
+    v: Mapping[int, str]
+
+
+class FixedTupleModel(Struct):
+    """A fixed-length tuple whose item types differ per index."""
+    v: Tuple[str, WithDefaults]
+
+
+class TestContainerRepair:
+    """Failing items of list-like containers and values of dict-like containers."""
+
+    @pytest.mark.parametrize("model, deleted, guessed", [
+        (ListModel, [1, 3], [1, 0, 3]),
+        (SequenceModel, [1, 3], [1, 0, 3]),
+        (CollectionModel, [1, 3], [1, 0, 3]),
+        (SetModel, {1, 3}, {0, 1, 3}),
+        (MutableSetModel, {1, 3}, {0, 1, 3}),
+        (AbstractSetModel, {1, 3}, {0, 1, 3}),
+        (FrozenSetModel, frozenset({1, 3}), frozenset({0, 1, 3})),
+        (VariadicTupleModel, (1, 3), (1, 0, 3)),
+    ])
+    def test_item_failure(self, model, deleted, guessed):
+        """A failing item is deleted by default, or replaced by the guessed default."""
+        data = b'{"v": [1, "bad", 3]}'
+
+        result, errors = load_json_with_default(data, model)
+        assert result == model(v=deleted)
+        assert len(errors) == 1
+        assert errors[0].loc == ("v", 1)
+
+        result, errors = load_json_with_default(data, model, guess_default=True)
+        assert result == model(v=guessed)
+        assert len(errors) == 1
+        assert errors[0].loc == ("v", 1)
+
+    @pytest.mark.parametrize("model, deleted, guessed", [
+        (DictModel, {"ok": 1}, {"ok": 1, "bad": 0}),
+        (MappingModel, {"ok": 1}, {"ok": 1, "bad": 0}),
+        (MutableMappingModel, {"ok": 1}, {"ok": 1, "bad": 0}),
+    ])
+    def test_dict_value_failure(self, model, deleted, guessed):
+        """A failing value of a dict-like container is deleted, or replaced by the guessed default."""
+        data = b'{"v": {"ok": 1, "bad": "x"}}'
+
+        result, errors = load_json_with_default(data, model)
+        assert result == model(v=deleted)
+        assert len(errors) == 1
+        assert errors[0].loc == ("v", "bad")
+
+        result, errors = load_json_with_default(data, model, guess_default=True)
+        assert result == model(v=guessed)
+        assert len(errors) == 1
+        assert errors[0].loc == ("v", "bad")
+
+    def test_dict_key_failure_in_mapping(self):
+        """A failing key of a Mapping is deleted, keys are never guessed."""
+        data = b'{"v": {"1": "a", "bad": "b"}}'
+
+        result, errors = load_json_with_default(data, IntKeyMappingModel, guess_default=True)
+        assert result == IntKeyMappingModel(v={1: "a"})
+        assert len(errors) == 1
+        assert errors[0].loc == ("v", "bad")
+
+    def test_item_failure_in_nested_set(self):
+        """A failing item inside a nested set keeps the rest of the data untouched."""
+        data = b'{"v": {"ok": [1], "bad": [1, "x"]}}'
+
+        result, errors = load_json_with_default(data, DictOfSetModel)
+        assert result == DictOfSetModel(v={"ok": {1}, "bad": {1}})
+        assert len(errors) == 1
+        assert errors[0].loc == ("v", "bad", 1)
+
+        result, errors = load_json_with_default(data, DictOfSetModel, guess_default=True)
+        assert result == DictOfSetModel(v={"ok": {1}, "bad": {0, 1}})
+        assert len(errors) == 1
+        assert errors[0].loc == ("v", "bad", 1)
+
+    def test_fixed_tuple_uses_item_type_at_index(self):
+        """A struct inside a fixed-length tuple is repaired with the item type at that index."""
+        data = b'{"v": ["ok", {"a": "bad", "b": "good"}]}'
+
+        result, errors = load_json_with_default(data, FixedTupleModel)
+        assert result == FixedTupleModel(v=("ok", WithDefaults(a=42, b="good")))
+        assert len(errors) == 1
+        assert errors[0].loc == ("v", 1, "a")
