@@ -59,6 +59,29 @@ def _get_item_model(model_origin, model_args, index):
     return model_args[0]
 
 
+def _pop_last_collection(last_collection_data, last_collection_key):
+    """
+    Pop the dict entry / list item that we have stepped into, when the value inside it can't be repaired
+
+    Args:
+        last_collection_data (dict | list | None): The innermost list/dict data, None if we never stepped into one
+        last_collection_key (int | str): The failing key in `last_collection_data`
+
+    Returns:
+        bool: True if the entry is popped
+    """
+    if last_collection_data is None:
+        # we never stepped into a list/dict, nothing to pop
+        return False
+    try:
+        # the key is found in `last_collection_data` during the walk, so this should not fail
+        last_collection_data.pop(last_collection_key)
+    except (KeyError, IndexError):
+        # the key is stale, the repair failed
+        return False
+    return True
+
+
 def _repair_once(
         raw_obj, model, error: ErrorInfo, guess_default=False
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
@@ -88,6 +111,10 @@ def _repair_once(
     obj = raw_obj
     list_loc = [loc for loc in error.loc]
     last_index = len(list_loc) - 1
+    # The data and key of the innermost list/dict level we have stepped into, the entry is
+    # popped when the value inside it can't be repaired
+    last_collection_data = None
+    last_collection_key = None
     for i, part in enumerate(list_loc):
         is_last = i == last_index
 
@@ -114,7 +141,9 @@ def _repair_once(
                     break
             else:
                 # Could not identify the failing key. Unrecoverable.
-                return NODEFAULT, error
+                if not _pop_last_collection(last_collection_data, last_collection_key):
+                    return NODEFAULT, error
+                return raw_obj, error
 
             # fix loc
             loc = error.loc
@@ -135,6 +164,8 @@ def _repair_once(
                 return raw_obj, error
             else:
                 # go deeper
+                last_collection_data = obj
+                last_collection_key = key
                 try:
                     obj = obj[key]
                 except KeyError:
@@ -159,7 +190,9 @@ def _repair_once(
             except TypeError:
                 # Msgpack data with integer keys validated against a struct.
                 # model_args is None
-                return NODEFAULT, error
+                if not _pop_last_collection(last_collection_data, last_collection_key):
+                    return NODEFAULT, error
+                return raw_obj, error
             for key in obj.keys():
                 try:
                     convert(key, key_model)
@@ -167,7 +200,9 @@ def _repair_once(
                     break
             else:
                 # Could not identify the failing key. Unrecoverable.
-                return NODEFAULT, error
+                if not _pop_last_collection(last_collection_data, last_collection_key):
+                    return NODEFAULT, error
+                return raw_obj, error
 
             # fix loc
             loc = error.loc
@@ -233,7 +268,11 @@ def _repair_once(
                 # go deeper
                 if item_model is NODEFAULT:
                     # The item type is unknown, we don't know how to repair the deeper path
-                    return NODEFAULT, error
+                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                        return NODEFAULT, error
+                    return raw_obj, error
+                last_collection_data = obj
+                last_collection_key = part
                 try:
                     obj = obj[part]
                 except IndexError:
@@ -254,7 +293,9 @@ def _repair_once(
                     value = get_field_default(model, part)
                 except AttributeError:
                     # this shouldn't happen, unless raw_obj and error.loc don't match
-                    return NODEFAULT, error
+                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                        return NODEFAULT, error
+                    return raw_obj, error
                 # if field doesn't have a default, try to get from type
                 if value is NODEFAULT:
                     child_model = get_field_typehint(model, part)
@@ -263,9 +304,11 @@ def _repair_once(
                         value = _guess_validated_default(child_model)
                     else:
                         value = get_default(child_model)
-                    # still no default?
+                    # still no default, delete the entry we have stepped into
                     if value is NODEFAULT:
-                        return NODEFAULT, error
+                        if not _pop_last_collection(last_collection_data, last_collection_key):
+                            return NODEFAULT, error
+                        return raw_obj, error
                 obj[part] = value
                 return raw_obj, error
             else:
@@ -279,7 +322,9 @@ def _repair_once(
                     model = get_field_typehint(model, part)
                 except AttributeError:
                     # this shouldn't happen, unless raw_obj and error.loc don't match
-                    return NODEFAULT, error
+                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                        return NODEFAULT, error
+                    return raw_obj, error
                 continue
 
         # 5. Fallback

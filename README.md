@@ -170,9 +170,9 @@ The repair logic of `load_json_with_default`:
 
 1. On field validation error, attempts to use the field's default value
 2. If the target path is a `msgspec.Struct`, attempts a default construct — succeeds if all fields have defaults
-3. On dict value error, iterates all key-value pairs to find the failing value, then deletes the pair (or repairs it with a guessed default when `guess_default=True`)
+3. On dict value error, iterates all key-value pairs to find the failing value, then deletes the pair (or repairs it with a guessed default when `guess_default=True`); a pair whose nested data can't be repaired is deleted too
 4. On dict key error, iterates all keys to find the failing key, then attempts 1 & 2; removes the key if repair fails
-5. On list element error, finds the element by index, then deletes the element (or repairs it with a guessed default when `guess_default=True`)
+5. On list element error, finds the element by index, then deletes the element (or repairs it with a guessed default when `guess_default=True`); an element whose nested data can't be repaired is deleted too
 6. On `UnicodeDecodeError`, attempts manual decoding and re-validation
    - `utf8_error=='strict'`: Treats `UnicodeDecodeError` as a root-path error, attempts default construction of the root model
    - `utf8_error=='replace'`: Replaces invalid unicode with `\ufffd` (U+FFFD)
