@@ -79,6 +79,36 @@ else:
 
 # <-- End of the copied code -->
 
+def unwrap_typehint(t):
+    """
+    Unwrap the type wrappers of a typehint: Annotated, NewType, Final, TypeAliasType
+
+    Unlike `origin_args`, a parametrized generic alias like `Box[int]` is returned as
+    it is, its parameters affect the typehints inside it.
+
+    Args:
+        t: Any typehint
+
+    Returns:
+        Any: The unwrapped typehint
+    """
+    while True:
+        if type(t) is _AnnotatedAlias:
+            # Annotated[T, metadata...], the wrapped typehint is the origin
+            t = t.__origin__
+        elif getattr(t, '__supertype__', None) is not None:
+            # NewType('X', T), the wrapped typehint is the supertype
+            t = t.__supertype__
+        elif getattr(t, '__origin__', None) is Final and getattr(t, '__args__', None):
+            # Final[T]
+            t = t.__args__[0]
+        elif type(t) is _TypeAliasType:
+            # type X = T
+            t = t.__value__
+        else:
+            return t
+
+
 def origin_args(t):
     """
     A simplified version of msgspec.inspect._origin_args_metadata
@@ -132,10 +162,27 @@ def origin_args(t):
 
 
 try:
-    is_struct_type = msgspec.inspect._is_struct
+    _msgspec_is_struct_type = msgspec.inspect._is_struct
 except AttributeError:
     # since 0.20.0, Struct-like check utilities are moved
-    is_struct_type = msgspec.inspect.is_struct_type
+    _msgspec_is_struct_type = msgspec.inspect.is_struct_type
+
+
+def is_struct_type(t):
+    """
+    Equivalent to `msgspec.inspect.is_struct_type`, a parametrized generic alias
+    of a Struct (e.g. `Box[int]`) is a struct type as well
+
+    Args:
+        t: Any typehint
+
+    Returns:
+        bool: True if `t` is a msgspec.Struct type
+    """
+    if _msgspec_is_struct_type(t):
+        return True
+    origin = getattr(t, '__origin__', None)
+    return origin is not None and _msgspec_is_struct_type(origin)
 
 
 def is_struct_like(t):

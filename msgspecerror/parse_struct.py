@@ -1,12 +1,39 @@
 import sys
 from typing import ForwardRef, Generic, Type, TypeVar
 
+try:
+    from types import GenericAlias as _types_GenericAlias
+except ImportError:
+    # Python 3.8, builtin generics like `list[int]` are not supported there
+    _types_GenericAlias = None
+
 from msgspec import NODEFAULT, Struct, UNSET, ValidationError, convert
 from msgspec._core import Factory
 from msgspec._utils import _apply_params, _get_class_mro_and_typevar_mappings
 from typing_extensions import Literal
 
 from .parse_type import _AnnotatedAlias, _eval_type, _forward_ref
+
+
+def _unwrap_struct_model(model):
+    """
+    Unwrap a parametrized generic alias to its origin class
+
+    Args:
+        model: A msgspec.Struct class, or a parametrized generic alias of one (e.g. `Box[int]`)
+
+    Returns:
+        type: The origin class of `model`, `model` itself when it is already a class
+    """
+    # A class is the common case, `isinstance()` is much cheaper than a missing
+    # `__origin__` attribute lookup. A PEP 585 generic alias (`list[int]`) also
+    # passes the `isinstance()` check on CPython, so its `__origin__` is still read.
+    if isinstance(model, type) and type(model) is not _types_GenericAlias:
+        return model
+    origin = getattr(model, '__origin__', None)
+    if origin is not None and isinstance(origin, type):
+        return origin
+    return model
 
 
 def get_field_name(model: Type[Struct], name: str) -> str:
@@ -16,7 +43,7 @@ def get_field_name(model: Type[Struct], name: str) -> str:
     Accepts both field names and encode names (serialization names defined via ``field(name=...)``).
 
     Args:
-        model: Subclass of msgspec.Struct
+        model: Subclass of msgspec.Struct, or a parametrized generic alias of one (e.g. `Box[int]`)
         name (str): Field name or encode name
 
     Returns:
@@ -26,9 +53,10 @@ def get_field_name(model: Type[Struct], name: str) -> str:
         AttributeError: if failed
     """
     # 1. Get name lists from magic attributes.
+    struct_model = _unwrap_struct_model(model)
     try:
-        field_names = model.__struct_fields__
-        encode_names = model.__struct_encode_fields__
+        field_names = struct_model.__struct_fields__
+        encode_names = struct_model.__struct_encode_fields__
     except AttributeError:
         raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
 
@@ -84,7 +112,7 @@ def get_field_default(model: Type[Struct], name: str, validate: bool = False):
     Get default and default_factory of model.field_name
 
     Args:
-        model: Subclass of msgspec.Struct
+        model: Subclass of msgspec.Struct, or a parametrized generic alias of one (e.g. `Box[int]`)
         name (str): Field name (Python attribute) or encode name (serialization name)
         validate (bool): False by default. If True, the default value is checked
             against the field typehint with `msgspec.convert`. msgspec does not
@@ -104,9 +132,10 @@ def get_field_default(model: Type[Struct], name: str, validate: bool = False):
         AttributeError: if failed
     """
     # 1. Get name lists from magic attributes.
+    struct_model = _unwrap_struct_model(model)
     try:
-        field_names = model.__struct_fields__
-        defaults = model.__struct_defaults__
+        field_names = struct_model.__struct_fields__
+        defaults = struct_model.__struct_defaults__
     except AttributeError:
         raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
 
@@ -213,7 +242,7 @@ def get_field_typehint(model: Type[Struct], name: str):
     neither are returned as-is, without touching the rest of the class.
 
     Args:
-        model: Subclass of msgspec.Struct
+        model: Subclass of msgspec.Struct, or a parametrized generic alias of one (e.g. `Box[int]`)
         name (str): Field name (Python attribute) or encode name (serialization name)
 
     Returns:
@@ -225,7 +254,7 @@ def get_field_typehint(model: Type[Struct], name: str):
     # Resolve the name to a field name (supports both field_name and encode_name).
     field_name = get_field_name(model, name)
 
-    for cls in model.__mro__:
+    for cls in _unwrap_struct_model(model).__mro__:
         if cls in (Generic, object):
             continue
         # A classic MRO of msgspec model would be like

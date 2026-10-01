@@ -78,6 +78,12 @@ class ConcreteForwardRefList(GenericForwardRef[List[str]]):
     pass
 
 
+class GenericWithDefaults(Struct, Generic[T]):
+    """A generic struct with defaults, used to look fields up via a parametrized alias."""
+    data: List[T] = []
+    count: int = 0
+
+
 # Structs for testing inheritance (MRO traversal).
 class Parent(Struct):
     parent_field: str
@@ -484,3 +490,38 @@ class TestGetFieldTypehint:
     def test_child_own_aliased_typehint_by_field_name(self):
         """Type hint of child's own aliased field via field name."""
         assert get_field_typehint(ChildOfAliased, "own_aliased") is float
+
+
+# =================================================================
+# Test Class for `get_field_*` with a parametrized generic alias
+# =================================================================
+class TestGetFieldWithGenericAlias:
+    """The `get_field_*` utilities accept a parametrized generic alias of a Struct."""
+
+    def test_get_field_name(self):
+        """A field of a generic alias resolves like one of the origin class."""
+        assert get_field_name(GenericWithDefaults[str], "data") == "data"
+
+    def test_get_field_typehint_substitutes_typevars(self):
+        """The TypeVar of the alias is substituted in the field typehint."""
+        assert get_field_typehint(GenericWithDefaults[str], "data") == List[str]
+        assert get_field_typehint(GenericWithDefaults[int], "count") is int
+
+    def test_get_field_typehint_matches_concrete_subclass(self):
+        """The alias and the concrete subclass produce the same typehint."""
+        assert get_field_typehint(GenericForwardRef[List[str]], "generic_ref") == \
+            get_field_typehint(ConcreteForwardRefList, "generic_ref")
+
+    def test_get_field_default(self):
+        """Defaults are read from the origin class of the alias."""
+        assert get_field_default(GenericWithDefaults[str], "data") == []
+        assert get_field_default(GenericWithDefaults[str], "count") == 0
+
+    def test_get_field_default_validate(self):
+        """The default is validated against the parametrized field typehint."""
+        assert get_field_default(GenericWithDefaults[str], "data", validate=True) == []
+
+    def test_non_struct_alias_raises_attribute_error(self):
+        """An alias of a non-struct type is rejected like a non-struct class."""
+        with pytest.raises(AttributeError, match="is not a valid msgspec.Struct"):
+            get_field_name(List[int], "data")

@@ -8,8 +8,8 @@ from . import const
 from .const import ErrorType, T_utf8_error
 from .parse_error import ErrorInfo, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
-from .parse_struct import _default_is_accepted, get_field_default, get_field_name, get_field_typehint
-from .parse_type import get_default, is_struct_type, origin_args
+from .parse_struct import _default_is_accepted, _unwrap_struct_model, get_field_default, get_field_name, get_field_typehint
+from .parse_type import get_default, is_struct_type, origin_args, unwrap_typehint
 from .repair_unicode import _collect_unicode_replace
 
 
@@ -72,7 +72,7 @@ def _struct_tag_matches(struct, obj):
     Returns:
         bool: True if the obj has no tag info or the tag points to the struct
     """
-    config = struct.__struct_config__
+    config = _unwrap_struct_model(struct).__struct_config__
     if config.tag is None or type(obj) is not dict:
         # Nothing to check the struct against
         return True
@@ -126,10 +126,10 @@ def _resolve_union_member(model_args, part, obj):
         if not is_struct_type(arg_origin):
             continue
         try:
-            get_field_name(arg_origin, part)
+            get_field_name(arg, part)
         except AttributeError:
             continue
-        structs.append(arg_origin)
+        structs.append(arg)
 
     if not structs:
         return NODEFAULT
@@ -179,6 +179,12 @@ def _repair_once(
     for i, part in enumerate(list_loc):
         is_last = i == last_index
 
+        # A field typehint may be wrapped (Annotated, NewType, Final), msgspec decodes
+        # the field as the unwrapped typehint, so the walk should use it too. A
+        # parametrized generic alias (`Box[int]`) keeps its parameters, the field
+        # typehints inside it depend on them.
+        model = unwrap_typehint(model)
+
         model_origin, model_args = origin_args(model)
         if model_origin is Union:
             # The error path points into one member of the union
@@ -188,12 +194,8 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
+            model = unwrap_typehint(model)
             model_origin, model_args = origin_args(model)
-
-        # A struct field typehint may be wrapped (Annotated, NewType, Final), msgspec
-        # decodes the field as the unwrapped origin, so the walk should use it too
-        if is_struct_type(model_origin):
-            model = model_origin
 
         # 1. Invalid dict value
         # msgspec does not tell which key is invalid, just giving placeholder '...', we need to find the exact key
