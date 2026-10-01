@@ -43,6 +43,17 @@ jobs:
     - name: Check the package metadata and the long description
       run: uv tool run twine check --strict dist/*
 
+    - name: Check that the sdist does not ship the test suite
+      run: |
+        python -c "
+        import glob, tarfile
+        path = glob.glob('dist/*.tar.gz')[0]
+        with tarfile.open(path) as tar:
+            leaked = [name for name in tar.getnames() if '/tests/' in name]
+        assert not leaked, f'the sdist ships the test suite: {leaked}'
+        print('sdist ships no tests:', path)
+        "
+
     - name: Inspect the built files
       run: |
         ls -l dist

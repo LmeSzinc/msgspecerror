@@ -1,0 +1,4 @@
+# The test suite is not part of the distribution. setuptools includes
+# `tests/test*.py` in the sdist by default (the legacy
+# `_distutils.command.sdist._add_defaults_optional`), prune it explicitly.
+prune tests
