@@ -190,6 +190,11 @@ def _repair_once(
                 return raw_obj, error
             model_origin, model_args = origin_args(model)
 
+        # A struct field typehint may be wrapped (Annotated, NewType, Final), msgspec
+        # decodes the field as the unwrapped origin, so the walk should use it too
+        if is_struct_type(model_origin):
+            model = model_origin
+
         # 1. Invalid dict value
         # msgspec does not tell which key is invalid, just giving placeholder '...', we need to find the exact key
         if part == '...':
@@ -215,17 +220,24 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
+            failing_key = NODEFAULT
             for key, value in obj.items():
                 try:
                     # Attempt to convert just the value to see if it's the source.
                     convert(value, type=child_model)
                 except ValidationError:
+                    failing_key = key
                     break
-            else:
+                except TypeError:
+                    # `child_model` is not a type msgspec supports, so no key
+                    # can be identified as the failing one
+                    break
+            if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
+            key = failing_key
 
             # fix loc
             loc = error.loc
@@ -275,16 +287,23 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
+            failing_key = NODEFAULT
             for key in obj.keys():
                 try:
                     convert(key, key_model)
                 except ValidationError:
+                    failing_key = key
                     break
-            else:
+                except TypeError:
+                    # `key_model` is not a type msgspec supports, so no key
+                    # can be identified as the failing one
+                    break
+            if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
+            key = failing_key
 
             # fix loc
             loc = error.loc

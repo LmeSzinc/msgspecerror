@@ -1,7 +1,9 @@
-from typing import ForwardRef, Generic, List, Optional, TypeVar, Union
+from typing import Dict, ForwardRef, Generic, List, Optional, Tuple, TypeVar, Union
 
 import pytest
-from msgspec import NODEFAULT, Struct, UNSET, UnsetType, field
+from msgspec import NODEFAULT, Meta, Struct, UNSET, UnsetType, field
+from msgspec.structs import fields as struct_fields
+from typing_extensions import Annotated
 
 from msgspecerror.parse_struct import get_field_default, get_field_name, get_field_typehint
 
@@ -29,6 +31,27 @@ class ForwardRefStruct(Struct):
     ref_field_obj: ForwardRef("AnotherStruct")
 
 
+class NestedForwardRefStruct(Struct):
+    """Forward references nested inside other type hints."""
+    optional_ref: Optional["AnotherStruct"] = None
+    list_ref: List["AnotherStruct"] = []
+    dict_ref: Dict[str, "AnotherStruct"] = {}
+    tuple_ref: Tuple[int, "AnotherStruct"] = (0, None)
+    annotated_ref: Annotated["AnotherStruct", Meta()] = None
+
+
+class RecursiveNode(Struct):
+    """A self-referential forward reference."""
+    value: int = 0
+    next: Optional["RecursiveNode"] = None
+
+
+class ClassLocalAliasStruct(Struct):
+    """A forward reference to a name defined in the class body."""
+    Alias = int
+    aliased_field: "Alias"
+
+
 # Generic Structs for testing TypeVar resolution.
 T = TypeVar("T")
 
@@ -43,6 +66,15 @@ class ConcreteInt(GenericBase[int]):
 
 
 class ConcreteListStr(GenericBase[List[str]]):
+    pass
+
+
+class GenericForwardRef(Struct, Generic[T]):
+    """A forward reference to a TypeVar, resolved per parametrized subclass."""
+    generic_ref: List["T"]
+
+
+class ConcreteForwardRefList(GenericForwardRef[List[str]]):
     pass
 
 
@@ -288,6 +320,41 @@ class TestGetFieldTypehint:
     def test_forward_ref_as_object(self):
         """Tests that a `ForwardRef` object is correctly resolved."""
         assert get_field_typehint(ForwardRefStruct, "ref_field_obj") is AnotherStruct
+
+    @pytest.mark.parametrize(
+        "model, field_name, expected_type",
+        [
+            (NestedForwardRefStruct, "optional_ref", Optional[AnotherStruct]),
+            (NestedForwardRefStruct, "list_ref", List[AnotherStruct]),
+            (NestedForwardRefStruct, "dict_ref", Dict[str, AnotherStruct]),
+            (NestedForwardRefStruct, "tuple_ref", Tuple[int, AnotherStruct]),
+            (NestedForwardRefStruct, "annotated_ref", Annotated[AnotherStruct, Meta()]),
+            (RecursiveNode, "next", Optional[RecursiveNode]),
+            (ClassLocalAliasStruct, "aliased_field", int),
+        ],
+    )
+    def test_forward_ref_nested_in_type_hints(self, model, field_name, expected_type):
+        """
+        Tests that forward references nested inside other type hints
+        (e.g. `Optional["X"]`, `List["X"]`) are resolved, not only the
+        top-level string / `ForwardRef` annotations.
+        """
+        assert get_field_typehint(model, field_name) == expected_type
+
+    def test_forward_ref_typehint_matches_msgspec_resolution(self):
+        """
+        Tests that the returned typehint is the annotation msgspec itself
+        resolved for the decoder, so the two can never drift apart.
+        """
+        for field_info in struct_fields(NestedForwardRefStruct):
+            assert get_field_typehint(NestedForwardRefStruct, field_info.name) == field_info.type
+
+    def test_typevar_inside_forward_ref_is_substituted(self):
+        """
+        Tests that a TypeVar referenced through a forward reference
+        (`List["T"]`) is substituted for the parametrized subclass.
+        """
+        assert get_field_typehint(ConcreteForwardRefList, "generic_ref") == List[List[str]]
 
     def test_typevar_resolution_with_simple_type(self):
         """Tests that a TypeVar is correctly replaced by a concrete simple type (int)."""
