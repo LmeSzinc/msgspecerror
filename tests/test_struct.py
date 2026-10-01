@@ -103,6 +103,17 @@ class StructWithFailingFactory(Struct):
     failing_field: list = field(default_factory=_failing_factory)
 
 
+class ConstrainedDefaultStruct(Struct):
+    """The default `0` violates `ge=18`, msgspec rejects it as an explicit value."""
+    v: Annotated[int, Meta(ge=18)] = 0
+    plain: int = 1
+
+
+class UnjudgeableTypehintStruct(Struct):
+    """msgspec can not convert to this field typehint, the default can not be judged."""
+    items: list["AnotherStruct"] = []
+
+
 # Structs for testing inheritance with aliases.
 class ParentWithAlias(Struct):
     aliased_from_parent: str = field(name="parentAlias")
@@ -280,6 +291,36 @@ class TestGetFieldDefault:
     def test_inherited_aliased_required_default_by_encode_name(self):
         """Inherited required (no default) aliased field returns NODEFAULT via encode name."""
         assert get_field_default(ChildOfAliased, "parentAlias") is NODEFAULT
+
+    def test_validate_keeps_an_accepted_default(self):
+        """`validate=True` returns the default when msgspec accepts it as an explicit value."""
+        assert get_field_default(ConstrainedDefaultStruct, "plain", validate=True) == 1
+        assert get_field_default(SimpleStruct, "c_default_value", validate=True) == 3.14
+        assert get_field_default(SimpleStruct, "d_default_factory", validate=True) == []
+        assert get_field_default(SimpleStruct, "f_default_none", validate=True) is None
+
+    def test_validate_rejects_a_default_msgspec_does_not_accept(self):
+        """A default that msgspec rejects as an explicit value returns NODEFAULT."""
+        # without validation the default is returned as it is
+        assert get_field_default(ConstrainedDefaultStruct, "v") == 0
+        assert get_field_default(ConstrainedDefaultStruct, "v", validate=True) is NODEFAULT
+
+    def test_validate_required_field_has_no_default(self):
+        """A field without a default returns NODEFAULT with or without validation."""
+        assert get_field_default(SimpleStruct, "a_required", validate=True) is NODEFAULT
+        assert get_field_default(SimpleStruct, "e_unset", validate=True) is NODEFAULT
+
+    def test_validate_with_encode_name(self):
+        """The validation also works when the field is looked up by its encode name."""
+        assert get_field_default(ChildOfAliased, "parentDefaultAlias", validate=True) == 99
+
+    def test_validate_keeps_a_default_msgspec_can_not_judge(self):
+        """A field type msgspec can not convert to keeps its default."""
+        assert get_field_default(UnjudgeableTypehintStruct, "items", validate=True) == []
+
+    def test_validate_failing_factory_returns_nodefault(self):
+        """A factory that raises still returns NODEFAULT when validation is on."""
+        assert get_field_default(StructWithFailingFactory, "failing_field", validate=True) is NODEFAULT
 
 
 # =================================================================

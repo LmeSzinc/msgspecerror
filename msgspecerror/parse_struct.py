@@ -1,7 +1,7 @@
 import sys
 from typing import ForwardRef, Generic, Type, TypeVar
 
-from msgspec import NODEFAULT, Struct, UNSET
+from msgspec import NODEFAULT, Struct, UNSET, ValidationError, convert
 from msgspec._core import Factory
 from msgspec._utils import _apply_params, _get_class_mro_and_typevar_mappings
 from typing_extensions import Literal
@@ -52,19 +52,53 @@ def get_field_name(model: Type[Struct], name: str) -> str:
     raise AttributeError(f'Type {model} has no field with name="{name}"')
 
 
-def get_field_default(model: Type[Struct], name: str):
+def _default_is_accepted(model: Type[Struct], name: str, value):
+    """
+    Check whether a struct default is accepted when it is written into the input
+
+    msgspec does not validate struct defaults, a default may be rejected when it is
+    explicitly present in the input (e.g. `v: Annotated[int, Meta(ge=18)] = 0`),
+    while msgspec still applies it when the field is absent.
+
+    Args:
+        model (type): Subclass of msgspec.Struct
+        name (str): Field name
+        value (Any): The default value
+
+    Returns:
+        bool: True if the value is accepted
+    """
+    try:
+        convert(value, type=get_field_typehint(model, name))
+    except ValidationError:
+        return False
+    except TypeError:
+        # the field typehint is not a type msgspec can convert to, we can't
+        # judge the value and keep it as the best we have
+        return True
+    return True
+
+
+def get_field_default(model: Type[Struct], name: str, validate: bool = False):
     """
     Get default and default_factory of model.field_name
 
     Args:
         model: Subclass of msgspec.Struct
         name (str): Field name (Python attribute) or encode name (serialization name)
+        validate (bool): False by default. If True, the default value is checked
+            against the field typehint with `msgspec.convert`. msgspec does not
+            validate struct defaults, a default may be rejected when it is
+            explicitly present in the input (e.g. `v: Annotated[int, Meta(ge=18)] = 0`),
+            such a default returns NODEFAULT. Note that msgspec still applies that
+            default when the field is absent from the input.
 
     Returns:
         Any | NODEFAULT:
             default value of given field
             NODEFAULT if field doesn't have a default
             NODEFAULT if default factory can't be constructed
+            NODEFAULT if the default value is not accepted with `validate=True`
 
     Raises:
         AttributeError: if failed
@@ -96,10 +130,14 @@ def get_field_default(model: Type[Struct], name: str):
             return NODEFAULT
         if type(default_obj) is Factory:
             try:
-                return default_obj.factory()
+                value = default_obj.factory()
             except Exception:
                 return NODEFAULT
-        return default_obj
+        else:
+            value = default_obj
+        if validate and not _default_is_accepted(model, field_name, value):
+            return NODEFAULT
+        return value
 
     return NODEFAULT
 

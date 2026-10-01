@@ -8,7 +8,7 @@ from . import const
 from .const import ErrorType, T_utf8_error
 from .parse_error import ErrorInfo, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
-from .parse_struct import get_field_default, get_field_name, get_field_typehint
+from .parse_struct import _default_is_accepted, get_field_default, get_field_name, get_field_typehint
 from .parse_type import get_default, is_struct_type, origin_args
 from .repair_unicode import _collect_unicode_replace
 
@@ -389,7 +389,10 @@ def _repair_once(
                 return NODEFAULT, error
             if is_last:
                 # fix obj
-                # try field default first
+                # try field default first. The value is validated here instead of
+                # calling `get_field_default(..., validate=True)`, the raw default is
+                # needed anyway to tell an unusable default from no default at all,
+                # so the field is looked up only once.
                 try:
                     value = get_field_default(model, part)
                 except AttributeError:
@@ -397,17 +400,32 @@ def _repair_once(
                     if not _pop_last_collection(last_collection_data, last_collection_key):
                         return NODEFAULT, error
                     return raw_obj, error
-                # if field doesn't have a default, try to get from type
-                if value is NODEFAULT:
-                    child_model = get_field_typehint(model, part)
-                    # get_default returns NODEFAULT instead of a value that
-                    # doesn't pass validation, a useless guessed value included
-                    value = get_default(child_model, guess_default=guess_default)
-                    # still no default, delete the entry we have stepped into
-                    if value is NODEFAULT:
+                if value is not NODEFAULT:
+                    # msgspec does not validate struct defaults, a default that
+                    # msgspec rejects as an explicit value must not be written into
+                    # the input. The entry is deleted instead, msgspec applies the
+                    # default itself when the field is absent.
+                    if _default_is_accepted(model, part, value):
+                        obj[part] = value
+                        return raw_obj, error
+                    try:
+                        del obj[part]
+                    except KeyError:
+                        # this shouldn't happen, unless raw_obj and error.loc don't match
                         if not _pop_last_collection(last_collection_data, last_collection_key):
                             return NODEFAULT, error
                         return raw_obj, error
+                    return raw_obj, error
+                # if field doesn't have a default, try to get from type
+                child_model = get_field_typehint(model, part)
+                # get_default returns NODEFAULT instead of a value that
+                # doesn't pass validation, a useless guessed value included
+                value = get_default(child_model, guess_default=guess_default)
+                # still no default, delete the entry we have stepped into
+                if value is NODEFAULT:
+                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                        return NODEFAULT, error
+                    return raw_obj, error
                 obj[part] = value
                 return raw_obj, error
             else:
