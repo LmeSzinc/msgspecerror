@@ -62,9 +62,9 @@ print(errors)
 pip install msgspecerror
 ```
 
-msgspecerror 版本与 msgspec 版本是强绑定的，假设你的项目正在使用 `msgspec>=0.21.1` ，那么你应该安装 `msgspecerror>=0.21.1`，这通常会安装 `msgspecerror==0.21.1.0`。
+msgspecerror 版本与 msgspec 版本是强绑定的，假设你的项目正在使用 `msgspec>=0.22.0` ，那么你应该安装 `msgspecerror>=0.22.0`，这通常会安装 `msgspecerror==0.22.0.0`。
 
-`msgspecerror==0.21.1.0` 将支持解析 `msgspec>=0.18.6,<=0.21.1`。
+`msgspecerror==0.22.0.0` 将支持解析 `msgspec>=0.18.6,<=0.22.0`。
 
 ## 2. 工作原理
 
@@ -214,6 +214,9 @@ result, errors = load_msgpack_with_default(data, MyStruct)
   2. **MsgPack 不匹配**：MsgPack 编码值无法转换为目标 Python 类型
   3. **自定义类型不匹配**：`dec_hook` 返回的对象不是所期望的自定义类型
   4. **标签类型不匹配**：tagged union 中标签字段的类型不正确
+  5. **布尔字面量不匹配**（0.22.0+）：`Literal[True]` / `Literal[False]` 收到了非布尔值，期望类型显示为 `bool`
+- 0.22.0 变更：`msgspec.Raw` 的期望类型由误导性的 `any` 改为 `raw`
+  - ``Expected `raw`, got `int` - at `$.payload```（convert / yaml.decode / toml.decode）
 
 **`TOKEN_TYPE_MISMATCH`** — JSON token 类型与解码位置期望不符
 - 格式：``Expected `<type>` - at <Path>``（无 ", got" 部分）
@@ -282,6 +285,7 @@ result, errors = load_msgpack_with_default(data, MyStruct)
 **`INVALID_ENUM_VALUE`** — 无效的枚举值
 - 格式：`"Invalid enum value <value> - at <Path>"`
 - 示例：`"Invalid enum value 'admin' - at $.role"`
+- 示例（0.22.0+）：``"Invalid enum value False - at `$.enabled`"``——布尔字面量类型（`Literal[True]` / `Literal[False]`）收到了相反的布尔值
 - 触发条件：值不是目标 `Enum` 或 `Literal` 类型的有效成员
 
 **`INVALID_TAG_VALUE`** — 无效的 tag 值
@@ -349,7 +353,9 @@ result, errors = load_msgpack_with_default(data, MyStruct)
 
 **`NUMBER_OUT_OF_RANGE`** — 数值超出范围
 - 格式：`"Number out of range - at <Path>"`
-- 触发条件：表示数字的字符串超出了 `double` 精度浮点数的范围
+- 触发条件：
+  1. 表示数字的字符串超出了 `double` 精度浮点数的范围
+  2. （0.22.0+）`msgspec.convert()` 将过大的 `int` 转为 `float` 目标类型
 
 ### 4.6 第6组：包装错误及其他
 
@@ -372,8 +378,8 @@ result, errors = load_msgpack_with_default(data, MyStruct)
 
 **`MSGPACK_MALFORMED`** — MsgPack 格式错误
 - 格式：`"MessagePack data is malformed: <reason> (byte <pos>)"`
-- reason 包括：`trailing characters (byte <pos>)`、`invalid opcode '\x<XX>' (byte <pos>)``
-- 触发条件：任何不符合 MessagePack 二进制格式的数据
+- reason 包括：`trailing characters (byte <pos>)`、`invalid opcode '\x<XX>' (byte <pos>)`、`map keys must be hashable (byte <pos>)`（0.22.0+）
+- 触发条件：任何不符合 MessagePack 二进制格式的数据，例如完整消息后的多余字节、无法识别的操作码，或 map 键解码为不可哈希对象
 
 **`DATA_TRUNCATED`** — 数据被截断
 - 格式：`"Input data was truncated"`

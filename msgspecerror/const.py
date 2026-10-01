@@ -57,6 +57,16 @@ class ErrorType(str, Enum):
         instance of the expected custom type.
     4.  **Tag Type Mismatch**: The tag field in a tagged union has an incorrect
         type (e.g., an `int` was found when a `str` was expected).
+    5.  **Bool Literal Mismatch**: (msgspec >= 0.22.0) A `Literal[True]` /
+        `Literal[False]` target receives a non-bool value, the expected type is
+        named `bool` (see INVALID_ENUM_VALUE for the opposite bool).
+
+    === Changed in 0.22.0 ===
+    A `msgspec.Raw` target is named `raw` instead of the misleading `any`:
+    - "Expected `raw`, got `int` - at `$.payload`"  (convert / yaml.decode / toml.decode)
+    Before 0.22.0 a required `Raw` field of a TypedDict, or a `Raw` field with a
+    `default_factory` on a dataclass / attrs class, reported an empty type name:
+    - "Expected ``, got `int` - at `$.payload`"
     """
 
     TOKEN_TYPE_MISMATCH = "TOKEN_TYPE_MISMATCH"
@@ -182,7 +192,15 @@ class ErrorType(str, Enum):
     Format: "Invalid enum value <value> - at <Path>"
     Example: "Invalid enum value 'admin' - at $.role"
     Triggered by: A value that is not a valid member of the target `Enum` or
-                 `Literal` type.
+                 `Literal` type. The <value> is formatted with repr(), so a str
+                 value is quoted and a bool value is not.
+
+    === Added in 0.22.0 ===
+    Format: "Invalid enum value True - at <Path>"
+            "Invalid enum value False - at <Path>"
+    Example: "Invalid enum value False - at `$.enabled`"  (Literal[True] given false)
+    Triggered by: A bool literal type (`Literal[True]` / `Literal[False]`) receives
+                 the opposite JSON / MessagePack / Python bool.
     """
 
     INVALID_TAG_VALUE = "INVALID_TAG_VALUE"
@@ -294,6 +312,11 @@ class ErrorType(str, Enum):
     Format: "Number out of range - at <Path>"
     Triggered by: A string representing a number (int or float) is outside the
                  range of a `double` precision float.
+
+    === Added in 0.22.0 ===
+    Triggered by: `msgspec.convert()` of an `int` that is too large for a `float`
+                 target, e.g. `msgspec.convert(10**400, type=float)`.
+                 Before 0.22.0 this leaked a `SystemError` instead.
     """
 
     # ======================================================================
@@ -359,10 +382,12 @@ class ErrorType(str, Enum):
     Reasons:
     - trailing characters (byte <pos>)
     - invalid opcode '\\x<XX>' (byte <pos>)
+    - map keys must be hashable (byte <pos>)  (msgspec >= 0.22.0)
 
     Triggered by: Any MsgPack data that does not conform to the MessagePack
-                 binary format, e.g. trailing bytes after a complete message
-                 or an unrecognized opcode.
+                 binary format, e.g. trailing bytes after a complete message,
+                 an unrecognized opcode, or a map key that decodes to an
+                 unhashable object (e.g. a map used as a map key).
     """
 
     DATA_TRUNCATED = "DATA_TRUNCATED"

@@ -22,6 +22,35 @@ MSGPACK_MALFORMED_CASES = [
     ("trailing bytes",  msgspec.msgpack.encode({"a": 1}) + b'\xc1',  "trailing characters"),
 ]
 
+# A map used as a map key decodes to an unhashable object, the map itself is
+# unable to be such a key. Reported as MSGPACK_MALFORMED since msgspec 0.22.0,
+# older versions leak a `TypeError: unhashable type: 'dict'` instead.
+UNHASHABLE_KEY_DATA = b'\x81\x81\x01\x01\x01'
+
+
+def _supports_hashable_key_error():
+    """
+    Whether the installed msgspec reports an unhashable map key as a DecodeError
+
+    Returns:
+        bool: True if the map key check is added in the decoder
+    """
+    try:
+        msgspec.msgpack.decode(UNHASHABLE_KEY_DATA, type=dict)
+    except msgspec.DecodeError:
+        return True
+    except TypeError:
+        return False
+    return False
+
+
+SUPPORTS_HASHABLE_KEY_ERROR = _supports_hashable_key_error()
+
+requires_hashable_key_error = pytest.mark.skipif(
+    not SUPPORTS_HASHABLE_KEY_ERROR,
+    reason='the unhashable map key message needs msgspec 0.22.0+',
+)
+
 
 class TestMsgpackMalformedRepair:
     """End-to-end tests: malformed msgpack through the full repair pipeline."""
@@ -59,3 +88,21 @@ class TestMsgpackMalformedRepair:
         assert result is NODEFAULT
         assert len(errors) == 1
         assert errors[0].type is ErrorType.DATA_TRUNCATED
+
+    # -- Unhashable map key (msgspec 0.22.0+) --
+
+    @requires_hashable_key_error
+    def test_unhashable_key_repairable(self):
+        result, errors = load_msgpack_with_default(UNHASHABLE_KEY_DATA, RepairableModel)
+        assert result == RepairableModel(a=42, b="default")
+        assert len(errors) == 1
+        assert errors[0].type is ErrorType.MSGPACK_MALFORMED
+        assert 'map keys must be hashable' in errors[0].msg
+
+    @requires_hashable_key_error
+    def test_unhashable_key_unrepairable(self):
+        result, errors = load_msgpack_with_default(UNHASHABLE_KEY_DATA, UnrepairableModel)
+        assert result is NODEFAULT
+        assert len(errors) == 1
+        assert errors[0].type is ErrorType.MSGPACK_MALFORMED
+        assert 'map keys must be hashable' in errors[0].msg

@@ -113,6 +113,9 @@ class TestMsgpackMalformed:
         "MessagePack data is malformed: invalid opcode '\\xc0' (byte 0)",
         "MessagePack data is malformed: invalid opcode '\\x7f' (byte 2)",
         "MessagePack data is malformed: invalid opcode '\\x81' (byte 100)",
+        # === Unhashable map key (msgspec >= 0.22.0) ===
+        "MessagePack data is malformed: map keys must be hashable (byte 5)",
+        "MessagePack data is malformed: map keys must be hashable (byte 0)",
         # === Unicode in opcode? msgspec always uses \\xNN format ===
         "MessagePack data is malformed: trailing characters with unicode ü (byte 3)",
     ])

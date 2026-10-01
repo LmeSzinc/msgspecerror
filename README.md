@@ -62,9 +62,9 @@ print(errors)
 pip install msgspecerror
 ```
 
-msgspecerror versions are tightly coupled to msgspec versions. If your project uses `msgspec>=0.21.1`, you should install `msgspecerror>=0.21.1`, which typically installs `msgspecerror==0.21.1.0`.
+msgspecerror versions are tightly coupled to msgspec versions. If your project uses `msgspec>=0.22.0`, you should install `msgspecerror>=0.22.0`, which typically installs `msgspecerror==0.22.0.0`.
 
-`msgspecerror==0.21.1.0` supports parsing errors from `msgspec>=0.18.6,<=0.21.1`.
+`msgspecerror==0.22.0.0` supports parsing errors from `msgspec>=0.18.6,<=0.22.0`.
 
 ## 2. How It Works
 
@@ -214,6 +214,9 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
   2. **MsgPack Mismatch**: A msgpack-encoded value cannot be coerced into the target type
   3. **Custom Type Mismatch**: `dec_hook` returns an object that is not an instance of the expected custom type
   4. **Tag Type Mismatch**: The tag field in a tagged union has an incorrect type
+  5. **Bool Literal Mismatch** (0.22.0+): A `Literal[True]` / `Literal[False]` target receives a non-bool value, the expected type is named `bool`
+- Changed in 0.22.0: A `msgspec.Raw` target is named `raw` instead of the misleading `any`
+  - `` Expected `raw`, got `int` - at `$.payload` `` (convert / yaml.decode / toml.decode)
 
 **`TOKEN_TYPE_MISMATCH`** — JSON token type doesn't match the decode position expectation
 - Format: `` Expected `<type>` - at <Path> `` (no ", got" part)
@@ -282,6 +285,7 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
 **`INVALID_ENUM_VALUE`** — Invalid enum value
 - Format: `` Invalid enum value <value> - at <Path> ``
 - Example: `` Invalid enum value 'admin' - at $.role ``
+- Example (0.22.0+): `` Invalid enum value False - at `$.enabled` `` — a bool literal type (`Literal[True]` / `Literal[False]`) receives the opposite bool
 - Triggered by: A value that is not a valid member of the target `Enum` or `Literal` type
 
 **`INVALID_TAG_VALUE`** — Invalid tag value
@@ -349,7 +353,9 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
 
 **`NUMBER_OUT_OF_RANGE`** — Number out of range
 - Format: `` Number out of range - at <Path> ``
-- Triggered by: A string representing a number exceeds the range of a `double` precision float
+- Triggered by:
+  1. A string representing a number exceeds the range of a `double` precision float
+  2. (0.22.0+) `msgspec.convert()` of an `int` that is too large for a `float` target
 
 ### 4.6 Group 6: Wrapped Errors & Others
 
@@ -372,8 +378,8 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
 
 **`MSGPACK_MALFORMED`** — MsgPack is malformed
 - Format: `` MessagePack data is malformed: <reason> (byte <pos>) ``
-- Reasons include: `trailing characters (byte <pos>)`, `invalid opcode '\\x<XX>' (byte <pos>)`
-- Triggered by: Any data that does not conform to the MessagePack binary format
+- Reasons include: `trailing characters (byte <pos>)`, `invalid opcode '\\x<XX>' (byte <pos>)`, `map keys must be hashable (byte <pos>)` (0.22.0+)
+- Triggered by: Any data that does not conform to the MessagePack binary format, e.g. trailing bytes after a complete message, an unrecognized opcode, or a map key that decodes to an unhashable object
 
 **`DATA_TRUNCATED`** — Input data was truncated
 - Format: `` Input data was truncated ``

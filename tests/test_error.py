@@ -54,6 +54,14 @@ class TestTypeMismatch:
         # annotated types
         ("Expected `Annotated[int, ...]`, got `str` - at `$.score`",
          ErrorCtx(expected="Annotated[int, ...]", got="str")),
+        # msgspec >= 0.22.0 names a `Raw` target `raw` instead of `any`
+        ("Expected `raw`, got `int` - at `$.payload`",
+         ErrorCtx(expected="raw", got="int")),
+        ("Expected `raw`, got `str`",
+         ErrorCtx(expected="raw", got="str")),
+        # msgspec >= 0.22.0: a bool literal type that receives a non-bool value
+        ("Expected `bool`, got `str` - at `$.enabled`",
+         ErrorCtx(expected="bool", got="str")),
     ])
     def test_type_mismatch(self, msg, ctx):
         check(msg, ErrorType.TYPE_MISMATCH, ctx)
@@ -299,6 +307,13 @@ class TestInvalidEnumValue:
         "Invalid enum value 'RED' - at `$.color`",
         "Invalid enum value 3 - at `$.status`",
         "Invalid enum value 'user' - at `$.permissions[0]`",
+        # msgspec >= 0.22.0: `Literal[True]` / `Literal[False]` mismatch,
+        # the bool is formatted with repr(), so it is not quoted
+        "Invalid enum value True",
+        "Invalid enum value False",
+        "Invalid enum value True - at `$.enabled`",
+        "Invalid enum value False - at `$.enabled`",
+        "Invalid enum value False - at `$.flags[0]`",
     ])
     def test_invalid_enum(self, msg):
         check(msg, ErrorType.INVALID_ENUM_VALUE)
