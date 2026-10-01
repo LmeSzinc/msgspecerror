@@ -1,0 +1,74 @@
+name: Build Wheel
+
+on:
+  push:
+    branches:
+    - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build sdist and wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Install Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.13"
+
+    - name: Install build tooling
+      run: python -m pip install --disable-pip-version-check build twine
+
+    - name: Build the sdist and the wheel
+      run: python -m build
+
+    - name: Check the package metadata and the long description
+      run: python -m twine check --strict dist/*
+
+    - name: Inspect the built files
+      run: |
+        ls -l dist
+        python -m zipfile -l dist/*.whl
+
+    - name: Install the wheel into a clean environment and test it
+      run: |
+        set -euxo pipefail
+
+        python -m venv /tmp/wheel-env
+        /tmp/wheel-env/bin/python -m pip install --disable-pip-version-check \
+            dist/*.whl "pytest>=8" attrs
+
+        # The tests must exercise the installed wheel, not the checkout, so
+        # they run outside of the repository where the source tree can not
+        # shadow the installed package.
+        cp -r tests /tmp/wheel-tests
+        cd /tmp/wheel-tests
+
+        /tmp/wheel-env/bin/python -I -c "
+        import pathlib, msgspecerror
+        path = pathlib.Path(msgspecerror.__file__).resolve()
+        print('msgspecerror:', path)
+        assert 'site-packages' in str(path), f'not an installed copy: {path}'
+        "
+
+        /tmp/wheel-env/bin/python -m pytest . -q
+
+    - name: Upload the built files
+      uses: actions/upload-artifact@v5
+      with:
+        name: dist
+        path: dist/*
+        if-no-files-found: error
