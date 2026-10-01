@@ -1,3 +1,4 @@
+import sys
 from typing import Dict, ForwardRef, Generic, List, Optional, Tuple, TypeVar, Union
 
 import pytest
@@ -113,11 +114,6 @@ class ConstrainedDefaultStruct(Struct):
     """The default `0` violates `ge=18`, msgspec rejects it as an explicit value."""
     v: Annotated[int, Meta(ge=18)] = 0
     plain: int = 1
-
-
-class UnjudgeableTypehintStruct(Struct):
-    """msgspec can not convert to this field typehint, the default can not be judged."""
-    items: list["AnotherStruct"] = []
 
 
 # Structs for testing inheritance with aliases.
@@ -320,8 +316,17 @@ class TestGetFieldDefault:
         """The validation also works when the field is looked up by its encode name."""
         assert get_field_default(ChildOfAliased, "parentDefaultAlias", validate=True) == 99
 
+    @pytest.mark.skipif(sys.version_info < (3, 9), reason='builtin generics need Python 3.9+')
     def test_validate_keeps_a_default_msgspec_can_not_judge(self):
-        """A field type msgspec can not convert to keeps its default."""
+        """
+        A field type msgspec can not convert to keeps its default.
+
+        `list["AnotherStruct"]` keeps the quoted ref as a plain str, which
+        msgspec does not support, so the default can not be judged.
+        """
+        class UnjudgeableTypehintStruct(Struct):
+            items: list["AnotherStruct"] = []
+
         assert get_field_default(UnjudgeableTypehintStruct, "items", validate=True) == []
 
     def test_validate_failing_factory_returns_nodefault(self):
