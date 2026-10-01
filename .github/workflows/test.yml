@@ -1,0 +1,94 @@
+name: Test
+
+on:
+  push:
+    branches:
+    - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "Python ${{ matrix.python-version }} on ${{ matrix.os }}"
+    runs-on: "${{ matrix.os }}"
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-latest
+        - macos-latest
+        - windows-latest
+        python-version:
+        # Every CPython that msgspecerror supports, plus the free-threaded
+        # builds msgspec publishes wheels for. A 3.13t interpreter is not
+        # listed: msgspec has no cp313t wheel, so there would be nothing to
+        # install on it.
+        - "3.8"
+        - "3.9"
+        - "3.10"
+        - "3.11"
+        - "3.12"
+        - "3.13"
+        - "3.14"
+        - "3.15"
+        - "3.14t"
+        - "3.15t"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Install Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "${{ matrix.python-version }}"
+        # 3.15 is still a pre-release, the other versions are released builds
+        allow-prereleases: true
+
+    - name: Show the interpreter
+      run: python -VV
+
+    - name: Install test dependencies
+      run: >-
+        python -m pip install --disable-pip-version-check
+        "pytest>=8" typing-extensions attrs
+
+    - name: Test every msgspec version this Python supports
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # The msgspec versions that publish a wheel for this interpreter.
+        # msgspec raises its `requires-python` over time (0.18.6 is >=3.8,
+        # 0.19.0/0.20.0 are >=3.9, 0.21.0 and later are >=3.10) and adds new
+        # interpreters with new minor releases, so the supported set is per
+        # Python version. Keep `msgspec` in pyproject.toml in sync with the
+        # range covered here.
+        case "${{ matrix.python-version }}" in
+          3.8)            VERSIONS="0.18.6" ;;
+          3.9)            VERSIONS="0.18.6 0.19.0 0.20.0" ;;
+          3.10|3.11|3.12) VERSIONS="0.18.6 0.19.0 0.20.0 0.21.0 0.21.1 0.22.0" ;;
+          3.13)           VERSIONS="0.19.0 0.20.0 0.21.0 0.21.1 0.22.0" ;;
+          3.14|3.14t)     VERSIONS="0.20.0 0.21.0 0.21.1 0.22.0" ;;
+          3.15|3.15t)     VERSIONS="0.22.0" ;;
+          *)
+            echo "No msgspec version table for Python ${{ matrix.python-version }}"
+            exit 1
+            ;;
+        esac
+
+        for version in $VERSIONS; do
+          echo "::group::msgspec $version on Python ${{ matrix.python-version }}"
+          python -m pip install --disable-pip-version-check "msgspec==$version"
+          python -c "import msgspec; print('msgspec', msgspec.__version__, msgspec.__file__)"
+          python -m pytest tests -q
+          echo "::endgroup::"
+        done
