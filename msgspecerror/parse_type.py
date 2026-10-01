@@ -122,7 +122,7 @@ def origin_args(t):
     if origin_type is _types_UnionType:
         args = origin.__args__
         origin = Union
-    if origin_type is tuple:
+    if origin is tuple:
         # Handle an annoying compatibility issue:
         # - Tuple[()] has args == ((),)
         # - tuple[()] has args == ()
@@ -265,8 +265,15 @@ def get_default(t, guess_default=False, return_obj=False):
         return frozenset()
 
     if origin is tuple:
-        # An empty tuple is a safe default for both fixed and variable-length tuples.
-        return ()
+        if not args or Ellipsis in args:
+            # Bare `tuple`, a variable-length tuple or an empty `Tuple[()]`: `()` is always valid
+            return ()
+        # Fixed-length tuple: an empty tuple fails validation when items are required,
+        # so guess each item by its own type
+        items = [get_default(arg, guess_default, return_obj) for arg in args]
+        if any(item is NODEFAULT for item in items):
+            return NODEFAULT
+        return tuple(items)
 
     # --- Types that cannot be safely guessed ---
 

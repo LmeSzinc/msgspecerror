@@ -133,6 +133,18 @@ def _repair_once(
             except IndexError:
                 # this shouldn't happen because a dict typehint should have a key and a value
                 return NODEFAULT, error
+            except TypeError:
+                # model_args is None: the model isn't a parameterized dict,
+                # so the error path doesn't match the model
+                if not _pop_last_collection(last_collection_data, last_collection_key):
+                    return NODEFAULT, error
+                return raw_obj, error
+            if child_model is Ellipsis:
+                # `Tuple[int, ...]` and other non-dict models don't have a value type,
+                # so the error path doesn't match the model
+                if not _pop_last_collection(last_collection_data, last_collection_key):
+                    return NODEFAULT, error
+                return raw_obj, error
             for key, value in obj.items():
                 try:
                     # Attempt to convert just the value to see if it's the source.
@@ -315,7 +327,7 @@ def _repair_once(
                 # go deeper
                 try:
                     obj = obj[part]
-                except KeyError:
+                except (KeyError, TypeError):
                     # this shouldn't happen, unless raw_obj and error.loc don't match
                     return NODEFAULT, error
                 try:
