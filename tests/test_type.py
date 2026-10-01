@@ -11,9 +11,10 @@ from typing import Dict, Final, List, Literal, NewType, TypedDict
 import attrs
 import msgspec
 import pytest
-from msgspec import NODEFAULT
+from msgspec import NODEFAULT, convert
 from typing_extensions import Annotated
 
+from msgspecerror import parse_type
 from msgspecerror.parse_type import get_default
 
 
@@ -113,24 +114,31 @@ def test_unguessable_types_always_return_nodefault(type_hint):
 
 
 @pytest.mark.parametrize(
-    "struct_type",
+    "struct_type, expected",
     [
-        MyStruct,
-        MyDataClass,
-        MyTypedDict,
-        MyNamedTuple,
-        MyAttrsClass,
-        MyDefaultConstructibleStruct,
+        # Only a struct-like type that msgspec can default construct is `{}`
+        (MyStruct, NODEFAULT),
+        (MyDataClass, NODEFAULT),
+        (MyTypedDict, NODEFAULT),
+        (MyNamedTuple, NODEFAULT),
+        (MyAttrsClass, NODEFAULT),
+        (MyDefaultConstructibleStruct, {}),
     ],
 )
-def test_get_default_on_structured_types(struct_type):
+def test_get_default_on_structured_types(struct_type, expected):
     """
     Tests that get_default (with return_obj=False) returns an empty dict `{}`
-    for any struct-like type.
+    for a struct-like type, as long as the object can be default constructed.
     """
     # This behavior should be independent of the guess_default flag.
-    assert get_default(struct_type, guess_default=True, return_obj=False) == {}
-    assert get_default(struct_type, guess_default=False, return_obj=False) == {}
+    res_guess = get_default(struct_type, guess_default=True, return_obj=False)
+    res_no_guess = get_default(struct_type, guess_default=False, return_obj=False)
+    if expected is NODEFAULT:
+        assert res_guess is NODEFAULT
+        assert res_no_guess is NODEFAULT
+    else:
+        assert res_guess == expected
+        assert res_no_guess == expected
 
 
 @pytest.mark.parametrize(
@@ -204,8 +212,9 @@ def test_get_default_with_return_obj_on_structured_types(struct_type, expected):
         # Attack Test: Union where one has a non-guessed default (list)
         (typing.Union[MyEnum, list], [], []),
         (typing.Union[int, list], 0, []),  # With guessing, `int` comes first
-        # Union with a structured type
-        (typing.Union[MyEnum, MyDataClass], {}, {}),
+        # Union with a structured type, a data class with a required field
+        # cannot be default constructed, so the union has no default either
+        (typing.Union[MyEnum, MyDataClass], NODEFAULT, NODEFAULT),
         # Union with only unguessable types
         (typing.Union[MyEnum, uuid.UUID], NODEFAULT, NODEFAULT),
         # Union including UnsetType
@@ -360,3 +369,86 @@ def test_get_default_with_return_obj_and_unions(type_hint, guess, expected):
         assert res is NODEFAULT
     else:
         assert res == expected
+
+
+class TestGetDefaultValidation:
+    """
+    Tests that `get_default` returns a value only if msgspec itself accepts it,
+    a candidate that the typehint rejects is NODEFAULT instead.
+
+    Every returned value is checked by `msgspec.convert`, so the repair code
+    doesn't have to guard against a guessed value that fails validation.
+    """
+
+    @pytest.mark.parametrize(
+        "type_hint, guess, expected",
+        [
+            # The candidate value meets the constraint of the typehint
+            (Annotated[int, msgspec.Meta(ge=0)], True, 0),
+            (Annotated[int, msgspec.Meta(ge=0)], False, NODEFAULT),
+            (Annotated[str, msgspec.Meta(min_length=0)], True, ""),
+            (Annotated[List[int], msgspec.Meta(min_length=0)], True, []),
+            # The candidate value is rejected by the constraint, it is not a default
+            (Annotated[int, msgspec.Meta(ge=18)], True, NODEFAULT),
+            (Annotated[int, msgspec.Meta(le=-1)], True, NODEFAULT),
+            (Annotated[str, msgspec.Meta(min_length=1)], True, NODEFAULT),
+            (Annotated[List[int], msgspec.Meta(min_length=1)], True, NODEFAULT),
+            (Annotated[List[int], msgspec.Meta(min_length=1)], False, NODEFAULT),
+            (Annotated[Dict[str, int], msgspec.Meta(min_length=1)], False, NODEFAULT),
+            # msgspec enforces a constraint hidden in a wrapper too
+            (Final[Annotated[int, msgspec.Meta(ge=18)]], True, NODEFAULT),
+            (NewType("Positive", Annotated[int, msgspec.Meta(ge=18)]), True, NODEFAULT),
+            # An empty container has no item that the constraint of an item type could reject
+            (List[Annotated[int, msgspec.Meta(ge=18)]], True, []),
+            # A fixed-length tuple, each item is guessed by its own type
+            (typing.Tuple[int, str], True, (0, "")),
+            (typing.Tuple[int, str], False, NODEFAULT),
+            (typing.Tuple[List[int], int], True, ([], 0)),
+            # None is always accepted by an Optional typehint
+            (typing.Optional[Annotated[int, msgspec.Meta(ge=18)]], True, None),
+            (typing.Optional[Annotated[List[int], msgspec.Meta(min_length=1)]], True, None),
+        ],
+    )
+    def test_candidate_is_validated(self, type_hint, guess, expected):
+        """A default must pass the same validation that msgspec applies to the input."""
+        res = get_default(type_hint, guess_default=guess)
+        if expected is NODEFAULT:
+            assert res is NODEFAULT
+        else:
+            assert res == expected
+            msgspec.convert(res, type=type_hint)
+
+    def test_union_skips_a_member_that_can_not_be_defaulted(self):
+        """A union member whose default fails validation is skipped for the next member."""
+        type_hint = typing.Union[Annotated[int, msgspec.Meta(ge=18)], str]
+        assert get_default(type_hint, guess_default=True) == ""
+        msgspec.convert("", type=type_hint)
+
+    def test_unsupported_typehint_keeps_the_candidate(self):
+        """
+        msgspec cannot resolve `Union[int, MyEnum]` at all (more than one int-like
+        type), so it can neither judge the candidate nor decode such a model.
+        The candidate is returned as the best we have.
+        """
+        type_hint = typing.Union[int, MyEnum, None]
+        assert get_default(type_hint, guess_default=True) is None
+
+    def test_plain_typehint_skips_convert(self, monkeypatch):
+        """A typehint that msgspec resolves directly accepts the candidate as is."""
+        calls = []
+
+        def counting_convert(*args, **kwargs):
+            calls.append(args)
+            return convert(*args, **kwargs)
+
+        monkeypatch.setattr(parse_type, 'convert', counting_convert)
+        # An unwrapped typehint is accepted by definition, no check is needed
+        assert get_default(int, guess_default=True) == 0
+        assert get_default(str, guess_default=True) == ""
+        assert get_default(dict, guess_default=True) == {}
+        assert calls == []
+        # A wrapped typehint is still checked by msgspec
+        assert get_default(List[int], guess_default=True) == []
+        assert len(calls) == 1
+        assert get_default(Annotated[int, msgspec.Meta(ge=18)], guess_default=True) is NODEFAULT
+        assert len(calls) == 2

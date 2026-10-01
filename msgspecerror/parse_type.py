@@ -6,7 +6,7 @@ import uuid
 from typing import Any, TypeVar, Union
 
 import msgspec
-from msgspec import NODEFAULT, UnsetType, convert
+from msgspec import NODEFAULT, UnsetType, ValidationError, convert
 from msgspec._utils import _CONCRETE_TYPES
 from msgspec.inspect import _is_enum
 from typing_extensions import Literal
@@ -173,6 +173,12 @@ def get_default(t, guess_default=False, return_obj=False):
     """
     Calculates a default value for a given type hint
 
+    A value is only a default if msgspec itself accepts it. The candidate value is
+    checked by `convert` for a wrapped typehint like `Annotated[int, Meta(ge=18)]`,
+    whose guessed `0` is rejected and NODEFAULT is returned instead. A typehint that
+    needs no unwrapping (`int`, `list`, a struct class...) accepts the candidate by
+    definition, so `convert` is skipped for it.
+
     Args:
         t: Any typehint
         guess_default (bool):
@@ -190,7 +196,8 @@ def get_default(t, guess_default=False, return_obj=False):
             True to convert default value to type `t`
 
     Returns:
-        Any: If `t` can be default constructed, return value in type `t`
+        Any: If `t` can be default constructed, return a value accepted by
+            `msgspec.convert(value, type=t)`
             Otherwise return NODEFAULT
     """
     origin, args = origin_args(t)
@@ -199,46 +206,49 @@ def get_default(t, guess_default=False, return_obj=False):
 
     # Handle `None` (very common in Optional[T])
     if origin is None or origin is type(None):
-        return None
+        value = None
 
     # Handle `str`
-    if origin is str:
-        return "" if guess_default else NODEFAULT
+    elif origin is str:
+        value = "" if guess_default else NODEFAULT
 
     # Handle `int`
-    if origin is int:
-        return 0 if guess_default else NODEFAULT
+    elif origin is int:
+        value = 0 if guess_default else NODEFAULT
 
     # Handle `list` (the most common collection)
-    if origin is list:
-        return []
+    elif origin is list:
+        value = []
 
     # Handle `dict`
-    if origin is dict:
-        return {}
+    elif origin is dict:
+        value = {}
 
     # Handle `bool`
-    if origin is bool:
-        return False if guess_default else NODEFAULT
+    elif origin is bool:
+        value = False if guess_default else NODEFAULT
 
     # --- Structured object types ---
 
     # All struct-like types default to an empty object (`{}`), representing a
     # valid but empty structure, which is useful for error correction.
-    if is_struct_like(origin):
-        if return_obj:
-            try:
-                return convert({}, origin)
-            except Exception:
-                # TypeError or ValidationError when object cannot be default constructed
-                return NODEFAULT
-        else:
-            return {}
+    elif is_struct_like(origin):
+        try:
+            # The object itself is what `return_obj` asks for, constructing it also
+            # tells whether the object can be default constructed at all
+            value = convert({}, origin)
+        except Exception:
+            # TypeError or ValidationError when object cannot be default constructed
+            return NODEFAULT
+        if not return_obj:
+            value = {}
 
     # --- Union types ---
 
-    if origin is Union:
+    elif origin is Union:
         # If None is a member of the union (i.e., Optional[T]), it's the best default.
+        # The member defaults are validated by their own `get_default` calls, and a
+        # union itself can not carry constraints.
         for arg in args:
             if arg is UnsetType:
                 continue
@@ -258,50 +268,48 @@ def get_default(t, guess_default=False, return_obj=False):
 
     # --- Other container types ---
 
-    if origin is set:
-        return set()
+    elif origin is set:
+        value = set()
 
-    if origin is frozenset:
-        return frozenset()
+    elif origin is frozenset:
+        value = frozenset()
 
-    if origin is tuple:
+    elif origin is tuple:
         if not args or Ellipsis in args:
             # Bare `tuple`, a variable-length tuple or an empty `Tuple[()]`: `()` is always valid
-            return ()
-        # Fixed-length tuple: an empty tuple fails validation when items are required,
-        # so guess each item by its own type
-        items = [get_default(arg, guess_default, return_obj) for arg in args]
-        if any(item is NODEFAULT for item in items):
-            return NODEFAULT
-        return tuple(items)
+            value = ()
+        else:
+            # Fixed-length tuple: an empty tuple fails validation when items are required,
+            # so guess each item by its own type
+            items = [get_default(arg, guess_default, return_obj) for arg in args]
+            if any(item is NODEFAULT for item in items):
+                return NODEFAULT
+            value = tuple(items)
 
     # --- Types that cannot be safely guessed ---
 
     # We cannot safely pick a default value from an Enum or a set of Literals.
-    if _is_enum(origin):
-        return NODEFAULT
-
-    if origin is Literal:
-        return NODEFAULT
+    elif _is_enum(origin) or origin is Literal:
+        value = NODEFAULT
 
     # --- Less common scalar and special types ---
 
-    if origin is float:
-        return 0.0 if guess_default else NODEFAULT
+    elif origin is float:
+        value = 0.0 if guess_default else NODEFAULT
 
-    if origin is bytes:
-        return b"" if guess_default else NODEFAULT
+    elif origin is bytes:
+        value = b"" if guess_default else NODEFAULT
 
-    if origin is bytearray:
-        return bytearray()
+    elif origin is bytearray:
+        value = bytearray()
 
-    if origin is memoryview:
+    elif origin is memoryview:
         # A memoryview of an empty bytes object is a safe default.
-        return memoryview(b"")
+        value = memoryview(b"")
 
     # For complex objects, we avoid guessing a default (e.g., datetime.now())
     # as it can have side effects or be misleading.
-    if origin in (
+    elif origin in (
             datetime.datetime,
             datetime.time,
             datetime.date,
@@ -311,21 +319,44 @@ def get_default(t, guess_default=False, return_obj=False):
             msgspec.Raw,
             msgspec.msgpack.Ext,
     ):
-        return NODEFAULT
+        value = NODEFAULT
 
     # --- Abstract and generic types ---
 
-    if origin is Any:
-        return NODEFAULT
+    elif origin is Any:
+        value = NODEFAULT
 
-    if isinstance(origin, TypeVar):
+    elif isinstance(origin, TypeVar):
         # If the TypeVar is bound to another type, try to get the default of that bound type.
         if origin.__bound__ is not None:
-            return get_default(origin.__bound__, guess_default)
-        return NODEFAULT
+            value = get_default(origin.__bound__, guess_default)
+        else:
+            value = NODEFAULT
 
     # --- Fallback ---
 
     # If the type is not recognized by any of the guards above, it's treated as a
     # custom or unknown type for which we cannot provide a default.
-    return NODEFAULT
+    else:
+        value = NODEFAULT
+
+    if value is NODEFAULT:
+        return NODEFAULT
+
+    # `origin_args` unwraps the typehint, and a constraint of `Annotated`, `Final`,
+    # `NewType` or a type alias still applies to the value, so only a typehint that
+    # is already the origin itself (`int`, `list`, a struct class...) is known to
+    # accept the value without asking msgspec
+    if t is origin:
+        return value
+    try:
+        convert(value, type=t)
+    except ValidationError:
+        # The value doesn't meet the constraints of `t`, e.g. the guessed `0` is
+        # rejected by `Annotated[int, Meta(ge=18)]`, so it can't be used as a default
+        return NODEFAULT
+    except TypeError:
+        # `t` is not a typehint that msgspec supports, it can neither judge the value
+        # nor decode such a model, we keep the value as the best we have
+        pass
+    return value

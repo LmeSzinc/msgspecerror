@@ -13,27 +13,6 @@ from .parse_type import get_default, is_struct_type, origin_args
 from .repair_unicode import _collect_unicode_replace
 
 
-def _guess_validated_default(model):
-    """
-    Guess a default value for a typehint, and make sure it passes validation
-
-    Args:
-        model (Any): The target typehint
-
-    Returns:
-        Any: The guessed value, or NODEFAULT if the type can't be guessed
-            or the guessed value is rejected by `model`
-    """
-    value = get_default(model, guess_default=True)
-    if value is NODEFAULT:
-        return NODEFAULT
-    try:
-        convert(value, type=model)
-    except ValidationError:
-        return NODEFAULT
-    return value
-
-
 def _get_item_model(model_origin, model_args, index):
     """
     Get the typehint of one item in a sequence typehint
@@ -254,7 +233,7 @@ def _repair_once(
             if is_last:
                 # fix obj
                 if guess_default:
-                    value = _guess_validated_default(child_model)
+                    value = get_default(child_model, guess_default=True)
                     if value is not NODEFAULT:
                         obj[key] = value
                         return raw_obj, error
@@ -352,7 +331,7 @@ def _repair_once(
             if is_last:
                 # fix obj
                 if guess_default and item_model is not NODEFAULT:
-                    value = _guess_validated_default(item_model)
+                    value = get_default(item_model, guess_default=True)
                     if value is not NODEFAULT:
                         try:
                             obj[part] = value
@@ -402,11 +381,9 @@ def _repair_once(
                 # if field doesn't have a default, try to get from type
                 if value is NODEFAULT:
                     child_model = get_field_typehint(model, part)
-                    if guess_default:
-                        # a guessed value is useless if it fails validation
-                        value = _guess_validated_default(child_model)
-                    else:
-                        value = get_default(child_model)
+                    # get_default returns NODEFAULT instead of a value that
+                    # doesn't pass validation, a useless guessed value included
+                    value = get_default(child_model, guess_default=guess_default)
                     # still no default, delete the entry we have stepped into
                     if value is NODEFAULT:
                         if not _pop_last_collection(last_collection_data, last_collection_key):
