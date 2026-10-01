@@ -1,6 +1,6 @@
 from typing import Any, Dict, Type, TypeVar, overload, Union, Tuple, List
 
-from msgspec import DecodeError, NODEFAULT, ValidationError, convert
+from msgspec import DecodeError, NODEFAULT, UnsetType, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
@@ -8,7 +8,7 @@ from . import const
 from .const import ErrorType, T_utf8_error
 from .parse_error import ErrorInfo, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
-from .parse_struct import get_field_default, get_field_typehint
+from .parse_struct import get_field_default, get_field_name, get_field_typehint
 from .parse_type import get_default, is_struct_type, origin_args
 from .repair_unicode import _collect_unicode_replace
 
@@ -82,6 +82,88 @@ def _pop_last_collection(last_collection_data, last_collection_key):
     return True
 
 
+def _struct_tag_matches(struct, obj):
+    """
+    Check whether the tag in the raw obj points to the given struct
+
+    Args:
+        struct (type): A Struct type
+        obj (Any): The raw data at the current path level
+
+    Returns:
+        bool: True if the obj has no tag info or the tag points to the struct
+    """
+    config = struct.__struct_config__
+    if config.tag is None or type(obj) is not dict:
+        # Nothing to check the struct against
+        return True
+    tag = obj.get(config.tag_field, NODEFAULT)
+    return tag is NODEFAULT or tag == config.tag
+
+
+def _resolve_union_member(model_args, part, obj):
+    """
+    Pick the union member that the error path segment refers to
+
+    msgspec reports the error path relative to one member of a union, so the
+    repair walk must use that member instead of the union itself. The segment
+    kind tells which member it was: `...` / `...key` come from a dict value or
+    key, an int comes from a list item, a str must be a field of a struct.
+
+    Args:
+        model_args (tuple): Args of the union typehint
+        part (int | str): The current error path segment
+        obj (Any): The raw data at the current path level
+
+    Returns:
+        Any: The matching union member, or NODEFAULT if no member matches
+    """
+    if part == '...' or part == '...key':
+        # A dict value / key placeholder, msgspec allows at most one dict type in a union
+        for arg in model_args:
+            if arg is UnsetType:
+                continue
+            arg_origin, arg_args = origin_args(arg)
+            if arg_origin is dict and arg_args:
+                return arg
+        return NODEFAULT
+
+    if type(part) is int:
+        # A list index, msgspec allows at most one array-like type in a union
+        for arg in model_args:
+            if arg is UnsetType:
+                continue
+            arg_origin, _ = origin_args(arg)
+            if arg_origin in (list, tuple, set, frozenset):
+                return arg
+        return NODEFAULT
+
+    # A struct field name, a tagged union may have several struct members
+    structs = []
+    for arg in model_args:
+        if arg is UnsetType:
+            continue
+        arg_origin, _ = origin_args(arg)
+        if not is_struct_type(arg_origin):
+            continue
+        try:
+            get_field_name(arg_origin, part)
+        except AttributeError:
+            continue
+        structs.append(arg_origin)
+
+    if not structs:
+        return NODEFAULT
+    if len(structs) == 1:
+        # The only member having this field, but the tag still has to agree
+        return structs[0] if _struct_tag_matches(structs[0], obj) else NODEFAULT
+    for struct in structs:
+        # Several members have the field, the tag tells which one failed
+        if _struct_tag_matches(struct, obj):
+            return struct
+    return NODEFAULT
+
+
 def _repair_once(
         raw_obj, model, error: ErrorInfo, guess_default=False
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
@@ -119,6 +201,15 @@ def _repair_once(
         is_last = i == last_index
 
         model_origin, model_args = origin_args(model)
+        if model_origin is Union:
+            # The error path points into one member of the union
+            model = _resolve_union_member(model_args, part, obj)
+            if model is NODEFAULT:
+                # The path segment doesn't match any member of the union
+                if not _pop_last_collection(last_collection_data, last_collection_key):
+                    return NODEFAULT, error
+                return raw_obj, error
+            model_origin, model_args = origin_args(model)
 
         # 1. Invalid dict value
         # msgspec does not tell which key is invalid, just giving placeholder '...', we need to find the exact key
