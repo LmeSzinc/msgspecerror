@@ -263,7 +263,17 @@ def get_field_typehint(model: Type[Struct], name: str):
         if cls is Struct:
             break
 
-        anno = cls.__dict__.get('__annotations__', {}).get(field_name, NODEFAULT)
+        # `__annotations__` lives in the class dict up to Python 3.13. Since
+        # Python 3.14 (PEP 649) the annotations are computed on first access and
+        # never land in the class dict, so the attribute is read there. The class
+        # dict is still checked first: before Python 3.10 the attribute falls back
+        # to a base class, which would return another class's annotations.
+        annotations = cls.__dict__.get('__annotations__')
+        if annotations is None:
+            if sys.version_info < (3, 14):
+                continue
+            annotations = cls.__annotations__
+        anno = annotations.get(field_name, NODEFAULT)
         if anno is NODEFAULT:
             continue
 
