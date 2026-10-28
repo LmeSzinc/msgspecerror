@@ -63,7 +63,9 @@ TasksDefinition = Dict[str, Task]
 def assert_invariants(detail):
     """The three invariants of every delivered ErrorInfoDetail."""
     assert isinstance(detail, ErrorInfoDetail)
-    assert detail.loc_resolved == (not _has_placeholder(detail.loc))
+    # A placeholder is only kept when it could not be resolved. The reverse does
+    # not hold: a dict key can literally be the string `...`.
+    assert detail.loc_resolved or _has_placeholder(detail.loc)
     assert detail.error_value_resolved == (detail.error_value is not UNSET)
     assert (not detail.error_value_resolved) or detail.loc_resolved
 
@@ -116,6 +118,9 @@ class TestConvert:
         (Dict[str, Dict[str, int]], {'a': {'b': 'x'}}, ('a', 'b'), 'x'),
         (Inventory, {'items': {'apple': {'amount': 'ABC'}}},
          ('items', 'apple', 'amount'), 'ABC'),
+        # A dict key that is literally the placeholder text is a real key
+        (Dict[str, int], {'...': 'x'}, ('...',), 'x'),
+        (Dict[str, int], {'...key': 'x'}, ('...key',), 'x'),
     ])
     def test_resolved(self, model, data, loc, value):
         detail = assert_failed(convert_with_error_detail(data, model))
@@ -178,6 +183,14 @@ class TestJsonPayload:
         assert detail.error_value is UNSET
         assert detail.error_value_resolved is False
 
+    def test_literal_placeholder_key(self):
+        """A dict key that is literally `...` is a real key, not a placeholder."""
+        detail = assert_failed(load_json_with_error_detail(b'{"...": "x"}', Dict[str, int]))
+        assert detail.loc == ('...',)
+        assert detail.error_value == 'x'
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is True
+
     @pytest.mark.parametrize('payload, loc, loc_resolved', [
         (b'{"k": "x"}', ('k',), True),
         (b'{"k": "x", "b": "\xff"}', ('...',), False),
@@ -214,6 +227,16 @@ class TestMsgpackPayload:
         assert detail.loc == loc
         assert detail.loc_resolved is loc_resolved
 
+    @pytest.mark.parametrize('key', ['...', '...key'])
+    def test_literal_placeholder_key(self, key):
+        """A dict key that is literally the placeholder text is a real key."""
+        payload = msgspec.msgpack.encode({key: 'x'})
+        detail = assert_failed(load_msgpack_with_error_detail(payload, Dict[str, int]))
+        assert detail.loc == (key,)
+        assert detail.error_value == 'x'
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is True
+
 
 class TestSecondDecodeFailure:
     """The typed decode stops early, the raw one may still fail."""
@@ -237,6 +260,19 @@ class TestSecondDecodeFailure:
         detail = assert_failed(
             load_json_with_error_detail(b'{"k": "x", "b": "\xff"}', Dict[str, int]))
         assert detail.msg.startswith('Expected `int`, got `str`')
+
+    def test_a_literal_key_is_distinguishable_from_an_unresolved_one(self):
+        """Both locations read `('...',)`, the flag tells them apart."""
+        resolved = assert_failed(
+            load_json_with_error_detail(b'{"...": "x"}', Dict[str, int]))
+        unresolved = assert_failed(
+            load_json_with_error_detail(b'{"...": "x", "b": "\xff"}', Dict[str, int]))
+
+        assert resolved.loc == unresolved.loc == ('...',)
+        assert resolved.loc_resolved is True
+        assert resolved.error_value_resolved is True
+        assert unresolved.loc_resolved is False
+        assert unresolved.error_value_resolved is False
 
 
 class TestCallerBugRaises:

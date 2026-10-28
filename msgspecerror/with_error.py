@@ -171,10 +171,11 @@ def resolve_error(error, data, model_or_decoder):
         ErrorInfoDetail: `loc` with every `...` / `...key` replaced by the real
             key, `msg` / `type` / `ctx` unchanged, `error_value` holding the
             offending value, and the two flags describing what was achieved:
-            `loc_resolved` is True when `loc` has no placeholder,
-            `error_value_resolved` is True when `error_value` is not UNSET.
-            A `loc` that still holds a placeholder or that does not match the
-            data is left as it is.
+            `loc_resolved` is True when the data was walked all the way, so
+            `loc` points at one concrete entry, `error_value_resolved` is True
+            when `error_value` is not UNSET. A `loc` that still holds a
+            placeholder or that does not match the data is left as it is, and
+            `loc_resolved` is then False.
 
     Examples:
         class ItemInfo(Struct):
@@ -219,7 +220,10 @@ def resolve_error(error, data, model_or_decoder):
         msg=error.msg, type=error.type, loc=tuple(keys), ctx=error.ctx,
         # NODEFAULT can not be stored in a struct field, it breaks json encoding
         error_value=UNSET if value is NODEFAULT else value,
-        loc_resolved=not _has_placeholder(keys),
+        # The walk consumed every placeholder, so the location points at one
+        # concrete entry. A dict key that happens to be the string `...` is a
+        # real key, it is not a placeholder left behind.
+        loc_resolved=True,
         error_value_resolved=value is not NODEFAULT,
     )
 

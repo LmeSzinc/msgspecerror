@@ -89,7 +89,9 @@ def resolve(model, data):
 def assert_invariants(detail):
     """The three invariants of every delivered ErrorInfoDetail."""
     assert isinstance(detail, ErrorInfoDetail)
-    assert detail.loc_resolved == (not _has_placeholder(detail.loc))
+    # A placeholder is only kept when it could not be resolved. The reverse does
+    # not hold: a dict key can literally be the string `...`.
+    assert detail.loc_resolved or _has_placeholder(detail.loc)
     assert detail.error_value_resolved == (detail.error_value is not UNSET)
     # A value can only be collected by walking the whole path
     assert (not detail.error_value_resolved) or detail.loc_resolved
@@ -258,6 +260,64 @@ class TestResolveDictKey:
         assert detail.error_value is UNSET
         assert detail.loc == ('...key', 'x')
         assert detail.loc_resolved is False
+
+
+class TestResolveLiteralPlaceholderKey:
+    """A dict key can be the literal text of a placeholder.
+
+    `'...'` and `'...key'` are ordinary strings, a data mapping is free to use
+    them as keys. Such a key is a real key: the location points at one concrete
+    entry, so it is resolved, and the value under it is obtained.
+    """
+
+    @pytest.mark.parametrize('key', ['...', '...key'])
+    def test_dict_value_under_a_literal_key(self, key):
+        detail = resolve(Dict[str, int], {key: 'x'})
+        assert detail.loc == (key,)
+        assert detail.error_value == 'x'
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is True
+
+    @pytest.mark.parametrize('key', ['...', '...key'])
+    def test_literal_key_under_a_dict_value(self, key):
+        detail = resolve(Dict[str, Dict[str, int]], {'outer': {key: 'x'}})
+        assert detail.loc == ('outer', key)
+        assert detail.error_value == 'x'
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is True
+
+    def test_literal_key_is_walked_further(self):
+        """The literal key is an intermediate segment, not the last one."""
+        detail = resolve(Dict[str, Dict[int, str]], {'...': {'k': 'x'}})
+        assert detail.loc == ('...', 'k')
+        assert detail.error_value == 'k'
+        assert detail.loc_resolved is True
+
+    def test_every_segment_is_a_literal_key(self):
+        detail = resolve(Dict[str, Dict[str, int]], {'...': {'...': 'x'}})
+        assert detail.loc == ('...', '...')
+        assert detail.error_value == 'x'
+        assert detail.loc_resolved is True
+
+    def test_a_literal_key_elsewhere_does_not_affect_the_location(self):
+        """A valid entry named `...` is skipped, the failing key is reported."""
+        detail = resolve(Dict[str, int], {'...': 1, 'bad': 'x'})
+        assert detail.loc == ('bad',)
+        assert detail.error_value == 'x'
+
+    def test_second_walk_returns_the_same_object(self):
+        """A resolved detail is idempotent even when its loc reads as `...`."""
+        data = {'...': 'x'}
+        detail = resolve(Dict[str, int], data)
+        assert resolve_error(detail, data, Dict[str, int]) is detail
+
+    def test_an_unresolvable_location_keeps_the_flag_false(self):
+        """`loc_resolved` is False only when the placeholder was kept."""
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=('...',))
+        detail = resolve_error(error, {'ok': 1}, Dict[str, int])
+        assert detail.loc == ('...',)
+        assert detail.loc_resolved is False
+        assert detail.error_value_resolved is False
 
 
 class TestResolveNoPlaceholder:
