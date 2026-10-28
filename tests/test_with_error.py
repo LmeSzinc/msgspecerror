@@ -203,6 +203,23 @@ class TestCallerBugRaises:
         with pytest.raises(TypeError):
             load_msgpack_with_error(b'\x80', 12345)
 
+    def test_json_rejects_msgpack_decoder(self):
+        """A decoder of the other format would only surface as a bad `type` argument."""
+        decoder = msgspec.msgpack.Decoder(Req)
+        with pytest.raises(
+                TypeError,
+                match=r'load_json_with_error\(\) requires a msgspec\.json\.Decoder, '
+                      r'got a msgspec\.msgpack\.Decoder'):
+            load_json_with_error(b'{"a": 1}', decoder)
+
+    def test_msgpack_rejects_json_decoder(self):
+        decoder = msgspec.json.Decoder(Req)
+        with pytest.raises(
+                TypeError,
+                match=r'load_msgpack_with_error\(\) requires a msgspec\.msgpack\.Decoder, '
+                      r'got a msgspec\.json\.Decoder'):
+            load_msgpack_with_error(msgspec.msgpack.encode({'a': 1}), decoder)
+
 
 class TestSingleDecode:
     def test_json_decodes_once(self, monkeypatch):

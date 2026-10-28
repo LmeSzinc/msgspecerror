@@ -285,19 +285,28 @@ def load_json_with_error(data, model_or_decoder):
     The location is left as msgspec reports it, so dict entries keep the
     `...` / `...key` placeholder. Use load_json_with_error_detail() to get the
     concrete key. A TypeError is still raised for a wrong argument, such as an
-    illegal type hint or a str payload given to the msgpack loader, since that
-    is a caller bug rather than bad data.
+    illegal type hint or a msgpack decoder, since that is a caller bug rather
+    than bad data.
 
     Args:
         data (bytes | bytearray | memoryview | str): Json payload
         model_or_decoder: The target type to decode into, or a
-            msgspec.json.Decoder whose `type` is used
+            msgspec.json.Decoder whose `type` is used. A msgpack decoder
+            raises TypeError.
 
     Returns:
         tuple[Any, ErrorInfo | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, error) on failure
     """
-    if type(model_or_decoder) is JsonDecoder:
+    # Decoder classes can't be subclassed reliably, an exact type check is
+    # enough and avoids reading a `.type` attribute of an unrelated object
+    cls = type(model_or_decoder)
+    if cls is MsgpackDecoder:
+        raise TypeError(
+            'load_json_with_error() requires a msgspec.json.Decoder, '
+            'got a msgspec.msgpack.Decoder'
+        )
+    if cls is JsonDecoder:
         decoder = model_or_decoder
         model = decoder.type
     else:
@@ -335,19 +344,28 @@ def load_msgpack_with_error(data, model_or_decoder):
     The location is left as msgspec reports it, so dict entries keep the
     `...` / `...key` placeholder. Use load_msgpack_with_error_detail() to get
     the concrete key. A TypeError is still raised for a wrong argument, such as
-    an illegal type hint or a str payload, since that is a caller bug rather
-    than bad data.
+    an illegal type hint, a str payload or a json decoder, since that is a
+    caller bug rather than bad data.
 
     Args:
         data (bytes | bytearray | memoryview): Msgpack payload
         model_or_decoder: The target type to decode into, or a
-            msgspec.msgpack.Decoder whose `type` is used
+            msgspec.msgpack.Decoder whose `type` is used. A json decoder
+            raises TypeError.
 
     Returns:
         tuple[Any, ErrorInfo | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, error) on failure
     """
-    if type(model_or_decoder) is MsgpackDecoder:
+    # Decoder classes can't be subclassed reliably, an exact type check is
+    # enough and avoids reading a `.type` attribute of an unrelated object
+    cls = type(model_or_decoder)
+    if cls is JsonDecoder:
+        raise TypeError(
+            'load_msgpack_with_error() requires a msgspec.msgpack.Decoder, '
+            'got a msgspec.json.Decoder'
+        )
+    if cls is MsgpackDecoder:
         decoder = model_or_decoder
         model = decoder.type
     else:
@@ -428,13 +446,22 @@ def load_json_with_error_detail(data, model_or_decoder):
     Args:
         data (bytes | bytearray | memoryview | str): Json payload
         model_or_decoder: The target type to decode into, or a
-            msgspec.json.Decoder whose `type` is used
+            msgspec.json.Decoder whose `type` is used. A msgpack decoder
+            raises TypeError.
 
     Returns:
         tuple[Any, ErrorInfoDetail | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, detail) on failure
     """
-    if type(model_or_decoder) is JsonDecoder:
+    # Decoder classes can't be subclassed reliably, an exact type check is
+    # enough and avoids reading a `.type` attribute of an unrelated object
+    cls = type(model_or_decoder)
+    if cls is MsgpackDecoder:
+        raise TypeError(
+            'load_json_with_error_detail() requires a msgspec.json.Decoder, '
+            'got a msgspec.msgpack.Decoder'
+        )
+    if cls is JsonDecoder:
         decoder = model_or_decoder
         model = decoder.type
     else:
@@ -492,13 +519,22 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
     Args:
         data (bytes | bytearray | memoryview): Msgpack payload
         model_or_decoder: The target type to decode into, or a
-            msgspec.msgpack.Decoder whose `type` is used
+            msgspec.msgpack.Decoder whose `type` is used. A json decoder
+            raises TypeError.
 
     Returns:
         tuple[Any, ErrorInfoDetail | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, detail) on failure
     """
-    if type(model_or_decoder) is MsgpackDecoder:
+    # Decoder classes can't be subclassed reliably, an exact type check is
+    # enough and avoids reading a `.type` attribute of an unrelated object
+    cls = type(model_or_decoder)
+    if cls is JsonDecoder:
+        raise TypeError(
+            'load_msgpack_with_error_detail() requires a msgspec.msgpack.Decoder, '
+            'got a msgspec.json.Decoder'
+        )
+    if cls is MsgpackDecoder:
         decoder = model_or_decoder
         model = decoder.type
     else:

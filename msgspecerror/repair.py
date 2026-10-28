@@ -640,6 +640,7 @@ def load_json_with_default(
         data (bytes | str): The input bytes to decode.
         model_or_decoder: The target type to decode into, or a ``msgspec.json.Decoder`` instance.
             When a decoder is passed, the model is extracted from ``decoder.type``.
+            A ``msgspec.msgpack.Decoder`` is rejected with TypeError.
         utf8_error: The error handling scheme to use for the handling of decoding errors.
             - "strict", any UnicodeDecodeError will be treated as root level error and generate a root level default.
                 You may lose tons of useful data because of one unicode error.
@@ -678,9 +679,15 @@ def load_json_with_default(
         # [ErrorInfo(msg='Expected `int`, got `str` - at `$.s.a`',
         # type=<ErrorType.TYPE_MISMATCH>, loc=('s', 'a'), ctx=ErrorCtx())]
     """
-    # since there's no BASETYPE flag on decoder classes, subclassing is impossible,
-    # so `type(obj) is Decoder` is equivalent to `isinstance(obj, Decoder)` and we can reduce some time cost
-    if type(model_or_decoder) is JsonDecoder:
+    # Decoder classes can't be subclassed reliably, an exact type check is
+    # enough and avoids reading a `.type` attribute of an unrelated object
+    cls = type(model_or_decoder)
+    if cls is MsgpackDecoder:
+        raise TypeError(
+            'load_json_with_default() requires a msgspec.json.Decoder, '
+            'got a msgspec.msgpack.Decoder'
+        )
+    if cls is JsonDecoder:
         decoder = model_or_decoder
         model = decoder.type
     else:
@@ -786,6 +793,7 @@ def load_msgpack_with_default(
         data (bytes): The input bytes to decode.
         model_or_decoder: The target type to decode into, or a ``msgspec.msgpack.Decoder`` instance.
             When a decoder is passed, the model is extracted from ``decoder.type``.
+            A ``msgspec.json.Decoder`` is rejected with TypeError.
         utf8_error: The error handling scheme for invalid UTF-8 in string payloads.
             - ``"strict"`` — any ``UnicodeDecodeError`` is treated as a root-level
               error and produces a root-level default.
@@ -804,9 +812,15 @@ def load_msgpack_with_default(
 
     See load_json_with_default for more info.
     """
-    # since there's no BASETYPE flag on decoder classes, subclassing is impossible,
-    # so `type(obj) is Decoder` is equivalent to `isinstance(obj, Decoder)` and we can reduce some time cost
-    if type(model_or_decoder) is MsgpackDecoder:
+    # Decoder classes can't be subclassed reliably, an exact type check is
+    # enough and avoids reading a `.type` attribute of an unrelated object
+    cls = type(model_or_decoder)
+    if cls is JsonDecoder:
+        raise TypeError(
+            'load_msgpack_with_default() requires a msgspec.msgpack.Decoder, '
+            'got a msgspec.json.Decoder'
+        )
+    if cls is MsgpackDecoder:
         decoder = model_or_decoder
         model = decoder.type
     else:
@@ -899,7 +913,8 @@ def _get_model(model_or_decoder):
     """
     # Decoder classes can't be subclassed reliably, an exact type check is
     # enough and avoids reading a `.type` attribute of an unrelated object
-    if type(model_or_decoder) is JsonDecoder or type(model_or_decoder) is MsgpackDecoder:
+    cls = type(model_or_decoder)
+    if cls is JsonDecoder or cls is MsgpackDecoder:
         return model_or_decoder.type
     return model_or_decoder
 

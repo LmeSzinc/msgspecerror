@@ -5,6 +5,7 @@ from typing import (
 
 import msgspec
 import msgspec.json
+import msgspec.msgpack
 import pytest
 from msgspec import NODEFAULT, Struct, field
 from typing_extensions import Annotated
@@ -422,6 +423,15 @@ class TestLoadJsonWithDefault:
         assert result == WithDefaults(a=42, b="default", c=[])
         assert len(errors) == 1
         assert errors[0].loc == ()
+
+    def test_msgpack_decoder_is_rejected(self):
+        """A decoder of the other format would only surface as an illegal `type` argument."""
+        decoder = msgspec.msgpack.Decoder(WithDefaults)
+        with pytest.raises(
+                TypeError,
+                match=r'load_json_with_default\(\) requires a msgspec\.json\.Decoder, '
+                      r'got a msgspec\.msgpack\.Decoder'):
+            load_json_with_default(b'{"a": 1, "b": "test"}', decoder)
 
 
 # --- Models for Testing guess_default ---

@@ -209,6 +209,24 @@ class TestSecondDecodeFailure:
         assert detail.msg.startswith('Expected `int`, got `str`')
 
 
+class TestCallerBugRaises:
+    """A decoder of the other format is a bug, not bad data, so it is not converted."""
+
+    def test_json_rejects_msgpack_decoder(self):
+        with pytest.raises(
+                TypeError,
+                match=r'load_json_with_error_detail\(\) requires a msgspec\.json\.Decoder, '
+                      r'got a msgspec\.msgpack\.Decoder'):
+            load_json_with_error_detail(b'{"a": 1}', msgspec.msgpack.Decoder(Req))
+
+    def test_msgpack_rejects_json_decoder(self):
+        with pytest.raises(
+                TypeError,
+                match=r'load_msgpack_with_error_detail\(\) requires a msgspec\.msgpack\.Decoder, '
+                      r'got a msgspec\.json\.Decoder'):
+            load_msgpack_with_error_detail(msgspec.msgpack.encode({'a': 1}), msgspec.json.Decoder(Req))
+
+
 class TestConsistencyWithRepair:
     """The resolved location must match the one the repair engine finds."""
 
