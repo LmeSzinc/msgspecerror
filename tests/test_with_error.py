@@ -259,3 +259,61 @@ class TestNoMutation:
         model = Dict[str, Dict[str, int]]
         assert_failed(convert_with_error(data, model))
         assert data == {'items': {'apple': {'amount': 'ABC'}}}
+
+
+class TestPayloadTypes:
+    """The loaders accept any bytes-like object, json also takes a str."""
+
+    @pytest.mark.parametrize('payload', [
+        b'{"a": "bad"}',
+        bytearray(b'{"a": "bad"}'),
+        memoryview(b'{"a": "bad"}'),
+        '{"a": "bad"}',
+    ], ids=['bytes', 'bytearray', 'memoryview', 'str'])
+    def test_json_loader(self, payload):
+        error = assert_failed(load_json_with_error(payload, Req))
+        assert error.type is ErrorType.TYPE_MISMATCH
+        assert error.loc == ('a',)
+
+    @pytest.mark.parametrize('payload', [
+        msgspec.msgpack.encode({'a': 'bad'}),
+        bytearray(msgspec.msgpack.encode({'a': 'bad'})),
+        memoryview(msgspec.msgpack.encode({'a': 'bad'})),
+    ], ids=['bytes', 'bytearray', 'memoryview'])
+    def test_msgpack_loader(self, payload):
+        error = assert_failed(load_msgpack_with_error(payload, Req))
+        assert error.type is ErrorType.TYPE_MISMATCH
+        assert error.loc == ('a',)
+
+    @pytest.mark.parametrize('payload', [
+        b'{"a": 1}',
+        bytearray(b'{"a": 1}'),
+        memoryview(b'{"a": 1}'),
+    ], ids=['bytes', 'bytearray', 'memoryview'])
+    def test_json_loader_success(self, payload):
+        obj, error = load_json_with_error(payload, Req)
+        assert obj == Req(a=1)
+        assert error is NODEFAULT
+
+
+class TestDecoderEquivalence:
+    """A decoder is only a carrier of `.type`, it must not change the outcome."""
+
+    def test_json_failure_matches_the_model(self):
+        from_model = assert_failed(load_json_with_error(b'{"a": "bad"}', Req))
+        from_decoder = assert_failed(
+            load_json_with_error(b'{"a": "bad"}', msgspec.json.Decoder(Req)))
+        assert from_decoder == from_model
+
+    def test_msgpack_failure_matches_the_model(self):
+        payload = msgspec.msgpack.encode({'a': 'bad'})
+        from_model = assert_failed(load_msgpack_with_error(payload, Req))
+        from_decoder = assert_failed(
+            load_msgpack_with_error(payload, msgspec.msgpack.Decoder(Req)))
+        assert from_decoder == from_model
+
+    def test_untyped_decoder_is_used_for_its_type(self):
+        """`Decoder()` without a type decodes to Any, so nothing fails."""
+        obj, error = load_json_with_error(b'{"a": "bad"}', msgspec.json.Decoder())
+        assert obj == {'a': 'bad'}
+        assert error is NODEFAULT

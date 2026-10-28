@@ -1,14 +1,15 @@
 """Tests for the `*_with_error_detail` family: first error, resolved location."""
 import copy
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple, Union
 
 import msgspec
 import pytest
 from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
 
+import msgspecerror.with_error as with_error_mod
 from msgspecerror import (
-    ErrorInfoDetail, convert_with_error_detail, load_json_with_error_detail, load_msgpack_with_error_detail,
-    parse_msgspec_error
+    ErrorInfoDetail, convert_with_error, convert_with_error_detail, load_json_with_error_detail,
+    load_msgpack_with_error_detail, parse_msgspec_error
 )
 from msgspecerror.const import ErrorType
 from msgspecerror.parse_error import _has_placeholder
@@ -22,12 +23,41 @@ class Req(Struct, forbid_unknown_fields=True):
     b: str = ''
 
 
+class Box(Struct):
+    inner: Req
+    tag: str = 't'
+
+
 class Item(Struct):
     amount: int = 0
 
 
 class Inventory(Struct):
     items: Dict[str, Item] = {}
+
+
+# --- Realistic task definition, nested dict / union / list ---
+
+
+class Group(Struct, forbid_unknown_fields=True):
+    task: str = ''
+    group: str = ''
+    model: str = ''
+
+
+class Card(Struct, forbid_unknown_fields=True):
+    info: str = ''
+    group: str = ''
+    task: str = ''
+
+
+class Task(Struct, forbid_unknown_fields=True):
+    groups: Optional[Dict[str, Union[None, str, Group]]] = msgspec.field(default_factory=dict)
+    displays: Optional[Union[str, List[List[Union[str, Card]]]]] = 'flat'
+    global_bind: bool = False
+
+
+TasksDefinition = Dict[str, Task]
 
 
 def assert_invariants(detail):
@@ -240,6 +270,10 @@ class TestConsistencyWithRepair:
         (Dict[str, Dict[str, int]], {'a': {'b': 'x'}}),
         (Inventory, {'items': {'apple': {'amount': 'ABC'}}}),
         (Dict[str, int], {'a': 'x', 'b': 'y'}),
+        (List[int], [1, 'x']),
+        (Tuple[int, str], [1, 2]),
+        (Dict[str, Union[str, List[int]]], {'v': [1, 'x']}),
+        (Union[Dict[str, int], List[int]], {'k': 'x'}),
     ])
     def test_loc_matches(self, model, data):
         try:
@@ -272,3 +306,176 @@ class TestConsistencyWithRepair:
         assert len(errors) == 2
         assert detail.loc == errors[0].loc == ('a',)
         assert detail.error_value == 'x'
+
+
+class TestLocMatchesWithError:
+    """When the location is concrete, both families report the same `loc`."""
+
+    @pytest.mark.parametrize('model, data', [
+        (Req, {'a': 'bad'}),
+        (Req, {}),
+        (Req, {'a': 1, 'z': 2}),
+        (Box, {'inner': {}}),
+        (Box, {'inner': {'a': 'bad'}}),
+        (List[int], [1, 'x']),
+        (Tuple[int, str], [1, 2]),
+        (int, 'abc'),
+    ])
+    def test_concrete_loc_is_left_alone(self, model, data):
+        _, error = convert_with_error(data, model)
+        detail = assert_failed(convert_with_error_detail(data, model))
+
+        assert not _has_placeholder(error.loc)
+        assert detail.loc == error.loc
+
+    def test_placeholder_loc_is_the_only_difference(self):
+        """A `$[...]` path is the one case where the two families disagree."""
+        _, error = convert_with_error({'k': 'x'}, Dict[str, int])
+        detail = assert_failed(convert_with_error_detail({'k': 'x'}, Dict[str, int]))
+
+        assert error.loc == ('...',)
+        assert detail.loc == ('k',)
+
+
+class TestRootError:
+    """A root level validation error carries the whole document."""
+
+    @pytest.mark.parametrize('payload, model, value', [
+        (b'"x"', int, 'x'),
+        (b'1', str, 1),
+        (b'[1]', int, [1]),
+        (b'null', int, None),
+        (b'true', int, True),
+    ], ids=['str-for-int', 'int-for-str', 'list-for-int', 'null-for-int', 'bool-for-int'])
+    def test_json_root_error(self, payload, model, value):
+        detail = assert_failed(load_json_with_error_detail(payload, model))
+
+        assert detail.loc == ()
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is True
+        assert detail.error_value == value
+
+    def test_msgpack_root_error(self):
+        detail = assert_failed(
+            load_msgpack_with_error_detail(msgspec.msgpack.encode('x'), int))
+        assert detail.loc == ()
+        assert detail.error_value == 'x'
+
+
+class TestDecodeCount:
+    """One typed decode, plus one untyped decode only on the failure path."""
+
+    def test_json_success_decodes_once(self, monkeypatch):
+        calls = []
+        real = with_error_mod.decode_json
+
+        def counting(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(with_error_mod, 'decode_json', counting)
+        load_json_with_error_detail(b'{"a": 1}', Req)
+        assert len(calls) == 1
+
+    def test_json_failure_decodes_twice(self, monkeypatch):
+        calls = []
+        real = with_error_mod.decode_json
+
+        def counting(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(with_error_mod, 'decode_json', counting)
+        load_json_with_error_detail(b'{"a": "bad"}', Req)
+
+        assert len(calls) == 2
+        # The second decode is untyped: it has no `type` argument
+        assert calls[1][1] == {}
+
+    def test_msgpack_success_decodes_once(self, monkeypatch):
+        calls = []
+        real = with_error_mod.decode_msgpack
+
+        def counting(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(with_error_mod, 'decode_msgpack', counting)
+        load_msgpack_with_error_detail(msgspec.msgpack.encode({'a': 1}), Req)
+        assert len(calls) == 1
+
+    def test_msgpack_failure_decodes_twice(self, monkeypatch):
+        calls = []
+        real = with_error_mod.decode_msgpack
+
+        def counting(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(with_error_mod, 'decode_msgpack', counting)
+        load_msgpack_with_error_detail(msgspec.msgpack.encode({'a': 'bad'}), Req)
+
+        assert len(calls) == 2
+        assert calls[1][1] == {}
+
+
+class TestRealisticModel:
+    """A real task definition: a dict of structs holding dicts, unions and lists."""
+
+    @pytest.mark.parametrize('data, loc, value', [
+        # A dict value of `groups`, the whole path has two placeholders
+        ({'Task': {'groups': {'G': 1}}}, ('Task', 'groups', 'G'), 1),
+        # A dict key of `groups`, the offending value is the key itself
+        ({'Task': {'groups': {1: None}}}, ('Task', 'groups', 1), 1),
+        # A list of lists of a tagged union member
+        ({'Task': {'displays': [[{'info': 1}]]}},
+         ('Task', 'displays', 0, 0, 'info'), 1),
+        # The failing entry is the second task of the mapping
+        ({'Good': {}, 'Bad': {'global_bind': 1}}, ('Bad', 'global_bind'), 1),
+    ])
+    def test_convert(self, data, loc, value):
+        detail = assert_failed(convert_with_error_detail(data, TasksDefinition))
+
+        assert detail.loc == loc
+        assert detail.error_value == value
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is True
+
+    @pytest.mark.parametrize('data, loc, value', [
+        ({'Task': {'groups': {'G': 1}}}, ('Task', 'groups', 'G'), 1),
+        ({'Task': {'displays': [[{'info': 1}]]}},
+         ('Task', 'displays', 0, 0, 'info'), 1),
+        ({'Good': {}, 'Bad': {'global_bind': 1}}, ('Bad', 'global_bind'), 1),
+    ])
+    def test_json_payload(self, data, loc, value):
+        """Json keys are always str, the int key row can only go through msgpack."""
+        payload = msgspec.json.encode(data)
+        detail = assert_failed(load_json_with_error_detail(payload, TasksDefinition))
+
+        assert detail.loc == loc
+        assert detail.error_value == value
+
+    @pytest.mark.parametrize('data, loc, value', [
+        ({'Task': {'groups': {'G': 1}}}, ('Task', 'groups', 'G'), 1),
+        ({'Task': {'groups': {1: None}}}, ('Task', 'groups', 1), 1),
+        ({'Task': {'displays': [[{'info': 1}]]}},
+         ('Task', 'displays', 0, 0, 'info'), 1),
+        ({'Good': {}, 'Bad': {'global_bind': 1}}, ('Bad', 'global_bind'), 1),
+    ])
+    def test_msgpack_payload(self, data, loc, value):
+        payload = msgspec.msgpack.encode(data)
+        detail = assert_failed(load_msgpack_with_error_detail(payload, TasksDefinition))
+
+        assert detail.loc == loc
+        assert detail.error_value == value
+
+    def test_with_error_keeps_the_placeholders(self):
+        data = {'Task': {'groups': {'G': 1}}}
+        _, error = convert_with_error(data, TasksDefinition)
+        assert error.loc == ('...', 'groups', '...')
+
+    def test_data_is_not_modified(self):
+        data = {'Task': {'groups': {'G': 1}}}
+        snapshot = copy.deepcopy(data)
+        assert_failed(convert_with_error_detail(data, TasksDefinition))
+        assert data == snapshot

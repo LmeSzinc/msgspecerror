@@ -1,11 +1,15 @@
 """Tests for `resolve_error` and `ErrorInfoDetail`."""
-from typing import Dict, List, Set, Tuple, Union
+from typing import Dict, Final, Generic, List, NewType, Optional, Set, Tuple, TypeVar, Union
 
 import msgspec
 import pytest
-from msgspec import UNSET, Struct, ValidationError, convert
+from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
+from typing_extensions import Annotated
 
-from msgspecerror import ErrorInfo, ErrorInfoDetail, parse_msgspec_error, resolve_error
+from msgspecerror import (
+    ErrorInfo, ErrorInfoDetail, convert_with_error_detail, load_json_with_error_detail, load_msgpack_with_error_detail,
+    parse_msgspec_error, resolve_error
+)
 from msgspecerror.const import ErrorType
 from msgspecerror.parse_error import _has_placeholder
 
@@ -30,6 +34,45 @@ class Inventory(Struct):
     items: Dict[str, Item] = {}
 
 
+T = TypeVar('T')
+
+
+class GenericBox(Struct, Generic[T]):
+    value: T
+
+
+class GenericInner(Struct):
+    n: int
+
+
+class GenericOuter(Struct):
+    box: GenericBox[GenericInner]
+
+
+class GenericDictBox(Struct):
+    box: GenericBox[Dict[str, int]]
+
+
+class TaggedA(Struct, tag='a'):
+    x: Dict[str, int] = {}
+
+
+class TaggedB(Struct, tag='b'):
+    x: Dict[str, int] = {}
+
+
+class TaggedOther(Struct, tag='other'):
+    y: Dict[str, int] = {}
+
+
+class Renamed(Struct, rename='camel'):
+    some_field: int = 0
+
+
+class RenamedOuter(Struct):
+    inner: Renamed
+
+
 def resolve(model, data):
     """Convert `data` into `model`, then resolve the resulting error."""
     try:
@@ -50,6 +93,20 @@ def assert_invariants(detail):
     assert detail.error_value_resolved == (detail.error_value is not UNSET)
     # A value can only be collected by walking the whole path
     assert (not detail.error_value_resolved) or detail.loc_resolved
+
+
+def assert_json_encodable(detail):
+    """A detail is taken to logging, so json must accept it."""
+    encoded = msgspec.json.encode(detail)
+    assert encoded.startswith(b'{"msg":')
+
+
+def assert_loc_segments(loc):
+    """A delivered location holds int / str segments only, bool is not an int."""
+    assert isinstance(loc, tuple)
+    for segment in loc:
+        assert isinstance(segment, (int, str))
+        assert not isinstance(segment, bool)
 
 
 class TestErrorInfoDetail:
@@ -337,6 +394,185 @@ class TestInputContract:
         assert detail.msg == 'm'
         assert detail.type is ErrorType.TYPE_MISMATCH
         assert detail.ctx == error.ctx
+
+
+class TestResolveNestedDictKey:
+    """`...key` can follow a `...`, the key is always the last segment."""
+
+    def test_key_under_a_dict_value(self):
+        detail = resolve(Dict[str, Dict[str, int]], {'a': {1: 'x'}})
+        assert detail.loc == ('a', 1)
+        assert detail.error_value == 1
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is True
+
+    def test_key_two_dict_values_deep(self):
+        model = Dict[str, Dict[str, Dict[str, int]]]
+        detail = resolve(model, {'a': {'b': {1: 'x'}}})
+        assert detail.loc == ('a', 'b', 1)
+        assert detail.error_value == 1
+
+    def test_key_value_is_the_key_not_the_value(self):
+        """For a `...key` error the offending value is the key itself."""
+        detail = resolve(Dict[str, Dict[str, str]], {'a': {1: 'kept'}})
+        assert detail.loc == ('a', 1)
+        assert detail.error_value == 1
+
+
+class TestResolveWrappedModels:
+    """Annotated / NewType / Final / Optional wrap the dict typehint."""
+
+    @pytest.mark.parametrize('model', [
+        Annotated[Dict[str, int], msgspec.Meta()],
+        NewType('WrappedDict', Dict[str, int]),
+        Final[Dict[str, int]],
+        Optional[Dict[str, int]],
+        Union[List[int], Dict[str, int]],
+    ], ids=['annotated', 'newtype', 'final', 'optional', 'union-second-member'])
+    def test_placeholder_is_resolved(self, model):
+        detail = resolve(model, {'k': 'x'})
+        assert detail.loc == ('k',)
+        assert detail.error_value == 'x'
+
+    def test_annotated_dict_value(self):
+        model = Dict[str, Annotated[int, msgspec.Meta(ge=18)]]
+        detail = resolve(model, {'k': 10})
+        assert detail.loc == ('k',)
+        assert detail.error_value == 10
+
+
+class TestResolveGenericStruct:
+    """A parametrized generic struct keeps its parameters on the walk."""
+
+    def test_generic_field_type(self):
+        detail = resolve(GenericOuter, {'box': {'value': {'n': 'bad'}}})
+        assert detail.loc == ('box', 'value', 'n')
+        assert detail.error_value == 'bad'
+
+    def test_generic_dict_value(self):
+        detail = resolve(GenericDictBox, {'box': {'value': {'k': 'bad'}}})
+        assert detail.loc == ('box', 'value', 'k')
+        assert detail.error_value == 'bad'
+
+
+class TestResolveTaggedUnion:
+    """The tag picks the union member when several members share a field name."""
+
+    @pytest.mark.parametrize('tag', ['a', 'b'])
+    def test_same_field_on_both_members(self, tag):
+        detail = resolve(Union[TaggedA, TaggedB], {'type': tag, 'x': {'k': 'bad'}})
+        assert detail.loc == ('x', 'k')
+        assert detail.error_value == 'bad'
+
+    def test_unknown_tag_reports_the_tag_field(self):
+        detail = resolve(Union[TaggedA, TaggedB], {'type': 'zzz', 'x': {'k': 'bad'}})
+        assert detail.loc == ('type',)
+        assert detail.error_value is UNSET
+        assert detail.loc_resolved is True
+
+    def test_distinct_field_names(self):
+        detail = resolve(Union[TaggedA, TaggedOther], {'type': 'other', 'y': {'k': 'bad'}})
+        assert detail.loc == ('y', 'k')
+        assert detail.error_value == 'bad'
+
+
+class TestResolveRenamedField:
+    """A struct field is reported by its serialized name, and located by it."""
+
+    def test_camel_case_field(self):
+        detail = resolve(Renamed, {'someField': 'bad'})
+        assert detail.loc == ('someField',)
+        assert detail.error_value == 'bad'
+
+    def test_nested_camel_case_field(self):
+        detail = resolve(RenamedOuter, {'inner': {'someField': 'bad'}})
+        assert detail.loc == ('inner', 'someField')
+        assert detail.error_value == 'bad'
+
+
+class TestDeliveryInvariants:
+    """Every delivered ErrorInfoDetail keeps its three invariants.
+
+    A resolved location, a value when one was obtained, and never a value
+    without a concrete location.
+    """
+
+    @pytest.mark.parametrize('model, data', [
+        (Req, {}),
+        (Box, {'inner': {}}),
+        (Req, {'a': 1, 'z': 2}),
+        (Dict[str, int], {'k': 'x'}),
+        (Dict[str, int], {1: 'x'}),
+        (Dict[str, List[int]], {'k': [1, 'x']}),
+        (Dict[str, Dict[str, int]], {'a': {'b': 'x'}}),
+        (Tuple[int, str], [1, 2]),
+        (Box, {'inner': {'a': 'bad'}}),
+        (Dict[str, Union[str, List[int]]], {'v': [1, 'x']}),
+        (Union[Dict[str, int], List[int]], {'k': 'x'}),
+        (Inventory, {'items': {'apple': {'amount': 'ABC'}}}),
+        (int, 'abc'),
+        (Set[int], {1, 'x'}),
+    ])
+    def test_convert(self, model, data):
+        obj, detail = convert_with_error_detail(data, model)
+        assert obj is NODEFAULT
+        assert_invariants(detail)
+        assert_json_encodable(detail)
+        assert_loc_segments(detail.loc)
+
+    @pytest.mark.parametrize('payload, model', [
+        (b'{"a": "bad"}', Req),
+        (b'{"a": "bad", "b": "\xff"}', Req),
+        (b'{"a": "bad", "b": 1', Req),
+        (b'{"a": ', Req),
+        ('{"a": "bad"}', Req),
+        (b'{"k": "x"}', Dict[str, int]),
+        (b'{"k": "x", "b": "\xff"}', Dict[str, int]),
+        (b'{"k": "x", "b": 1', Dict[str, int]),
+        (b'{"k": "x"} {"j": 1}', Dict[str, int]),
+        ('{"a": "bad", "b": "\ud800"}', Req),
+    ], ids=[
+        'valid', 'bad-tail-byte', 'truncated', 'malformed', 'str-payload',
+        'dict-valid', 'dict-bad-tail-byte', 'dict-truncated', 'dict-trailing',
+        'str-payload-lone-surrogate',
+    ])
+    def test_json_payload(self, payload, model):
+        obj, detail = load_json_with_error_detail(payload, model)
+        assert obj is NODEFAULT
+        assert_invariants(detail)
+        assert_json_encodable(detail)
+        assert_loc_segments(detail.loc)
+
+    @pytest.mark.parametrize('payload, model', [
+        (msgspec.msgpack.encode({'a': 'bad'}), Req),
+        (b'\x82\xa1a\xa3bad\xa1b\xa1\xff', Req),
+        (b'\x82\xa1a\xa3bad', Req),
+        (b'\xc1', Req),
+        (msgspec.msgpack.encode({'k': 'x'}), Dict[str, int]),
+        (b'\x82\xa1k\xa1x\xa1b\xa1\xff', Dict[str, int]),
+        (b'\x82\xa1k\xa1x\xa1b', Dict[str, int]),
+        (msgspec.msgpack.encode({1: 'x'}), Dict[str, int]),
+    ], ids=[
+        'valid', 'bad-tail-byte', 'truncated', 'malformed',
+        'dict-valid', 'dict-bad-tail-byte', 'dict-truncated', 'dict-key',
+    ])
+    def test_msgpack_payload(self, payload, model):
+        obj, detail = load_msgpack_with_error_detail(payload, model)
+        assert obj is NODEFAULT
+        assert_invariants(detail)
+        assert_json_encodable(detail)
+        assert_loc_segments(detail.loc)
+
+    def test_the_two_flags_are_booleans(self):
+        """The flags are plain bool fields, not truthy sentinels."""
+        detail = resolve(Dict[str, int], {'k': 'x'})
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is True
+
+    def test_the_flags_are_plain_fields(self):
+        names = [f.name for f in msgspec.structs.fields(ErrorInfoDetail)]
+        assert names == ['msg', 'type', 'loc', 'ctx', 'error_value',
+                         'loc_resolved', 'error_value_resolved']
 
 
 class TestUnresolvable:
