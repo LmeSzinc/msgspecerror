@@ -141,7 +141,7 @@ class TestRevertRegression:
     def test_no_escaping_unchanged(self):
         """A plain pattern round-trips through revert_regex itself."""
         assert revert_regex(r"^hello$") == r"^hello$"
-        assert revert_regex(r"[0-9]+")  == r"[0-9]+"
+        assert revert_regex(r"[0-9]+") == r"[0-9]+"
         assert revert_regex(r"abc|def") == r"abc|def"
 
     def test_backslash_quote_preserved(self):

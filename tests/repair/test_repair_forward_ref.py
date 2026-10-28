@@ -6,10 +6,10 @@ from typing_extensions import Annotated
 
 from msgspecerror.repair import load_json_with_default, load_msgpack_with_default
 
-
 # --- Test Models ---
 # These classes must be defined at the module level for msgspec to resolve the
 # forward references.
+
 
 class Child(Struct):
     """The forward-ref target, it can be default constructed."""

@@ -5,17 +5,17 @@ Every test triggers a real msgspec error by decoding data with invalid
 values (enum, tag, datetime, uuid, base64, decimal, etc.),
 then validates parse_msgspec_error correctly classifies it.
 """
+import datetime
+import decimal
+import uuid
+from enum import Enum
 from typing import Union
 
 import msgspec
 import msgspec.msgpack
-import datetime
-import uuid
-import decimal
 import pytest
-from enum import Enum
 
-from msgspecerror import parse_msgspec_error, ErrorCtx
+from msgspecerror import ErrorCtx, parse_msgspec_error
 from msgspecerror.const import ErrorType
 
 

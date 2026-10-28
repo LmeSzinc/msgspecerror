@@ -3,8 +3,9 @@ from typing import Any, Optional
 import msgspec
 import pytest
 
-from msgspecerror.parse_anno import (get_class_annotation, get_class_annotation_dict,
-                                     get_msgspec_annotation, get_msgspec_annotation_dict)
+from msgspecerror.parse_anno import (
+    get_class_annotation, get_class_annotation_dict, get_msgspec_annotation, get_msgspec_annotation_dict
+)
 
 
 class TestGetAnnotations:

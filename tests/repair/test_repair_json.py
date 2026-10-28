@@ -1,6 +1,7 @@
 from enum import Enum
-from typing import (AbstractSet, Collection, Dict, FrozenSet, List, Mapping, MutableMapping,
-                    MutableSet, Optional, Sequence, Set, Tuple)
+from typing import (
+    AbstractSet, Collection, Dict, FrozenSet, List, Mapping, MutableMapping, MutableSet, Optional, Sequence, Set, Tuple
+)
 
 import msgspec
 import msgspec.json
@@ -10,8 +11,8 @@ from typing_extensions import Annotated
 
 from msgspecerror.repair import load_json_with_default
 
-
 # --- Test Models ---
+
 
 class Simple(Struct):
     """A simple struct with no default values for its fields."""

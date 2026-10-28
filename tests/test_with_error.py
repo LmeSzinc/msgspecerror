@@ -8,17 +8,12 @@ from msgspec.json import decode as decode_json
 
 import msgspecerror.with_error as with_error_mod
 from msgspecerror import (
-    DECODE_ERRORS,
-    ErrorInfo,
-    convert_with_error,
-    load_json_with_error,
-    load_msgpack_with_error,
-    parse_msgspec_error,
+    DECODE_ERRORS, ErrorInfo, convert_with_error, load_json_with_error, load_msgpack_with_error, parse_msgspec_error
 )
 from msgspecerror.const import ErrorType
 
-
 # --- Test Models ---
+
 
 class Req(Struct, forbid_unknown_fields=True):
     a: int

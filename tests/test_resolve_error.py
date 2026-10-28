@@ -3,14 +3,14 @@ from typing import Dict, List, Set, Tuple, Union
 
 import msgspec
 import pytest
-from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
+from msgspec import UNSET, Struct, ValidationError, convert
 
 from msgspecerror import ErrorInfo, ErrorInfoDetail, parse_msgspec_error, resolve_error
 from msgspecerror.const import ErrorType
 from msgspecerror.parse_error import _has_placeholder
 
-
 # --- Test Models ---
+
 
 class Req(Struct, forbid_unknown_fields=True):
     a: int

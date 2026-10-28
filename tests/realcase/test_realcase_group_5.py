@@ -4,12 +4,12 @@ Real-case tests for Group 5: Out of Range Errors.
 Every test triggers a real msgspec error by decoding data with out-of-range
 values, then validates parse_msgspec_error correctly classifies it.
 """
-import msgspec
-import msgspec.msgpack
 import datetime
+
+import msgspec
 import pytest
 
-from msgspecerror import parse_msgspec_error, ErrorCtx
+from msgspecerror import ErrorCtx, parse_msgspec_error
 from msgspecerror.const import ErrorType
 
 

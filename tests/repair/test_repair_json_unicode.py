@@ -4,6 +4,7 @@ from msgspec import NODEFAULT
 
 from msgspecerror.const import ErrorType
 from msgspecerror.repair import load_json_with_default
+
 from .test_repair_json import Simple, WithDefaults
 
 

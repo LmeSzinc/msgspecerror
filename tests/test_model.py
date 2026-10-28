@@ -1,12 +1,12 @@
-from typing import Union, Optional
+from typing import Optional, Union
 
 import pytest
-from msgspec import Struct, UNSET, UnsetType
+from msgspec import UNSET, Struct, UnsetType
 
 from msgspecerror.parse_model import get_model_changes
 
-
 # --- Test Data Setup ---
+
 
 class EmptyStruct(Struct):
     pass

@@ -3,12 +3,11 @@ from typing import Dict, List
 
 from msgspec import NODEFAULT, Struct
 
-import msgspecerror.const
 from msgspecerror.const import ErrorType
 from msgspecerror.repair import _pop_last_collection, load_json_with_default
 
-
 # --- Test Models ---
+
 
 class Inner(Struct):
     """A struct that cannot be default-constructed."""

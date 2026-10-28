@@ -7,18 +7,15 @@ import pytest
 from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
 
 from msgspecerror import (
-    ErrorInfoDetail,
-    convert_with_error_detail,
-    load_json_with_error_detail,
-    load_msgpack_with_error_detail,
-    parse_msgspec_error,
+    ErrorInfoDetail, convert_with_error_detail, load_json_with_error_detail, load_msgpack_with_error_detail,
+    parse_msgspec_error
 )
 from msgspecerror.const import ErrorType
 from msgspecerror.parse_error import _has_placeholder
 from msgspecerror.repair import load_msgpack_with_default
 
-
 # --- Test Models ---
+
 
 class Req(Struct, forbid_unknown_fields=True):
     a: int

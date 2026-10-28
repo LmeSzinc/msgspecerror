@@ -7,7 +7,7 @@ except ImportError:
     # Python 3.8, builtin generics like `list[int]` are not supported there
     _types_GenericAlias = None
 
-from msgspec import NODEFAULT, Struct, UNSET, ValidationError, convert
+from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
 from msgspec._core import Factory
 from msgspec._utils import _apply_params, _get_class_mro_and_typevar_mappings
 from typing_extensions import Literal

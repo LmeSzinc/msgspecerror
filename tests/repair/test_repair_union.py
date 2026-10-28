@@ -10,7 +10,6 @@ import copy
 import sys
 from typing import Dict, List, Optional, Union
 
-import msgspec
 import msgspec.msgpack
 import pytest
 from msgspec import NODEFAULT, Struct
@@ -19,8 +18,8 @@ from msgspecerror.const import ErrorType
 from msgspecerror.parse_error import ErrorInfo
 from msgspecerror.repair import _repair_once, load_json_with_default, load_msgpack_with_default
 
-
 # --- Test Models ---
+
 
 class Inner(Struct):
     """A struct that can be default-constructed."""

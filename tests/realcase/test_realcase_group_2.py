@@ -7,7 +7,7 @@ then validates parse_msgspec_error correctly classifies it.
 import msgspec
 import pytest
 
-from msgspecerror import parse_msgspec_error, ErrorCtx
+from msgspecerror import ErrorCtx, parse_msgspec_error
 from msgspecerror.const import ErrorType
 
 

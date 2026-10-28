@@ -2,7 +2,7 @@ import sys
 from typing import Dict, ForwardRef, Generic, List, Optional, Tuple, TypeVar, Union
 
 import pytest
-from msgspec import NODEFAULT, Meta, Struct, UNSET, UnsetType, field
+from msgspec import NODEFAULT, UNSET, Meta, Struct, UnsetType, field
 from msgspec.structs import fields as struct_fields
 from typing_extensions import Annotated
 

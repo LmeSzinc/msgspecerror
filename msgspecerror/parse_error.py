@@ -1,11 +1,10 @@
-from typing import Tuple, Union, Any
+from typing import Any, Tuple, Union
 
-import msgspec
 from msgspec import NODEFAULT, UNSET, Struct, field
 
 from .const import ErrorType
 from .parse_ctx import ErrorCtx, KEY_got, get_length_ctx, get_number_ctx, get_pattern_ctx
-from .parse_path import KEY_at, KEY_at_check, get_error_path, KEY_at_key_in
+from .parse_path import KEY_at, KEY_at_check, KEY_at_key_in, get_error_path
 
 # Placeholders msgspec leaves in an error path for a dict entry
 PLACEHOLDER_VALUE = '...'

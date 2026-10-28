@@ -19,14 +19,11 @@ from msgspec import NODEFAULT, UNSET, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
-from .const import DECODE_ERRORS, T_json_data, T_msgpack_data, T_NODEFAULT
+from .const import DECODE_ERRORS, T_NODEFAULT, T_json_data, T_msgpack_data
 from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msgspec_error
 from .parse_struct import get_field_typehint
 from .parse_type import is_struct_type, origin_args, unwrap_typehint
-from .repair import (
-    _find_failing_dict_key, _find_failing_dict_value, _get_item_model, _get_model,
-    _resolve_union_member,
-)
+from .repair import _find_failing_dict_key, _find_failing_dict_value, _get_item_model, _get_model, _resolve_union_member
 
 T = TypeVar('T')
 

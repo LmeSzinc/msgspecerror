@@ -1,7 +1,7 @@
+import msgspec.msgpack
 import pytest
 from msgspec import NODEFAULT, Struct
 
-import msgspec.msgpack
 from msgspecerror.const import ErrorType
 from msgspecerror.repair import load_msgpack_with_default
 
@@ -18,8 +18,8 @@ class UnrepairableModel(Struct):
 
 # Each entry: (name, malformed_bytes, expected_reason_substring)
 MSGPACK_MALFORMED_CASES = [
-    ("invalid opcode",  b'\xc1',  "invalid opcode"),
-    ("trailing bytes",  msgspec.msgpack.encode({"a": 1}) + b'\xc1',  "trailing characters"),
+    ("invalid opcode", b'\xc1', "invalid opcode"),
+    ("trailing bytes", msgspec.msgpack.encode({"a": 1}) + b'\xc1', "trailing characters"),
 ]
 
 # A map used as a map key decodes to an unhashable object, the map itself is

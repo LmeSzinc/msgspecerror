@@ -1,6 +1,6 @@
-from typing import Any, Dict, Type, TypeVar, overload, Union, Tuple, List
+from typing import Any, Dict, List, Tuple, Type, TypeVar, Union, overload
 
-from msgspec import DecodeError, NODEFAULT, UnsetType, ValidationError, convert
+from msgspec import NODEFAULT, DecodeError, UnsetType, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
@@ -8,7 +8,9 @@ from . import const
 from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
 from .parse_error import ErrorInfo, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
-from .parse_struct import _default_is_accepted, _unwrap_struct_model, get_field_default, get_field_name, get_field_typehint
+from .parse_struct import (
+    _default_is_accepted, _unwrap_struct_model, get_field_default, get_field_name, get_field_typehint
+)
 from .parse_type import get_default, is_struct_type, origin_args, unwrap_typehint
 from .repair_unicode import _collect_unicode_replace
 

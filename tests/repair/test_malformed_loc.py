@@ -16,7 +16,6 @@ public repair API. The contract under test is:
 import copy
 from typing import Dict, List, Tuple
 
-import msgspec
 import msgspec.msgpack
 import pytest
 from msgspec import NODEFAULT, Struct, ValidationError, convert
@@ -25,15 +24,10 @@ import msgspecerror.const
 import msgspecerror.repair as repair_mod
 from msgspecerror.const import ErrorType
 from msgspecerror.parse_error import ErrorInfo
-from msgspecerror.repair import (
-    _handle_obj_repair,
-    _repair_once,
-    load_json_with_default,
-    load_msgpack_with_default,
-)
-
+from msgspecerror.repair import _handle_obj_repair, _repair_once, load_json_with_default, load_msgpack_with_default
 
 # --- Test Models ---
+
 
 class Repairable(Struct):
     """Every field has a default, a root fallback is always possible."""

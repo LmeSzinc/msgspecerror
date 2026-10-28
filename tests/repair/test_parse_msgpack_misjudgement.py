@@ -8,13 +8,9 @@ provides a correct fallback without corrupting opaque data.
 import os
 import struct
 
-import msgspec
 import msgspec.msgpack
 
-from msgspecerror.parse_msgpack import (
-    fixup_msgpack_unicode_fast,
-    fixup_msgpack_unicode_slow,
-)
+from msgspecerror.parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 
 _BAD_BYTE = b'\xff'
 

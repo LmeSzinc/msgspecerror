@@ -10,10 +10,10 @@ from msgspecerror.const import ErrorType
 from msgspecerror.parse_ctx import ErrorCtx
 from msgspecerror.parse_error import ErrorInfo, get_error_type
 
-
 # ------------------------------------------------------------------
 # Helper
 # ------------------------------------------------------------------
+
 
 def check(msg, expected_type, expected_ctx=None):
     """Assert get_error_type returns correct type and ctx. loc is always ()."""

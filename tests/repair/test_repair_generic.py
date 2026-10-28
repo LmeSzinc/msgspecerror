@@ -5,7 +5,6 @@ from msgspec import Struct
 
 from msgspecerror.repair import load_json_with_default, load_msgpack_with_default
 
-
 T = TypeVar("T")
 
 

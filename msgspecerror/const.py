@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Literal, Union
 
-from msgspec import NODEFAULT, ValidationError, DecodeError, EncodeError
+from msgspec import NODEFAULT, DecodeError, EncodeError, ValidationError
 
 # Errors a call into msgspec may raise on bad input. Both codec directions are
 # listed: a bytes payload is decoded to str (UnicodeDecodeError on an invalid

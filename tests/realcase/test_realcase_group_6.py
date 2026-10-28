@@ -17,7 +17,7 @@ import msgspec
 import msgspec.msgpack
 import pytest
 
-from msgspecerror import parse_msgspec_error, ErrorCtx
+from msgspecerror import ErrorCtx, parse_msgspec_error
 from msgspecerror.const import ErrorType
 
 

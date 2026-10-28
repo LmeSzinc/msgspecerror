@@ -11,14 +11,14 @@ and stress tests beyond the doc examples.
 """
 import pytest
 
-from msgspecerror.parse_error import get_error_path, parse_msgspec_error
 from msgspecerror.const import ErrorType
 from msgspecerror.parse_ctx import ErrorCtx
-
+from msgspecerror.parse_error import get_error_path, parse_msgspec_error
 
 # ======================================================================
 # Helper
 # ======================================================================
+
 
 def check(error, expected_loc, expected_type):
     """Assert parse_msgspec_error returns correct loc and type."""
@@ -112,25 +112,25 @@ class TestBracketNonNumeric:
 
     @pytest.mark.parametrize("error, expected", [
         # Basic non-numeric brackets
-        ("Expected `int`, got `str` - at `$.[x]`",  ("[x]",)),
-        ("Expected `int`, got `str` - at `$.user[]`",  ("user[]",)),
-        ("Expected `int`, got `str` - at `$.[[]`",  ("[[]",)),
-        ("Expected `int`, got `str` - at `$.[]]`",  ("[]]",)),
+        ("Expected `int`, got `str` - at `$.[x]`", ("[x]",)),
+        ("Expected `int`, got `str` - at `$.user[]`", ("user[]",)),
+        ("Expected `int`, got `str` - at `$.[[]`", ("[[]",)),
+        ("Expected `int`, got `str` - at `$.[]]`", ("[]]",)),
         # Alphanumeric content
-        ("Expected `int`, got `str` - at `$.[a1]`",  ("[a1]",)),
-        ("Expected `int`, got `str` - at `$.[1a]`",  ("[1a]",)),
-        ("Expected `int`, got `str` - at `$.[_test]`",  ("[_test]",)),
+        ("Expected `int`, got `str` - at `$.[a1]`", ("[a1]",)),
+        ("Expected `int`, got `str` - at `$.[1a]`", ("[1a]",)),
+        ("Expected `int`, got `str` - at `$.[_test]`", ("[_test]",)),
         # Special chars in bracket content
-        ("Expected `int`, got `str` - at `$.[$]`",  ("[$]",)),
-        ("Expected `int`, got `str` - at `$.[-]`",  ("[-]",)),
+        ("Expected `int`, got `str` - at `$.[$]`", ("[$]",)),
+        ("Expected `int`, got `str` - at `$.[-]`", ("[-]",)),
         # Empty brackets
-        ("Expected `int`, got `str` - at `$.field[]`",  ("field[]",)),
+        ("Expected `int`, got `str` - at `$.field[]`", ("field[]",)),
         # Single char bracket content
-        ("Expected `int`, got `str` - at `$.[a]`",  ("[a]",)),
+        ("Expected `int`, got `str` - at `$.[a]`", ("[a]",)),
         # $[0] (no leading dot) — pure numeric index
-        ("Expected `int`, got `str` - at `$[0]`",  (0,)),
+        ("Expected `int`, got `str` - at `$[0]`", (0,)),
         # $.[0] (leading dot + index) — empty field before index
-        ("Expected `int`, got `str` - at `$.[0]`",  ("", 0)),
+        ("Expected `int`, got `str` - at `$.[0]`", ("", 0)),
     ])
     def test_non_numeric_bracket(self, error, expected):
         """Non-numeric bracket content is preserved as field name."""
@@ -221,29 +221,29 @@ class TestEmptyFieldName:
 
     @pytest.mark.parametrize("error, expected", [
         # === Basic empty field (rename="") ===
-        ("Expected `int`, got `str` - at `$.`",  ("",)),
+        ("Expected `int`, got `str` - at `$.`", ("",)),
         ("Expected `int`, got `str` - at `$..`", ("", "")),
 
         # === Empty + index ===
-        ("Expected `int`, got `str` - at `$.[0]`",    ("", 0)),
+        ("Expected `int`, got `str` - at `$.[0]`", ("", 0)),
         ("Expected `int`, got `str` - at `$.[1][2]`", ("", 1, 2)),
-        ("Expected `int`, got `str` - at `$[0].`",    (0, "")),
-        ("Expected `int`, got `str` - at `$[1].`",    (1, "")),
-        ("Expected `int`, got `str` - at `$.[0].`",   ("", 0, "")),
-        ("Expected `int`, got `str` - at `$..[0]`",   ("", "", 0)),
-        ("Expected `int`, got `str` - at `$[0]..`",   (0, "", "")),
+        ("Expected `int`, got `str` - at `$[0].`", (0, "")),
+        ("Expected `int`, got `str` - at `$[1].`", (1, "")),
+        ("Expected `int`, got `str` - at `$.[0].`", ("", 0, "")),
+        ("Expected `int`, got `str` - at `$..[0]`", ("", "", 0)),
+        ("Expected `int`, got `str` - at `$[0]..`", (0, "", "")),
 
         # === Empty + [...] dict key ===
-        ("Expected `int`, got `str` - at `$.[...]`",  ("", "...")),
-        ("Expected `int`, got `str` - at `$[...].`",  ("...", "")),
+        ("Expected `int`, got `str` - at `$.[...]`", ("", "...")),
+        ("Expected `int`, got `str` - at `$[...].`", ("...", "")),
         ("Expected `int`, got `str` - at `$.[...].`", ("", "...", "")),
         ("Expected `int`, got `str` - at `$..[...]`", ("", "", "...")),
         ("Expected `int`, got `str` - at `$[...]..`", ("...", "", "")),
 
         # === Empty + index + [...] mixed ===
-        ("Expected `int`, got `str` - at `$.[0][...]`",   ("", 0, "...")),
-        ("Expected `int`, got `str` - at `$[...][0].`",   ("...", 0, "")),
-        ("Expected `int`, got `str` - at `$.[0][...].`",  ("", 0, "...", "")),
+        ("Expected `int`, got `str` - at `$.[0][...]`", ("", 0, "...")),
+        ("Expected `int`, got `str` - at `$[...][0].`", ("...", 0, "")),
+        ("Expected `int`, got `str` - at `$.[0][...].`", ("", 0, "...", "")),
 
         # === Empty + field name ===
         ("Expected `int`, got `str` - at `$..name`", ("", "name")),
@@ -583,7 +583,7 @@ class TestKnownLimitations:
     def test_empty_field_name_now_preserved(self):
         """Section 5.3: Empty field names were previously dropped, now preserved."""
         cases = [
-            ("Expected `int`, got `str` - at `$.`",  ("",)),
+            ("Expected `int`, got `str` - at `$.`", ("",)),
             ("Expected `int`, got `str` - at `$..`", ("", "")),
         ]
         for error, expected in cases:

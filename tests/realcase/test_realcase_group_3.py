@@ -1,14 +1,14 @@
 """
 Real-case tests for Group 3: Constraint and Length Errors.
 """
-from typing import Dict, List, Tuple
-from typing_extensions import Annotated
+import datetime
+from typing import Dict, Tuple
 
 import msgspec
-import datetime
 import pytest
+from typing_extensions import Annotated
 
-from msgspecerror import parse_msgspec_error, ErrorCtx
+from msgspecerror import parse_msgspec_error
 from msgspecerror.const import ErrorType
 
 

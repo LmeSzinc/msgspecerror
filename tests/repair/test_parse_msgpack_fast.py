@@ -11,10 +11,7 @@ import msgspec.msgpack
 import pytest
 
 from msgspecerror.parse_msgpack import (
-    _check_str_header_at,
-    _make_str_header,
-    _str_header_len,
-    fixup_msgpack_unicode_fast,
+    _check_str_header_at, _make_str_header, _str_header_len, fixup_msgpack_unicode_fast
 )
 
 # ── helpers ─────────────────────────────────────────────────────────────

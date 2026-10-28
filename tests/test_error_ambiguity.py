@@ -7,14 +7,14 @@ This ensures path-parsing changes don't break the full parse chain.
 """
 import pytest
 
-from msgspecerror.parse_error import parse_msgspec_error
 from msgspecerror.const import ErrorType
 from msgspecerror.parse_ctx import ErrorCtx
-
+from msgspecerror.parse_error import parse_msgspec_error
 
 # ======================================================================
 # $ in field names (Section 5.1)
 # ======================================================================
+
 
 class TestDollarInPath:
     """Full parse with $ in field names."""

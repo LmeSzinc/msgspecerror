@@ -4,8 +4,8 @@ from typing_extensions import Annotated
 
 from msgspecerror.repair import load_json_with_default, load_msgpack_with_default
 
-
 # --- Test Models ---
+
 
 class Child(Struct):
     """A struct that does not accept an explicit `null` when it is not optional."""

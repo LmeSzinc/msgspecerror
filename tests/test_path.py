@@ -9,10 +9,10 @@ import pytest
 
 from msgspecerror.parse_error import get_error_path
 
-
 # ======================================================================
 # Core: Basic path forms across all error types
 # ======================================================================
+
 
 class TestBasicPaths:
     """Basic dotted and bracketed paths with various error message prefixes."""

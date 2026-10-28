@@ -18,16 +18,16 @@ class UnrepairableModel(Struct):
 # Each entry: (name, malformed_bytes, expected_reason_substring)
 # Data verified against msgspec 0.21.1
 JSON_MALFORMED_CASES = [
-    ("invalid character",              b'{"a": }',               "invalid character"),
-    ("trailing characters",            b'{"a": 1}extra',         "trailing characters"),
-    ("expected ',' or ']'",            b'[1 2]',                 "expected ',' or ']'"),
-    ("expected ',' or '}'",            b'{"a": 1 "b"}',          "expected ',' or '}'"),
-    ("expected ':'",                   b'{"a" 1}',               "expected ':'"),
-    ("trailing comma in array",        b'[1,]',                  "trailing comma in array"),
-    ("trailing comma in object",       b'{"a": 1,}',             "trailing comma in object"),
-    ("object keys must be strings",    b'{1: 2}',                "object keys must be strings"),
-    ("invalid number",                 b'[1.]',                  "invalid number"),
-    ("invalid escape in string",       b'["\\q"]',               "invalid escape character in string"),
+    ("invalid character", b'{"a": }', "invalid character"),
+    ("trailing characters", b'{"a": 1}extra', "trailing characters"),
+    ("expected ',' or ']'", b'[1 2]', "expected ',' or ']'"),
+    ("expected ',' or '}'", b'{"a": 1 "b"}', "expected ',' or '}'"),
+    ("expected ':'", b'{"a" 1}', "expected ':'"),
+    ("trailing comma in array", b'[1,]', "trailing comma in array"),
+    ("trailing comma in object", b'{"a": 1,}', "trailing comma in object"),
+    ("object keys must be strings", b'{1: 2}', "object keys must be strings"),
+    ("invalid number", b'[1.]', "invalid number"),
+    ("invalid escape in string", b'["\\q"]', "invalid escape character in string"),
 ]
 
 

@@ -6,15 +6,10 @@ ext/bin untouched, and ``fixup_msgpack_unicode_slow`` round-trips.
 """
 import struct
 
-import msgspec
 import msgspec.msgpack
 import pytest
 
-from msgspecerror.parse_msgpack import (
-    _make_str_header,
-    _walk_fix,
-    fixup_msgpack_unicode_slow,
-)
+from msgspecerror.parse_msgpack import _make_str_header, _walk_fix, fixup_msgpack_unicode_slow
 
 # ── helpers ─────────────────────────────────────────────────────────────
 

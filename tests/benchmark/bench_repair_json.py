@@ -15,7 +15,6 @@ import msgspec
 from msgspecerror import load_json_with_default
 from tests.benchmark.perf import PerformanceTest
 
-
 # ------------------------------------------------------------------
 # Model classes — named so the Parameters column shows what scenario
 # is being repaired (module-level to avoid long <locals> paths).
