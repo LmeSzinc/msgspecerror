@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Tuple, Type, TypeVar, Union, overload
 
 from msgspec import NODEFAULT, DecodeError, UnsetType, ValidationError, convert
@@ -543,10 +544,11 @@ def _handle_root_error(
 
 
 # A lone surrogate is the only character that can not be encoded to utf-8.
-# str.translate() maps every code point in one C level pass, so the repair of a
-# str payload costs one scan of the text.
-_SURROGATE_REPLACE = dict.fromkeys(range(0xD800, 0xE000), '\ufffd')
-_SURROGATE_IGNORE = dict.fromkeys(range(0xD800, 0xE000), None)
+# A compiled character class scans the text in one C level pass and allocates
+# nothing per character. A str.translate() table over the surrogate range holds
+# 2048 int keys, about 130KB of resident memory, and boxes every code point of
+# the payload to look it up, which makes it several times slower as well.
+_LONE_SURROGATE = re.compile('[\ud800-\udfff]')
 
 
 def _handle_json_encode_repair(
@@ -572,9 +574,9 @@ def _handle_json_encode_repair(
         tuple[str, list[ErrorInfo]]: (repaired payload, the original error)
     """
     if utf8_error == 'ignore':
-        data = data.translate(_SURROGATE_IGNORE)
+        data = _LONE_SURROGATE.sub('', data)
     else:
-        data = data.translate(_SURROGATE_REPLACE)
+        data = _LONE_SURROGATE.sub('\ufffd', data)
     return data, [parse_msgspec_error(error)]
 
 
