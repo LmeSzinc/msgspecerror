@@ -1,14 +1,28 @@
 from enum import Enum
-from typing import Literal
+from typing import Literal, Union
 
-from msgspec import ValidationError, DecodeError, EncodeError
+from msgspec import NODEFAULT, ValidationError, DecodeError, EncodeError
 
-DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError)
+# Errors a call into msgspec may raise on bad input. Both codec directions are
+# listed: a bytes payload is decoded to str (UnicodeDecodeError on an invalid
+# utf-8 byte), while a str payload is encoded to utf-8 first, because the
+# parsers scan bytes (UnicodeEncodeError on a lone surrogate). UnicodeEncodeError
+# is also an ENCODE_ERRORS member, the two tuples overlap on purpose.
+DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError, UnicodeEncodeError)
 ENCODE_ERRORS = (EncodeError, UnicodeEncodeError)
 MAXIMUM_REPAIR = 100
 
 # Shared utf8_error type for public repair API
 T_utf8_error = Literal['strict', 'replace', 'ignore']
+
+# Payload types accepted by the loaders, msgspec takes any bytes-like object
+T_json_data = Union[bytes, bytearray, memoryview, str]
+T_msgpack_data = Union[bytes, bytearray, memoryview]
+
+# Type of the NODEFAULT sentinel. msgspec does not export the class, so it is
+# taken from the sentinel. The *_with_error families return it in place of the
+# object or the error that does not exist.
+T_NODEFAULT = type(NODEFAULT)
 
 
 # StrEnum is introduced in py3.11
@@ -334,14 +348,20 @@ class ErrorType(str, Enum):
 
     UNICODE_DECODE_ERROR = 'UNICODE_DECODE_ERROR'
     """
-    Our custom error type to wrap UnicodeDecodeError.
+    Our custom error type to wrap a codec error from bad unicode in the input.
     Format: '<codec>' codec can't decode byte <byte>...
+    Format: '<codec>' codec can't encode character <char>...
     Example:
     - 'utf-8' codec can't decode byte {byte} in position {position}: invalid start byte
     - 'utf-8' codec can't decode byte {byte} in position {position}: invalid continuation byte
     - 'utf-8' codec can't decode bytes in position {position1}-{position2}: unexpected end of data
     - 'utf-8' codec can't decode bytes in position {position1}-{position2}: surrogates not allowed
-    Triggered by: Invalid unicode in bytes
+    - 'utf-8' codec can't encode character {char} in position {position}: surrogates not allowed
+    Triggered by:
+    - Invalid unicode in bytes
+    - A str payload holding a lone surrogate, msgspec encodes the payload to
+      utf-8 before parsing it, so the resulting UnicodeEncodeError is the same
+      bad-input class as an invalid utf-8 byte sequence
     """
 
     JSON_MALFORMED = "JSON_MALFORMED"

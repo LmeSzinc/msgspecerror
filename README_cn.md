@@ -90,10 +90,10 @@ msgspecerror 扫描了 msgspec 的 C 源码中的异常消息格式，维护了�
 
 ```python
 def parse_msgspec_error(error: Union[str, Exception]) -> ErrorInfo: ...
-DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError)
+DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError, UnicodeEncodeError)
 ```
 
-注意：你应该使用 `except DECODE_ERRORS as e:` 捕获异常，而不是 `except msgspec.ValidationError as e:` 捕获异常。msgspecerror 可以将更多错误类型封装进 ErrorInfo 对象，比如 `UnicodeDecodeError`。
+注意：你应该使用 `except DECODE_ERRORS as e:` 捕获异常，而不是 `except msgspec.ValidationError as e:` 捕获异常。msgspecerror 可以将更多错误类型封装进 ErrorInfo 对象，比如 bytes 负载里的非法 utf-8 产生的 `UnicodeDecodeError`，以及 str 负载里的孤立代理对产生的 `UnicodeEncodeError`（msgspec 会先把 str 负载编码成 utf-8 再解析）。
 
 ```python
 import msgspec
@@ -174,9 +174,10 @@ load_json_with_default 的具体修复逻辑如下：
 4. 当字典中的某个键校验错误时，遍历所有键进行二次校验，寻找到校验失败的值，尝试 1 与 2 进行修复，如果修复失败则删除键。
 5. 当列表中的某个元素校验错误时，根据列表索引查找元素，然后删除该元素（当 `guess_default=True` 时替换为推测的默认值）；如果该元素内部的数据无法修复，也会被删除
 6. 当发生UnicodeDecodeError时，尝试手动解码再进行二次校验
-   - `utf8_error=='strict'`：UnicodeDecodeError 将被视为跟路径上的错误，会尝试默认构建根模型。你可能因为一个unicode错误而丢失全部数据。
-   - `utf8_error=='replace'`：将错误的unicode替换为 `�`（U+FFFD），大部分数据将成功解析，但你可能多出一些问号字符。
-   - `utf8_error=='ignore'`：将错误的unicode丢弃，大部分数据将成功解析，但你可能丢失一些字符。
+   - `utf8_error=='strict'`：unicode 错误将被视为根路径上的错误，会尝试默认构建根模型。你可能因为一个 unicode 错误而丢失全部数据。
+   - `utf8_error=='replace'`：将错误的 unicode 替换为 `�`（U+FFFD），大部分数据将成功解析。
+   - `utf8_error=='ignore'`：将错误的 unicode 丢弃，大部分数据将成功解析，但你可能丢失一些字符。
+   - str 负载会先编码成 utf-8 再解析，因此孤立代理对会在这一步产生 `UnicodeEncodeError`；修复方式相同，代理对被替换为 `�` 或丢弃。
 7. 当修复次数超过100次时，停止修复
 
 建议校验模型中的每个字段都设置默认值，这样能确保自动修复成功，不会返回 `msgspec.NODEFAULT`。
@@ -364,12 +365,16 @@ result, errors = load_msgpack_with_default(data, MyStruct)
 - 示例：`"passwords cannot be the same - at $"`
 - 触发条件：msgspec 捕获了用户代码（如 `dec_hook`、`__post_init__`、自定义类型 `__init__`）中的 `TypeError` 或 `ValueError`，包装为 `ValidationError`
 
-**`UNICODE_DECODE_ERROR`** — Unicode 解码错误（msgspecerror 自定义）
+**`UNICODE_DECODE_ERROR`** — Unicode 编解码错误（msgspecerror 自定义）
 - 格式：`"<codec>' codec can't decode byte <byte>..."`
+- 格式：`"<codec>' codec can't encode character <char>..."`
 - 示例：
   - `"'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"`
   - `"'utf-8' codec can't decode bytes in position 0-1: unexpected end of data"`
-- 触发条件：输入的字节序列包含无效的 unicode
+  - `"'utf-8' codec can't encode character '\ud800' in position 7: surrogates not allowed"`
+- 触发条件：
+  - bytes 负载包含无效的 unicode
+  - str 负载含孤立代理对：msgspec 会先把 str 负载编码成 utf-8 再解析，因此与 bytes 负载同属一类错误
 
 **`JSON_MALFORMED`** — JSON 格式错误
 - 格式：`"JSON is malformed: <reason> (byte <pos>)"`

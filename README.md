@@ -90,10 +90,10 @@ Use `parse_msgspec_error` to parse any exception.
 
 ```python
 def parse_msgspec_error(error: Union[str, Exception]) -> ErrorInfo: ...
-DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError)
+DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError, UnicodeEncodeError)
 ```
 
-Note: use `except DECODE_ERRORS as e:` rather than `except msgspec.ValidationError as e:` to catch exceptions. msgspecerror can wrap more error types into ErrorInfo objects, such as `UnicodeDecodeError`.
+Note: use `except DECODE_ERRORS as e:` rather than `except msgspec.ValidationError as e:` to catch exceptions. msgspecerror can wrap more error types into ErrorInfo objects, such as `UnicodeDecodeError` for invalid utf-8 in a bytes payload, and `UnicodeEncodeError` for a lone surrogate in a str payload (msgspec encodes the payload to utf-8 before parsing it).
 
 ```python
 import msgspec
@@ -174,9 +174,10 @@ The repair logic of `load_json_with_default`:
 4. On dict key error, iterates all keys to find the failing key, then attempts 1 & 2; removes the key if repair fails
 5. On list element error, finds the element by index, then deletes the element (or repairs it with a guessed default when `guess_default=True`); an element whose nested data can't be repaired is deleted too
 6. On `UnicodeDecodeError`, attempts manual decoding and re-validation
-   - `utf8_error=='strict'`: Treats `UnicodeDecodeError` as a root-path error, attempts default construction of the root model
+   - `utf8_error=='strict'`: Treats a unicode error as a root-path error, attempts default construction of the root model
    - `utf8_error=='replace'`: Replaces invalid unicode with `\ufffd` (U+FFFD)
-   - `utf8_error=='ignore'`: Drops invalid unicode bytes
+   - `utf8_error=='ignore'`: Drops invalid unicode
+   - A `str` payload is encoded to utf-8 before parsing, so a lone surrogate fails there as a `UnicodeEncodeError`; it is repaired the same way, the surrogate becomes `\ufffd` or is dropped
 7. Stops after 100 repair attempts
 
 It is recommended to set default values on every field in your model to ensure repair succeeds.
@@ -364,12 +365,16 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
 - Example: `` passwords cannot be the same - at $ ``
 - Triggered by: msgspec catches a `TypeError` or `ValueError` from user code (e.g., `dec_hook`, `__post_init__`, custom type `__init__`) and wraps it in a `ValidationError`
 
-**`UNICODE_DECODE_ERROR`** — Unicode decode error (msgspecerror custom type)
+**`UNICODE_DECODE_ERROR`** — Unicode codec error (msgspecerror custom type)
 - Format: `` <codec>' codec can't decode byte <byte>... ``
+- Format: `` <codec>' codec can't encode character <char>... ``
 - Examples:
   - `` 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte ``
   - `` 'utf-8' codec can't decode bytes in position 0-1: unexpected end of data ``
-- Triggered by: Input bytes contain invalid unicode
+  - `` 'utf-8' codec can't encode character '\ud800' in position 7: surrogates not allowed ``
+- Triggered by:
+  - A bytes payload containing invalid unicode
+  - A str payload holding a lone surrogate: msgspec encodes the payload to utf-8 before parsing it, so the failure is the same bad-input class
 
 **`JSON_MALFORMED`** — JSON is malformed
 - Format: `` JSON is malformed: <reason> (byte <pos>) ``

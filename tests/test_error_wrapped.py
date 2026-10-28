@@ -240,6 +240,14 @@ class TestUnicodeDecodeError:
         # === Without position detail (truncated form) ===
         "'utf-8' codec can't decode byte 0x80",
         "'utf-8' codec can't decode byte 0x80 in position 3",
+        # === Multi-byte sequence ("bytes" plural) ===
+        "'utf-8' codec can't decode bytes in position 0-1: unexpected end of data",
+        "'utf-8' codec can't decode bytes in position 5-6: truncated data",
+        # === A str payload is encoded to utf-8 before parsing, a lone
+        # surrogate fails there and is the same bad-input class ===
+        "'utf-8' codec can't encode character '\\ud800' in position 19: surrogates not allowed",
+        "'utf-8' codec can't encode character '\\udfff' in position 0: surrogates not allowed",
+        "'utf-8' codec can't encode characters in position 0-1: surrogates not allowed",
     ])
     def test_unicode_decode_error(self, msg):
         check(msg, ErrorType.UNICODE_DECODE_ERROR)
@@ -258,10 +266,12 @@ class TestUnicodeDecodeError:
             # The pattern needs "' codec can't decode byte " (with leading backtick)
             "utf-8 codec can't decode byte 0x80",
             "- codec can't decode byte 0x80",
-            # codec with different prefix
             "codec can't decode byte 0x80",
+            "utf-8 codec can't encode character '\\ud800'",
+            "codec can't encode character '\\ud800'",
             # Double-quoted instead of single-quoted
             '"utf-8" codec can\'t decode byte 0x80 in position 3: invalid start byte',
+            '"utf-8" codec can\'t encode character \'\\ud800\'',
         ]
         for msg in cases:
             result = get_error_type(msg)

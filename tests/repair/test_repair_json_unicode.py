@@ -358,3 +358,76 @@ class TestMixedUnicodeAndValidation:
         assert result is NODEFAULT
         assert len(errors) >= 1
         assert errors[-1].loc == ()
+
+
+class TestStrPayloadLoneSurrogate:
+    """
+    A str payload is encoded to utf-8 before parsing, a lone surrogate fails
+    there (UnicodeEncodeError). The failure happens before the parser runs, so
+    there is no field location: the repair substitutes the surrogate across the
+    whole payload and the error is a root level one.
+
+    Both directions of the codec share `utf8_error`: 'replace' writes U+FFFD,
+    'ignore' drops the character, 'strict' falls back to the root default.
+    """
+
+    SURROGATE = '\ud800'
+
+    def test_replace(self):
+        payload = '{"a": 1, "b": "x' + self.SURROGATE + 'y"}'
+        result, errors = load_json_with_default(payload, Simple, utf8_error='replace')
+
+        assert result == Simple(a=1, b='x\ufffdy')
+        assert len(errors) == 1
+        assert errors[0].type == ErrorType.UNICODE_DECODE_ERROR
+        assert errors[0].loc == ()
+
+    def test_replace_keeps_one_character_per_surrogate(self):
+        payload = '{"a": 1, "b": "' + self.SURROGATE * 3 + '"}'
+        result, errors = load_json_with_default(payload, Simple, utf8_error='replace')
+
+        assert result == Simple(a=1, b='\ufffd' * 3)
+        assert len(errors) == 1
+
+    def test_ignore(self):
+        payload = '{"a": 1, "b": "x' + self.SURROGATE + 'y"}'
+        result, errors = load_json_with_default(payload, Simple, utf8_error='ignore')
+
+        assert result == Simple(a=1, b='xy')
+        assert len(errors) == 1
+        assert errors[0].type == ErrorType.UNICODE_DECODE_ERROR
+
+    def test_strict_returns_the_root_default(self):
+        payload = '{"a": 1, "b": "' + self.SURROGATE + '"}'
+        result, errors = load_json_with_default(payload, WithDefaults, utf8_error='strict')
+
+        assert result == WithDefaults()
+        assert len(errors) == 1
+        assert errors[0].type == ErrorType.UNICODE_DECODE_ERROR
+        assert errors[0].loc == ()
+
+    def test_strict_does_not_raise(self):
+        """A str payload is bad data, not a wrong argument, it must not raise."""
+        payload = '{"a": "' + self.SURROGATE + '"}'
+        result, errors = load_json_with_default(payload, Simple, utf8_error='strict')
+
+        assert result is NODEFAULT
+        assert len(errors) == 1
+
+    def test_repair_then_field_validation(self):
+        """After the surrogate is repaired the retry reports the field errors."""
+        payload = '{"a": "not-int", "b": "' + self.SURROGATE + '"}'
+        result, errors = load_json_with_default(payload, WithDefaults, utf8_error='replace')
+
+        assert result == WithDefaults(a=42, b='\ufffd', c=[])
+        error_types = {e.type for e in errors}
+        assert ErrorType.UNICODE_DECODE_ERROR in error_types
+        assert ErrorType.TYPE_MISMATCH in error_types
+        assert ('a',) in {e.loc for e in errors}
+
+    def test_clean_payload_is_not_touched(self):
+        payload = '{"a": 1, "b": "\u4e2d\u6587 \U0001F600"}'
+        result, errors = load_json_with_default(payload, Simple)
+
+        assert result == Simple(a=1, b='\u4e2d\u6587 \U0001F600')
+        assert errors == []

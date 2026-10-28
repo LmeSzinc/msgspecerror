@@ -1,11 +1,31 @@
-from typing import Tuple, Union
+from typing import Tuple, Union, Any
 
 import msgspec
-from msgspec import NODEFAULT, Struct, field
+from msgspec import NODEFAULT, UNSET, Struct, field
 
 from .const import ErrorType
 from .parse_ctx import ErrorCtx, KEY_got, get_length_ctx, get_number_ctx, get_pattern_ctx
 from .parse_path import KEY_at, KEY_at_check, get_error_path, KEY_at_key_in
+
+# Placeholders msgspec leaves in an error path for a dict entry
+PLACEHOLDER_VALUE = '...'
+PLACEHOLDER_KEY = '...key'
+
+
+def _has_placeholder(loc):
+    """
+    Check whether an error location still holds a dict placeholder.
+
+    Both placeholders have to be checked separately: `'...' in loc` is a tuple
+    membership test, it does not match `'...key'`.
+
+    Args:
+        loc (tuple): Error location
+
+    Returns:
+        bool: True if the location still holds a placeholder
+    """
+    return PLACEHOLDER_VALUE in loc or PLACEHOLDER_KEY in loc
 
 
 class ErrorInfo(Struct, omit_defaults=True):
@@ -26,6 +46,23 @@ class ErrorInfo(Struct, omit_defaults=True):
     loc: Tuple[Union[int, str]] = ()
     # Additional context info
     ctx: ErrorCtx = field(default_factory=ErrorCtx)
+
+
+class ErrorInfoDetail(ErrorInfo):
+    """
+    An ErrorInfo that carries the offending value.
+
+    Attributes:
+        error_value (Any): The offending value, msgspec.UNSET when there is no
+            value to report. For a `...key` error this is the key itself
+        loc_resolved (bool): True when `loc` holds no `...` / `...key`, i.e. the
+            location points at one concrete entry
+        error_value_resolved (bool): True when `error_value` holds a value, i.e.
+            it is not msgspec.UNSET
+    """
+    error_value: Any = UNSET
+    loc_resolved: bool = False
+    error_value_resolved: bool = False
 
 
 def _extract_got(remain):
@@ -231,11 +268,16 @@ def get_error_type(error):
     if error.startswith("Can't encode "):
         return ErrorInfo(msg=error, type=ErrorType.ENCODE_ERROR)
 
-    # UNICODE_DECODE_ERROR: "'<codec>' codec can't decode byte <byte>..."
+    # UNICODE_DECODE_ERROR: a codec rejected the unicode of the input.
+    # - "'<codec>' codec can't decode byte <byte>..."      invalid start / continuation byte
+    # - "'<codec>' codec can't decode bytes in position ..." truncated sequence
+    # - "'<codec>' codec can't encode character <char>..." a str payload holding a
+    #   lone surrogate, msgspec encodes the payload to utf-8 before parsing it
     if error.startswith("'"):
         _, sep, msg = error[1:].partition("'")
-        if sep and msg.startswith(" codec can't decode byte "):
-            return ErrorInfo(msg=error, type=ErrorType.UNICODE_DECODE_ERROR)
+        if sep:
+            if msg.startswith(" codec can't decode byte") or msg.startswith(" codec can't encode char"):
+                return ErrorInfo(msg=error, type=ErrorType.UNICODE_DECODE_ERROR)
 
     # WRAPPED_ERROR: catch-all for any remaining unmatched messages,
     # typically user-code errors from dec_hook, __post_init__, etc.

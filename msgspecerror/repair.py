@@ -5,7 +5,7 @@ from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
 from . import const
-from .const import ErrorType, T_utf8_error
+from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
 from .parse_error import ErrorInfo, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 from .parse_struct import _default_is_accepted, _unwrap_struct_model, get_field_default, get_field_name, get_field_typehint
@@ -143,6 +143,50 @@ def _resolve_union_member(model_args, part, obj):
     return NODEFAULT
 
 
+def _find_failing_dict_value(obj, value_model):
+    """
+    Find the dict entry whose value fails validation.
+
+    Args:
+        obj (dict): Raw dict to search
+        value_model: Typehint of the dict values
+
+    Returns:
+        Any: The first failing key, or NODEFAULT if no key can be identified
+    """
+    for key, value in obj.items():
+        try:
+            convert(value, type=value_model)
+        except ValidationError:
+            return key
+        except TypeError:
+            # `value_model` is not a type msgspec supports
+            break
+    return NODEFAULT
+
+
+def _find_failing_dict_key(obj, key_model):
+    """
+    Find the dict key that fails validation.
+
+    Args:
+        obj (dict): Raw dict to search
+        key_model: Typehint of the dict keys
+
+    Returns:
+        Any: The first failing key, or NODEFAULT if no key can be identified
+    """
+    for key in obj.keys():
+        try:
+            convert(key, type=key_model)
+        except ValidationError:
+            return key
+        except TypeError:
+            # `key_model` is not a type msgspec supports
+            break
+    return NODEFAULT
+
+
 def _repair_once(
         raw_obj, model, error: ErrorInfo, guess_default=False
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
@@ -222,18 +266,7 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
-            failing_key = NODEFAULT
-            for key, value in obj.items():
-                try:
-                    # Attempt to convert just the value to see if it's the source.
-                    convert(value, type=child_model)
-                except ValidationError:
-                    failing_key = key
-                    break
-                except TypeError:
-                    # `child_model` is not a type msgspec supports, so no key
-                    # can be identified as the failing one
-                    break
+            failing_key = _find_failing_dict_value(obj, child_model)
             if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
                 if not _pop_last_collection(last_collection_data, last_collection_key):
@@ -289,17 +322,7 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
-            failing_key = NODEFAULT
-            for key in obj.keys():
-                try:
-                    convert(key, key_model)
-                except ValidationError:
-                    failing_key = key
-                    break
-                except TypeError:
-                    # `key_model` is not a type msgspec supports, so no key
-                    # can be identified as the failing one
-                    break
+            failing_key = _find_failing_dict_key(obj, key_model)
             if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
                 if not _pop_last_collection(last_collection_data, last_collection_key):
@@ -517,6 +540,42 @@ def _handle_root_error(
     return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
 
 
+# A lone surrogate is the only character that can not be encoded to utf-8.
+# str.translate() maps every code point in one C level pass, so the repair of a
+# str payload costs one scan of the text.
+_SURROGATE_REPLACE = dict.fromkeys(range(0xD800, 0xE000), '\ufffd')
+_SURROGATE_IGNORE = dict.fromkeys(range(0xD800, 0xE000), None)
+
+
+def _handle_json_encode_repair(
+        data,
+        error,
+        *,
+        utf8_error: T_utf8_error,
+) -> "tuple[str, list[ErrorInfo]]":
+    """
+    Repair a str payload that can not be encoded to utf-8.
+
+    msgspec encodes a str payload to utf-8 before parsing it, a lone surrogate
+    fails there, so the payload never reaches the parser. The surrogate is
+    replaced by U+FFFD or removed per `utf8_error`, the same two characters the
+    bytes repair produces, and the rest of the payload is kept.
+
+    Args:
+        data (str): The str payload that failed to encode
+        error (UnicodeEncodeError): The error to report
+        utf8_error (str): 'replace' to write U+FFFD, 'ignore' to drop it
+
+    Returns:
+        tuple[str, list[ErrorInfo]]: (repaired payload, the original error)
+    """
+    if utf8_error == 'ignore':
+        data = data.translate(_SURROGATE_IGNORE)
+    else:
+        data = data.translate(_SURROGATE_REPLACE)
+    return data, [parse_msgspec_error(error)]
+
+
 def _handle_json_unicode_repair(
         data: bytes,
         *,
@@ -547,7 +606,7 @@ T = TypeVar("T")
 
 @overload
 def load_json_with_default(
-        data: Union[bytes, str],
+        data: T_json_data,
         model_or_decoder: Type[T],
         *,
         utf8_error: T_utf8_error = ...,
@@ -557,7 +616,7 @@ def load_json_with_default(
 
 @overload
 def load_json_with_default(
-        data: Union[bytes, str],
+        data: T_json_data,
         model_or_decoder: "JsonDecoder[T]",
         *,
         utf8_error: T_utf8_error = ...,
@@ -566,7 +625,7 @@ def load_json_with_default(
 
 
 def load_json_with_default(
-        data: Union[bytes, str],
+        data: T_json_data,
         model_or_decoder: Any,
         *,
         utf8_error: T_utf8_error = 'replace',
@@ -659,11 +718,20 @@ def load_json_with_default(
                 continue
             else:
                 return _handle_root_error(model, error, guess_default=guess_default)
+        except UnicodeEncodeError as error:
+            # Only a str payload reaches here: msgspec encodes it to utf-8 first,
+            # a lone surrogate fails before the parser runs
+            if utf8_error in ['replace', 'ignore']:
+                data, new_errors = _handle_json_encode_repair(data, error, utf8_error=utf8_error)
+                collected_errors.extend(new_errors)
+                continue
+            else:
+                return _handle_root_error(model, error, guess_default=guess_default)
 
     # this shouldn't happen
     result = get_default(model, guess_default=guess_default, return_obj=True)
     rejected = ErrorInfo(
-        'Input rejected: failed to solve UnicodeDecodeError',
+        'Input rejected: failed to solve UnicodeEncodeError',
         type=ErrorType.INPUT_REJECTED, loc=())
     collected_errors.append(rejected)
     return result, collected_errors
@@ -671,26 +739,26 @@ def load_json_with_default(
 
 @overload
 def load_msgpack_with_default(
-        data: bytes,
+        data: T_msgpack_data,
         model_or_decoder: Type[T],
         *,
-        utf8_error: T_utf8_error = 'replace',
+        utf8_error: T_utf8_error = ...,
         guess_default: bool = ...,
-) -> Tuple[Any, List[ErrorInfo]]: ...
+) -> Tuple[T, List[ErrorInfo]]: ...
 
 
 @overload
 def load_msgpack_with_default(
-        data: bytes,
+        data: T_msgpack_data,
         model_or_decoder: "MsgpackDecoder[T]",
         *,
-        utf8_error: T_utf8_error = 'replace',
+        utf8_error: T_utf8_error = ...,
         guess_default: bool = ...,
-) -> Tuple[Any, List[ErrorInfo]]: ...
+) -> Tuple[T, List[ErrorInfo]]: ...
 
 
 def load_msgpack_with_default(
-        data: bytes,
+        data: T_msgpack_data,
         model_or_decoder: Any,
         *,
         utf8_error: T_utf8_error = 'replace',
@@ -814,3 +882,64 @@ def _repair_msgpack_unicode(
         if fixed is not None:
             return fixed
     return fixup_msgpack_unicode_slow(data, utf8_error=utf8_error)
+
+
+def _get_model(model_or_decoder):
+    """
+    Get the target type from a model or a msgspec decoder.
+
+    Args:
+        model_or_decoder (type | Decoder): Target type, or a decoder to take
+            `.type` from
+
+    Returns:
+        Any: The target type
+    """
+    # Decoder classes can't be subclassed reliably, an exact type check is
+    # enough and avoids reading a `.type` attribute of an unrelated object
+    if type(model_or_decoder) is JsonDecoder or type(model_or_decoder) is MsgpackDecoder:
+        return model_or_decoder.type
+    return model_or_decoder
+
+
+@overload
+def convert_with_default(
+        data: Any,
+        model_or_decoder: Type[T],
+        *,
+        guess_default: bool = ...,
+) -> Tuple[T, List[ErrorInfo]]: ...
+
+
+@overload
+def convert_with_default(
+        data: Any,
+        model_or_decoder: "Union[JsonDecoder[T], MsgpackDecoder[T]]",
+        *,
+        guess_default: bool = ...,
+) -> Tuple[T, List[ErrorInfo]]: ...
+
+
+def convert_with_default(data, model_or_decoder, *, guess_default=False):
+    """
+    Convert an in-memory object, substituting defaults for fields that fail validation.
+
+    The repair is applied to `data` in place, the same way
+    load_json_with_default() repairs the object it just decoded.
+    A caller that still needs the original value must copy it first.
+
+    Args:
+        data (Any): The raw value to convert. It is modified in place.
+        model_or_decoder: The target type to convert into, or a msgspec decoder
+            whose `type` is used
+        guess_default (bool): Defaults to False, see load_json_with_default
+
+    Returns:
+        tuple[Any, List[ErrorInfo]]: (result, errors) validated result and a list
+            of collected errors. See load_json_with_default for the details.
+    """
+    model = _get_model(model_or_decoder)
+    try:
+        return convert(data, type=model), []
+    except ValidationError as e:
+        return _handle_obj_repair(data, model, e, guess_default=guess_default)
