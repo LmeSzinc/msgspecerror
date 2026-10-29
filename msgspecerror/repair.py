@@ -1,9 +1,9 @@
 import re
 from typing import Any, Dict, List, Tuple, Type, TypeVar, Union, overload
 
-from msgspec import NODEFAULT, DecodeError, UnsetType, ValidationError, convert
-from msgspec.json import Decoder as JsonDecoder, decode as decode_json
-from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
+from msgspec import NODEFAULT, DecodeError, EncodeError, Raw, UnsetType, ValidationError, convert
+from msgspec.json import Decoder as JsonDecoder, decode as decode_json, encode as encode_json
+from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack, encode as encode_msgpack
 
 from . import const
 from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
@@ -146,42 +146,309 @@ def _resolve_union_member(model_args, part, obj):
     return NODEFAULT
 
 
-def _find_failing_dict_value(obj, value_model):
+def _get_model_options(model_or_decoder, kwargs):
+    """
+    Get the target type and the options of the equivalent convert call.
+
+    A decoder carries the rules it validates with, they become the defaults of
+    the convert call so every re-validation sees the same rules. `str_keys`
+    follows the format: json keys are always strings, msgpack keys may be
+    anything. An explicit keyword argument always wins over a decoder.
+
+    Args:
+        model_or_decoder (type | Decoder): Target type, or a decoder to take
+            `.type` / `.strict` / `.dec_hook` / format from
+        kwargs (dict): Explicit options, they override the decoder ones
+
+    Returns:
+        tuple[Any, dict]: The target type and the convert keyword arguments
+    """
+    cls = type(model_or_decoder)
+    if cls is JsonDecoder:
+        options = {
+            'strict': model_or_decoder.strict,
+            'dec_hook': model_or_decoder.dec_hook,
+            'str_keys': True,
+        }
+        model = model_or_decoder.type
+    elif cls is MsgpackDecoder:
+        options = {
+            'strict': model_or_decoder.strict,
+            'dec_hook': model_or_decoder.dec_hook,
+        }
+        model = model_or_decoder.type
+    else:
+        options = {}
+        model = model_or_decoder
+
+    options.update(kwargs)
+    return model, options
+
+
+def _loc_leads_to_raw(model, loc):
+    """
+    Check whether the typehint at an error location is a `msgspec.Raw`.
+
+    A `msgspec.Raw` field keeps the raw bytes of the payload, so a model with
+    one can not be validated from an already decoded object: the decoder
+    accepts any raw bytes while `convert` only accepts a `Raw` instance. An
+    error reported at such a field is a false positive of the re-validation,
+    it says nothing about the entry that holds the data.
+
+    `loc` comes from an error message, so it is the short path to the failure
+    rather than the full model, walking it costs a few dictionary lookups.
+
+    Args:
+        model (Any): Typehint the value was validated against
+        loc (tuple): Location of the error inside that value
+
+    Returns:
+        bool: True if the typehint at `loc` is a `msgspec.Raw`
+    """
+    model = unwrap_typehint(model)
+    origin, args = origin_args(model)
+    if origin is Union:
+        # Any member leading to Raw makes the failure untrustworthy
+        return any(
+            _loc_leads_to_raw(arg, loc)
+            for arg in args
+            if arg is not UnsetType
+        )
+    if not loc:
+        return model is Raw
+
+    part = loc[0]
+    rest = loc[1:]
+    if part == '...':
+        if origin is not dict or not args:
+            return False
+        return _loc_leads_to_raw(args[1], rest)
+    if part == '...key':
+        # A dict key is a scalar, it can not be a Raw
+        return False
+    if type(part) is int:
+        child_model = _get_item_model(origin, args, part)
+        if child_model is NODEFAULT:
+            return False
+        return _loc_leads_to_raw(child_model, rest)
+    if is_struct_type(origin):
+        try:
+            child_model = get_field_typehint(model, part)
+        except AttributeError:
+            # An unknown field is not a Raw
+            return False
+        return _loc_leads_to_raw(child_model, rest)
+    return False
+
+
+_MAXIMUM_RAW_PATCH = 8
+
+
+def _is_raw_false_positive(error, model):
+    """
+    Check whether an error is the re-validation rejecting a `msgspec.Raw` field.
+
+    A `msgspec.Raw` field takes the payload bytes, so the decoder never fails
+    on it. `convert` only accepts a `Raw` instance and rejects an already
+    decoded object, which is an artifact of validating twice.
+
+    Args:
+        error (ErrorInfo): Parsed error
+        model (Any): Typehint the value was validated against
+
+    Returns:
+        bool: True if the error is an artifact of the re-validation
+    """
+    if error.type is not ErrorType.TYPE_MISMATCH:
+        # A missing or unknown field at a raw field is a real error
+        return False
+    return _loc_leads_to_raw(model, error.loc)
+
+
+def _pin_raw(value, loc, model):
+    """
+    Put a `msgspec.Raw` where an error location points, on a copy of the path.
+
+    Pinning makes the raw field acceptable, so the rest of the entry can be
+    judged: an entry that only looked invalid because of a raw field passes,
+    and one with a real error reports it. Only the containers on the way to
+    `loc` are copied, the caller's object is never modified.
+
+    A container whose items all share one typehint is pinned in one go, so an
+    entry holding a long list of raw values is settled by a single round
+    instead of one round per item.
+
+    Args:
+        value (Any): The value to copy
+        loc (tuple): Location to pin, taken from an error message
+        model (Any): Typehint `value` was validated against
+
+    Returns:
+        Any | NODEFAULT: The pinned copy, or NODEFAULT if `loc` can't be walked
+    """
+    if not loc:
+        return Raw(b'')
+
+    part = loc[0]
+    rest = loc[1:]
+    model = unwrap_typehint(model)
+    origin, args = origin_args(model)
+
+    if part == '...':
+        # A dict value failure, the failing key is unknown, pin every entry
+        if type(value) is not dict:
+            return NODEFAULT
+        child_model = args[1] if args else NODEFAULT
+        pinned = {}
+        for key, item in value.items():
+            item = _pin_raw(item, rest, child_model)
+            if item is NODEFAULT:
+                return NODEFAULT
+            pinned[key] = item
+        return pinned
+
+    if type(part) is int:
+        if type(value) is not list or not 0 <= part < len(value):
+            return NODEFAULT
+        item_model = _get_item_model(origin, args, part)
+        if item_model is NODEFAULT:
+            return NODEFAULT
+        if origin in (list, set, frozenset) or (origin is tuple and Ellipsis in (args or ())):
+            # Every item shares one typehint, pin the whole container at once
+            pinned = []
+            for item in value:
+                item = _pin_raw(item, rest, item_model)
+                if item is NODEFAULT:
+                    return NODEFAULT
+                pinned.append(item)
+            return pinned
+        item = _pin_raw(value[part], rest, item_model)
+        if item is NODEFAULT:
+            return NODEFAULT
+        pinned = list(value)
+        pinned[part] = item
+        return pinned
+
+    if type(value) is not dict:
+        return NODEFAULT
+    try:
+        child = value[part]
+    except (KeyError, TypeError):
+        # The key is missing, or the segment is not usable as a key at all
+        return NODEFAULT
+    try:
+        child_model = get_field_typehint(model, part)
+    except AttributeError:
+        child_model = NODEFAULT
+    item = _pin_raw(child, rest, child_model)
+    if item is NODEFAULT:
+        return NODEFAULT
+    pinned = dict(value)
+    pinned[part] = item
+    return pinned
+
+
+def _validate_entry(value, model, kwargs):
+    """
+    Validate one dict entry the way the failed call did.
+
+    A raw field is pinned and the entry is validated again, so a raw field
+    ahead of the real error does not hide it.
+
+    Args:
+        value (Any): The decoded entry value
+        model (Any): Typehint of the dict values
+        kwargs (dict): Options of the equivalent `msgspec.convert` call
+
+    Returns:
+        tuple | None | NODEFAULT: The location of the failure inside the entry,
+            None when the entry passes, NODEFAULT when the entry can't be judged
+    """
+    previous_loc = None
+    for _ in range(_MAXIMUM_RAW_PATCH):
+        try:
+            convert(value, type=model, **kwargs)
+        except ValidationError as e:
+            error = parse_msgspec_error(e)
+            if not _is_raw_false_positive(error, model):
+                return error.loc
+            if error.loc == previous_loc:
+                # Pinning made no difference, this msgspec refuses a `Raw`
+                # instance here (fixed in 0.19.0), so the entry can't be judged
+                return NODEFAULT
+            previous_loc = error.loc
+            value = _pin_raw(value, error.loc, model)
+            if value is NODEFAULT:
+                return NODEFAULT
+            continue
+        except TypeError:
+            # `model` is not a type msgspec supports
+            return NODEFAULT
+        return None
+
+    # Still complaining about raw fields, the entry can't be judged
+    return NODEFAULT
+
+
+def _find_failing_dict_value(obj, value_model, kwargs=None, tail=None):
     """
     Find the dict entry whose value fails validation.
 
     Args:
         obj (dict): Raw dict to search
         value_model: Typehint of the dict values
+        kwargs (dict): Extra keyword arguments for `convert`, the same ones the
+            failed call used. Validation rules may change which entry fails
+            (`strict=False` accepts a numeric string), so the search has to see
+            exactly the rules the caller's call saw.
+        tail (tuple): The rest of the caller's error location, after the
+            `...` this search replaces. An entry failing elsewhere is a
+            weaker match, it is only reported when nothing matches exactly.
 
     Returns:
         Any: The first failing key, or NODEFAULT if no key can be identified
     """
+    kwargs = kwargs or {}
+    weaker_match = NODEFAULT
     for key, value in obj.items():
-        try:
-            convert(value, type=value_model)
-        except ValidationError:
+        loc = _validate_entry(value, value_model, kwargs)
+        if loc is None:
+            # The entry passes, a raw field was the only complaint
+            continue
+        if loc is NODEFAULT:
+            return NODEFAULT
+        if tail is None or loc == tail:
             return key
-        except TypeError:
-            # `value_model` is not a type msgspec supports
-            break
-    return NODEFAULT
+        if weaker_match is NODEFAULT:
+            weaker_match = key
+    return weaker_match
 
 
-def _find_failing_dict_key(obj, key_model):
+def _find_failing_dict_key(obj, key_model, kwargs=None):
     """
     Find the dict key that fails validation.
 
     Args:
         obj (dict): Raw dict to search
         key_model: Typehint of the dict keys
+        kwargs (dict): Extra keyword arguments for `convert`, see
+            `_find_failing_dict_value`
 
     Returns:
         Any: The first failing key, or NODEFAULT if no key can be identified
     """
+    kwargs = kwargs or {}
+    # A key alone can't be validated: `str_keys` only applies to the keys of a
+    # dict, so the key is wrapped back into one. `Dict[key_model, Any]` keeps
+    # the key coercion rules of the model the failed call was using.
+    try:
+        key_dict_model = Dict[key_model, Any]
+    except TypeError:
+        # `key_model` is not a typehint that can be used as a dict key type
+        return NODEFAULT
     for key in obj.keys():
         try:
-            convert(key, type=key_model)
+            convert({key: None}, type=key_dict_model, **kwargs)
         except ValidationError:
             return key
         except TypeError:
@@ -191,7 +458,7 @@ def _find_failing_dict_key(obj, key_model):
 
 
 def _repair_once(
-        raw_obj, model, error: ErrorInfo, guess_default=False
+        raw_obj, model, error: ErrorInfo, guess_default=False, kwargs=None
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
     """
     Args:
@@ -204,6 +471,9 @@ def _repair_once(
             If True, a failing dict value or list item is replaced by a guessed default
                 (e.g. 0 for int, "" for str), falling back to deletion if the type has no
                 guessable default or the guessed value fails validation.
+        kwargs (dict): Options of the equivalent `msgspec.convert` call, the
+            same ones the failed call used, so an entry is judged with the same
+            rules that rejected the input
 
     Returns:
         tuple[Any, ErrorInfo | _NoDefault]: (obj, error) the repaired object and fixed error.
@@ -269,7 +539,8 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
-            failing_key = _find_failing_dict_value(obj, child_model)
+            failing_key = _find_failing_dict_value(
+                obj, child_model, kwargs, tail=tuple(list_loc[i + 1:]))
             if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
                 if not _pop_last_collection(last_collection_data, last_collection_key):
@@ -325,7 +596,7 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
-            failing_key = _find_failing_dict_key(obj, key_model)
+            failing_key = _find_failing_dict_key(obj, key_model, kwargs)
             if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
                 if not _pop_last_collection(last_collection_data, last_collection_key):
@@ -480,7 +751,7 @@ def _repair_once(
 
 
 def _handle_obj_repair(
-        raw_obj, model, error: ValidationError, guess_default=False
+        raw_obj, model, error: ValidationError, guess_default=False, kwargs=None, rebuild=None
 ) -> "tuple[Any, list[ErrorInfo]]":
     """
     Args:
@@ -488,15 +759,35 @@ def _handle_obj_repair(
         model (type): The target type to decode into.
         error (ValidationError):
         guess_default (bool): Defaults to False, see `_repair_once`
+        kwargs (dict): Options of the equivalent `msgspec.convert` call, used to
+            re-validate the repaired object. A decoder that coerces
+            (`strict=False`) or needs a `dec_hook` would otherwise fight the
+            repair: a value the decoder accepted looks invalid to `convert`.
+        rebuild (callable): Builds the model instance from the repaired object
+            when `convert` can not. A `msgspec.Raw` field keeps the payload
+            bytes, which a decoded object no longer has, so only a typed decode
+            of the re-encoded object can fill it. Defaults to None, the repair
+            then reports that it can not build the instance.
 
     Returns:
         tuple[any, list[ErrorInfo]]:
     """
     error = parse_msgspec_error(error)
+    if rebuild is None and _is_raw_false_positive(error, model):
+        # The input can not be validated at all: a `msgspec.Raw` field needs the
+        # payload bytes, which an in-memory object does not have. Repairing
+        # would write a placeholder into the caller's object and still fail, so
+        # stop before touching it.
+        rejected = ErrorInfo(
+            'Input rejected: a msgspec.Raw field can not be built from an in-memory object',
+            type=ErrorType.INPUT_REJECTED, loc=())
+        return get_default(model, guess_default=guess_default, return_obj=True), [rejected]
+
     collected_errors = []
     for _ in range(const.MAXIMUM_REPAIR):
         # repair once
-        raw_obj, error = _repair_once(raw_obj, model, error, guess_default=guess_default)
+        raw_obj, error = _repair_once(
+            raw_obj, model, error, guess_default=guess_default, kwargs=kwargs)
         if error is not NODEFAULT:
             collected_errors.append(error)
 
@@ -506,9 +797,26 @@ def _handle_obj_repair(
 
         # try if all repaired
         try:
-            return convert(raw_obj, model), collected_errors
+            return convert(raw_obj, model, **(kwargs or {})), collected_errors
         except ValidationError as e:
             error = parse_msgspec_error(e)
+            if _is_raw_false_positive(error, model):
+                # The only complaint left is a `msgspec.Raw` field, which
+                # `convert` never accepts from a decoded object. A typed decode
+                # of the re-encoded object does fill it, when the caller can
+                # provide one.
+                if rebuild is not None:
+                    try:
+                        return rebuild(raw_obj), collected_errors
+                    except (ValidationError, DecodeError, TypeError, EncodeError):
+                        pass
+                # Everything else is repaired, but the model instance can not be
+                # built here, so the root default is the best this family can do.
+                rejected = ErrorInfo(
+                    'Input rejected: a msgspec.Raw field can not be built from a decoded object',
+                    type=ErrorType.INPUT_REJECTED, loc=())
+                collected_errors.append(rejected)
+                return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
             # User-code errors (__post_init__, dec_hook, etc.) are wrapped as
             # WRAPPED_ERROR. Retrying the same fix won't help — bail immediately.
             if error.type is ErrorType.WRAPPED_ERROR:
@@ -695,6 +1003,19 @@ def load_json_with_default(
     else:
         decoder = None
         model = model_or_decoder
+    # A json payload always carries string keys, and the repair has to judge an
+    # entry with the same rules the decoding used, or a value the decoder
+    # accepted (`strict=False`, a `dec_hook`) looks invalid to `convert`
+    _, options = _get_model_options(model_or_decoder, {'str_keys': True})
+    # `str_keys` is a `convert` option, a decode takes only the codec ones
+    decode_options = {key: value for key, value in options.items() if key != 'str_keys'}
+
+    def rebuild(raw_obj):
+        """Decode the repaired object again, so a `msgspec.Raw` field gets bytes."""
+        packed = encode_json(raw_obj)
+        if decoder is None:
+            return decode_json(packed, type=model, **decode_options)
+        return decoder.decode(packed)
 
     collected_errors = []
     for _ in range(2):
@@ -717,7 +1038,8 @@ def load_json_with_default(
                 else:
                     return _handle_root_error(model, error, guess_default=guess_default)
             # Most errors will enter here
-            raw_obj, new_errors = _handle_obj_repair(raw_obj, model, e, guess_default=guess_default)
+            raw_obj, new_errors = _handle_obj_repair(
+                raw_obj, model, e, guess_default=guess_default, kwargs=options, rebuild=rebuild)
             collected_errors.extend(new_errors)
             return raw_obj, collected_errors
         except DecodeError as error:
@@ -828,6 +1150,15 @@ def load_msgpack_with_default(
     else:
         decoder = None
         model = model_or_decoder
+    # Msgpack keys are not restricted to strings, so `str_keys` stays False
+    _, options = _get_model_options(model_or_decoder, {})
+
+    def rebuild(raw_obj):
+        """Decode the repaired object again, so a `msgspec.Raw` field gets bytes."""
+        packed = encode_msgpack(raw_obj)
+        if decoder is None:
+            return decode_msgpack(packed, type=model, **options)
+        return decoder.decode(packed)
 
     unicode_errors: List[ErrorInfo] = []
 
@@ -855,7 +1186,8 @@ def load_msgpack_with_default(
                 errors.extend(unicode_errors)
                 return result, errors
             # Most errors will enter here
-            return _handle_obj_repair(raw_obj, model, e, guess_default=guess_default)
+            return _handle_obj_repair(
+                raw_obj, model, e, guess_default=guess_default, kwargs=options, rebuild=rebuild)
         except DecodeError as error:
             result, errors = _handle_root_error(model, error, guess_default=guess_default)
             errors.extend(unicode_errors)
@@ -902,31 +1234,13 @@ def _repair_msgpack_unicode(
     return fixup_msgpack_unicode_slow(data, utf8_error=utf8_error)
 
 
-def _get_model(model_or_decoder):
-    """
-    Get the target type from a model or a msgspec decoder.
-
-    Args:
-        model_or_decoder (type | Decoder): Target type, or a decoder to take
-            `.type` from
-
-    Returns:
-        Any: The target type
-    """
-    # Decoder classes can't be subclassed reliably, an exact type check is
-    # enough and avoids reading a `.type` attribute of an unrelated object
-    cls = type(model_or_decoder)
-    if cls is JsonDecoder or cls is MsgpackDecoder:
-        return model_or_decoder.type
-    return model_or_decoder
-
-
 @overload
 def convert_with_default(
         data: Any,
         model_or_decoder: Type[T],
         *,
         guess_default: bool = ...,
+        **kwargs,
 ) -> Tuple[T, List[ErrorInfo]]: ...
 
 
@@ -936,10 +1250,11 @@ def convert_with_default(
         model_or_decoder: "Union[JsonDecoder[T], MsgpackDecoder[T]]",
         *,
         guess_default: bool = ...,
+        **kwargs,
 ) -> Tuple[T, List[ErrorInfo]]: ...
 
 
-def convert_with_default(data, model_or_decoder, *, guess_default=False):
+def convert_with_default(data, model_or_decoder, *, guess_default=False, **kwargs):
     """
     Convert an in-memory object, substituting defaults for fields that fail validation.
 
@@ -952,13 +1267,18 @@ def convert_with_default(data, model_or_decoder, *, guess_default=False):
         model_or_decoder: The target type to convert into, or a msgspec decoder
             whose `type` is used
         guess_default (bool): Defaults to False, see load_json_with_default
+        **kwargs: Options of the equivalent `msgspec.convert` call (`strict`,
+            `from_attributes`, `dec_hook`, `builtin_types`, `str_keys`), they
+            override the decoder ones. The repair re-validates with the same
+            rules, so a value the caller's call accepted is not repaired away.
 
     Returns:
         tuple[Any, List[ErrorInfo]]: (result, errors) validated result and a list
             of collected errors. See load_json_with_default for the details.
     """
-    model = _get_model(model_or_decoder)
+    model, options = _get_model_options(model_or_decoder, kwargs)
     try:
-        return convert(data, type=model), []
+        return convert(data, type=model, **options), []
     except ValidationError as e:
-        return _handle_obj_repair(data, model, e, guess_default=guess_default)
+        return _handle_obj_repair(
+            data, model, e, guess_default=guess_default, kwargs=options)

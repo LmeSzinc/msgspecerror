@@ -317,3 +317,32 @@ class TestDecoderEquivalence:
         obj, error = load_json_with_error(b'{"a": "bad"}', msgspec.json.Decoder())
         assert obj == {'a': 'bad'}
         assert error is NODEFAULT
+
+
+class TestConvertOptions:
+    """`convert_with_error` passes its options to `msgspec.convert`."""
+
+    def test_strict_false_accepts_a_numeric_string(self):
+        obj, error = convert_with_error({'a': '1'}, Req, strict=False)
+        assert obj == Req(a=1)
+        assert error is NODEFAULT
+
+    def test_strict_true_rejects_it(self):
+        error = assert_failed(convert_with_error({'a': '1'}, Req))
+        assert error.loc == ('a',)
+
+    def test_str_keys_coerces_the_keys(self):
+        obj, error = convert_with_error({'1': 5}, Dict[int, int], str_keys=True)
+        assert obj == {1: 5}
+        assert error is NODEFAULT
+
+    def test_decoder_options_are_used(self):
+        decoder = msgspec.json.Decoder(Req, strict=False)
+        obj, error = convert_with_error({'a': '1'}, decoder)
+        assert obj == Req(a=1)
+        assert error is NODEFAULT
+
+    def test_explicit_option_overrides_the_decoder(self):
+        decoder = msgspec.json.Decoder(Req, strict=False)
+        error = assert_failed(convert_with_error({'a': '1'}, decoder, strict=True))
+        assert error.loc == ('a',)

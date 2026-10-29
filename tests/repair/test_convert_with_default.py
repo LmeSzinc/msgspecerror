@@ -238,3 +238,108 @@ class TestErrorDetails:
         assert result is NODEFAULT
         with pytest.raises(ValidationError):
             convert(data, Req)
+
+
+class TestDecoderOptions:
+    """The repair does not fight the rules the caller validated with."""
+
+    DATA = {"items": {"good": {"amount": "1"}, "bad": {"amount": "xx"}}}
+
+    def test_strict_false_option(self):
+        result, errors = convert_with_default(
+            copy.deepcopy(self.DATA), Inventory, guess_default=True, strict=False)
+
+        assert result == Inventory(items={"good": Item(amount=1), "bad": Item(amount=0)})
+        assert [e.loc for e in errors] == [("items", "bad", "amount")]
+
+    def test_without_the_option_both_entries_fail(self):
+        result, errors = convert_with_default(
+            copy.deepcopy(self.DATA), Inventory, guess_default=True)
+
+        assert result == Inventory(items={"good": Item(amount=0), "bad": Item(amount=0)})
+        assert [e.loc for e in errors] == [
+            ("items", "good", "amount"), ("items", "bad", "amount")]
+
+    def test_decoder_options_are_used(self):
+        decoder = msgspec.json.Decoder(Inventory, strict=False)
+        result, errors = convert_with_default(
+            copy.deepcopy(self.DATA), decoder, guess_default=True)
+
+        assert result == Inventory(items={"good": Item(amount=1), "bad": Item(amount=0)})
+        assert [e.loc for e in errors] == [("items", "bad", "amount")]
+
+    def test_explicit_option_overrides_the_decoder(self):
+        decoder = msgspec.json.Decoder(Inventory, strict=False)
+        result, errors = convert_with_default(
+            copy.deepcopy(self.DATA), decoder, guess_default=True, strict=True)
+
+        assert result == Inventory(items={"good": Item(amount=0), "bad": Item(amount=0)})
+        assert [e.loc for e in errors] == [
+            ("items", "good", "amount"), ("items", "bad", "amount")]
+
+    def test_dec_hook_option(self):
+        class Point:
+            def __init__(self, value):
+                self.value = value
+
+        def dec_hook(typ, obj):
+            if typ is Point:
+                return Point(obj)
+            raise NotImplementedError
+
+        class Layer(Struct):
+            p: Point
+            n: int = 0
+
+        class Doc(Struct):
+            layers: Dict[str, Layer] = {}
+
+        data = {"layers": {"one": {"p": [1, 2], "n": 1}, "bad": {"p": [3, 4], "n": "xx"}}}
+        result, errors = convert_with_default(data, Doc, guess_default=True, dec_hook=dec_hook)
+
+        assert len(result.layers) == 2
+        assert result.layers["one"].p.value == [1, 2]
+        assert result.layers["bad"].n == 0
+        assert [e.loc for e in errors] == [("layers", "bad", "n")]
+
+
+class TestRawFieldModel:
+    """An in-memory object has no bytes for a `msgspec.Raw` field.
+
+    `convert` can not fill it and this family has no payload to re-decode, so
+    the repair stops right away instead of writing a placeholder raw value into
+    the caller's object and failing anyway.
+    """
+
+    class Msg(Struct):
+        payload: msgspec.Raw
+        n: int = 0
+
+    def test_the_dead_end_is_reported(self):
+        class Doc(Struct):
+            items: Dict[str, self.Msg] = {}
+
+        data = {'items': {'one': {'payload': {'a': 1}, 'n': 1}}}
+        result, errors = convert_with_default(data, Doc, guess_default=True)
+
+        assert result == Doc(items={})
+        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
+        assert 'msgspec.Raw' in errors[0].msg
+
+    def test_the_input_is_not_touched(self):
+        """The old behaviour wrote `Raw(b'')` over the original sub-document.
+
+        A raw field with a default is the case that used to corrupt the input:
+        the repair wrote the default value into the caller's object.
+        """
+
+        class Defaulted(Struct):
+            payload: msgspec.Raw = msgspec.Raw(b'')
+            n: int = 0
+
+        data = {'payload': {'a': 1}, 'n': 'bad'}
+        snapshot = copy.deepcopy(data)
+        convert_with_default(data, Defaulted, guess_default=True)
+
+        assert data == snapshot
+        assert data['payload'] == {'a': 1}

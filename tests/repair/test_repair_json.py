@@ -10,6 +10,7 @@ import pytest
 from msgspec import NODEFAULT, Struct, field
 from typing_extensions import Annotated
 
+from msgspecerror.const import ErrorType
 from msgspecerror.repair import load_json_with_default
 
 # --- Test Models ---
@@ -735,3 +736,142 @@ class TestContainerRepair:
         assert result == FixedTupleModel(v=("ok", WithDefaults(a=42, b="good")))
         assert len(errors) == 1
         assert errors[0].loc == ("v", 1, "a")
+
+
+class TestDecoderOptions:
+    """The repair judges an entry with the rules the decoder used.
+
+    A decoder may coerce (`strict=False`) or build custom types (`dec_hook`).
+    Re-validating with `msgspec.convert` defaults would reject a value the
+    decoder accepted, so the repair would delete or reset data that is fine.
+    """
+
+    def test_strict_false_decoder_keeps_a_coerced_value(self):
+        data = b'{"items": {"good": {"n": "1"}, "bad": {"n": "xx"}}}'
+        decoder = msgspec.json.Decoder(OptionModel, strict=False)
+
+        result, errors = load_json_with_default(data, decoder, guess_default=True)
+        assert result == OptionModel(items={"good": OptionItem(n=1), "bad": OptionItem(n=0)})
+        assert [e.loc for e in errors] == [("items", "bad", "n")]
+
+    def test_plain_model_keeps_strict_rules(self):
+        """Without the decoder the coercion does not apply, both entries fail."""
+        data = b'{"items": {"good": {"n": "1"}, "bad": {"n": "xx"}}}'
+
+        result, errors = load_json_with_default(data, OptionModel, guess_default=True)
+        assert result == OptionModel(items={"good": OptionItem(n=0), "bad": OptionItem(n=0)})
+        assert [e.loc for e in errors] == [("items", "good", "n"), ("items", "bad", "n")]
+
+    def test_dec_hook_is_reused(self):
+        def dec_hook(typ, obj):
+            if typ is OptionPoint:
+                return OptionPoint(obj)
+            raise NotImplementedError
+
+        data = b'{"layers": {"one": {"p": [1, 2], "n": 1}, "two": {"p": [3, 4], "n": "xx"}}}'
+        decoder = msgspec.json.Decoder(OptionDoc, dec_hook=dec_hook)
+
+        result, errors = load_json_with_default(data, decoder, guess_default=True)
+        assert result == OptionDoc(layers={
+            "one": OptionLayer(p=OptionPoint([1, 2]), n=1),
+            "two": OptionLayer(p=OptionPoint([3, 4]), n=0),
+        })
+        assert [e.loc for e in errors] == [("layers", "two", "n")]
+
+    def test_dec_hook_missing_repairs_the_whole_entry(self):
+        """Without a way to build the custom type nothing in the entry survives."""
+        data = b'{"layers": {"one": {"p": [1, 2], "n": 1}}}'
+
+        result, errors = load_json_with_default(data, OptionDoc, guess_default=True)
+        assert result == OptionDoc(layers={})
+        assert errors
+
+
+# --- Models for the decoder option tests ---
+
+class OptionItem(Struct):
+    """A field that a `strict=False` decoder coerces and `convert` does not."""
+    n: int = 0
+
+
+class OptionModel(Struct):
+    items: Dict[str, OptionItem] = {}
+
+
+class OptionPoint:
+    """A custom type that only a `dec_hook` can build."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def __eq__(self, other):
+        return isinstance(other, OptionPoint) and other.value == self.value
+
+    def __repr__(self):
+        return f'OptionPoint({self.value!r})'
+
+
+class OptionLayer(Struct):
+    p: OptionPoint
+    n: int = 0
+
+
+class OptionDoc(Struct):
+    layers: Dict[str, OptionLayer] = {}
+
+
+class TestRawFieldModel:
+    """A `msgspec.Raw` field can not be built by `convert`, but a typed decode can.
+
+    The repair re-encodes the repaired object and decodes it again, so the raw
+    field gets bytes and the model instance is real. Only the repair family of
+    the loaders can do that, they hold the payload format.
+    """
+
+    def test_the_real_error_is_located(self):
+        data = b'{"items": {"one": {"payload": {"a": 1}, "n": 1}, "two": {"payload": {"a": 2}, "n": "xx"}}}'
+        result, errors = load_json_with_default(data, RawDoc, guess_default=True)
+
+        assert [e.loc for e in errors] == [('items', 'two', 'n')]
+        assert errors[0].type is ErrorType.TYPE_MISMATCH
+
+    def test_the_model_instance_is_built(self):
+        """No `INPUT_REJECTED`, the raw fields are filled in."""
+        data = b'{"items": {"one": {"payload": {"a": 1}, "n": 1}, "two": {"payload": {"a": 2}, "n": "xx"}}}'
+        result, errors = load_json_with_default(data, RawDoc, guess_default=True)
+
+        assert isinstance(result, RawDoc)
+        assert sorted(result.items) == ['one', 'two']
+        assert result.items['one'].n == 1
+        assert result.items['two'].n == 0
+        assert all(isinstance(item.payload, msgspec.Raw) for item in result.items.values())
+        assert ErrorType.INPUT_REJECTED not in [e.type for e in errors]
+
+    def test_the_raw_bytes_are_the_reencoded_form(self):
+        """Json raw bytes are compacted, the value is what was asked for."""
+        data = b'{"items": {"one": {"payload": {"a": 1,   "b": [1,2]}, "n": 1}}}'
+        data = data.replace(b'"n": 1}', b'"n": "xx"}')
+        result, errors = load_json_with_default(data, RawDoc, guess_default=True)
+
+        assert result.items['one'].n == 0
+        assert bytes(result.items['one'].payload) == b'{"a":1,"b":[1,2]}'
+
+    def test_a_required_raw_field_still_fails_without_bytes(self):
+        """A raw field the payload does not carry can not be invented."""
+        data = b'{"items": {"one": {"n": "xx"}}}'
+        result, errors = load_json_with_default(data, RawDoc, guess_default=True)
+
+        assert result == RawDoc(items={})
+        # Both fields of the entry are reported: the repair rewrites `n` and the
+        # entry is then rejected for the missing raw field
+        assert [e.loc for e in errors] == [('items', 'one', 'n'), ('items', 'one', 'payload')]
+
+
+class RawMsg(Struct):
+    """A raw field plus a field that can fail."""
+    payload: msgspec.Raw
+    n: int = 0
+
+
+class RawDoc(Struct):
+    items: Dict[str, RawMsg] = {}
