@@ -20,6 +20,10 @@ class ErrorCtx(Struct, omit_defaults=True):
     min_length: Optional[int] = None
     max_length: Optional[int] = None
     tz: Optional[bool] = None
+    # True when the message can be a rejected `msgspec.Raw`, set by `_make_error()`.
+    # It is only a candidate: the typehint at the error location still has to be
+    # checked against the model. Kept out of the repr, it is an internal hint.
+    may_raw_rejection: bool = False
 
     def _iter_repr_fields(self):
         # show non-None fields only

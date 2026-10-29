@@ -4,9 +4,10 @@ Comprehensive tests for get_error_type().
 Tests every ErrorType member defined in const.py against raw error message
 strings, covering all message variants and constraints formats.
 """
+import msgspec
 import pytest
 
-from msgspecerror.const import ErrorType
+from msgspecerror.const import MSGSPEC_0_22_PLUS, ErrorType, _parse_msgspec_version
 from msgspecerror.parse_ctx import ErrorCtx
 from msgspecerror.parse_error import ErrorInfo, get_error_type
 
@@ -54,17 +55,128 @@ class TestTypeMismatch:
         # annotated types
         ("Expected `Annotated[int, ...]`, got `str` - at `$.score`",
          ErrorCtx(expected="Annotated[int, ...]", got="str")),
-        # msgspec >= 0.22.0 names a `Raw` target `raw` instead of `any`
+        # msgspec >= 0.22.0 names a `Raw` target `raw` instead of `any`, so the
+        # context carries the raw flag on that side only
         ("Expected `raw`, got `int` - at `$.payload`",
-         ErrorCtx(expected="raw", got="int")),
+         ErrorCtx(expected="raw", got="int", may_raw_rejection=MSGSPEC_0_22_PLUS)),
         ("Expected `raw`, got `str`",
-         ErrorCtx(expected="raw", got="str")),
+         ErrorCtx(expected="raw", got="str", may_raw_rejection=MSGSPEC_0_22_PLUS)),
         # msgspec >= 0.22.0: a bool literal type that receives a non-bool value
         ("Expected `bool`, got `str` - at `$.enabled`",
          ErrorCtx(expected="bool", got="str")),
     ])
     def test_type_mismatch(self, msg, ctx):
         check(msg, ErrorType.TYPE_MISMATCH, ctx)
+
+
+class TestMayRawRejection:
+    """
+    `ErrorCtx.may_raw_rejection` marks a message that can be a rejected
+    `msgspec.Raw` field.
+
+    `msgspec.Raw` carries no type bit of its own, so the type name in the
+    message depends on the msgspec version:
+
+    - 0.22 and later names it `raw`
+    - before 0.22 it shares the typecode of `typing.Any`, which names it `any`
+    - before 0.22 a required TypedDict field, or a dataclass / attrs field with
+      a `default_factory`, leaves the name empty, which parses to
+      `expected=None`
+
+    A released msgspec never changes its message, so the version decides which
+    names are possible, see `MSGSPEC_0_22_PLUS`. The flag is set while the
+    message is classified, it is a candidate rather than a verdict: the
+    typehint at `loc` still has to be checked, see `TestRawFalsePositiveGuard`.
+    """
+
+    # The type name a raw target gets on the installed msgspec version
+    RAW = 'raw' if MSGSPEC_0_22_PLUS else 'any'
+
+    @pytest.mark.parametrize("msg, expected", [
+        # the names a `Raw` target can carry, chosen by the installed version
+        ("Expected `raw`, got `int` - at `$.payload`", MSGSPEC_0_22_PLUS),
+        ("Expected `raw`, got `object`", MSGSPEC_0_22_PLUS),
+        ("Expected `any`, got `str` - at `$.payload`", not MSGSPEC_0_22_PLUS),
+        ("Expected `any`, got `object` - at `$.payload`", not MSGSPEC_0_22_PLUS),
+        ("Expected ``, got `object` - at `$.payload`", not MSGSPEC_0_22_PLUS),
+        ("Expected ``, got `str`", not MSGSPEC_0_22_PLUS),
+        # a real type mismatch is never a candidate
+        ("Expected `int`, got `str` - at `$.payload`", False),
+    ])
+    def test_the_shape_of_the_installed_version(self, msg, expected):
+        assert get_error_type(msg).ctx.may_raw_rejection is expected
+
+    @pytest.mark.parametrize("msg", [
+        # a real type mismatch names a concrete type
+        "Expected `int`, got `str` - at `$.age`",
+        "Expected `str`, got `int`",
+        # `Optional[Raw]` is a null check, the decoder itself rejects the value
+        "Expected `null`, got `int` - at `$.payload`",
+        "Expected `null`, got `object` - at `$.payload`",
+        # a union holding Raw reports the member that rejected the value
+        "Expected `int`, got `object` - at `$.v`",
+        # a token mismatch has no `got` part, so it never reaches the check
+        "Expected `raw` - at `$.payload`",
+        "Expected `any` - at `key` in `$`",
+        # another error type, even when the text sits in the message
+        "Object contains unknown field `Expected `raw`` - at `$`",
+        "Object missing required field `Expected `any`` - at `$`",
+        "Expected `array` of length 2, got 3 - at `$.pair`",
+        # a wrapped user-code error whose text only starts like a raw rejection
+        "Expected `raw` is what the hook wanted - at `$.payload`",
+    ])
+    def test_other_messages_are_not_raw_shaped(self, msg):
+        """These are False whatever the msgspec version is."""
+        assert get_error_type(msg).ctx.may_raw_rejection is False
+
+    def test_a_user_message_can_mimic_the_shape(self):
+        """
+        Known limit: msgspec wraps user-code errors without marking them, so a
+        `dec_hook` / `__post_init__` that raises with the same text is
+        indistinguishable from msgspec's own message. Only the model check can
+        reject it, and user code never runs at a raw field, which is why the
+        false positive does not reach the repair.
+        """
+        info = get_error_type(f"Expected `{self.RAW}`, got `int` - at `$.payload`")
+
+        assert info.type is ErrorType.TYPE_MISMATCH
+        assert info.ctx.may_raw_rejection is True
+
+
+class TestRawMessageVersionGate:
+    """
+    `may_raw_rejection` picks the accepted type names from
+    `MSGSPEC_0_22_PLUS`, and the two sets do not overlap.
+
+    The flag is set while the message is classified, so it is forced before
+    the message is parsed.
+    """
+
+    @pytest.mark.parametrize("msg, expected", [
+        # 0.22 and later only names it `raw`
+        ("Expected `raw`, got `int` - at `$.payload`", True),
+        ("Expected `any`, got `str` - at `$.payload`", False),
+        ("Expected ``, got `object` - at `$.payload`", False),
+        ("Expected `int`, got `str` - at `$.payload`", False),
+    ])
+    def test_a_0_22_or_later_build(self, monkeypatch, msg, expected):
+        monkeypatch.setattr('msgspecerror.const.MSGSPEC_0_22_PLUS', True)
+        assert get_error_type(msg).ctx.may_raw_rejection is expected
+
+    @pytest.mark.parametrize("msg, expected", [
+        # before 0.22 it shares the typecode of `Any`, or has no name at all
+        ("Expected `raw`, got `int` - at `$.payload`", False),
+        ("Expected `any`, got `str` - at `$.payload`", True),
+        ("Expected ``, got `object` - at `$.payload`", True),
+        ("Expected `int`, got `str` - at `$.payload`", False),
+    ])
+    def test_a_build_before_0_22(self, monkeypatch, msg, expected):
+        monkeypatch.setattr('msgspecerror.const.MSGSPEC_0_22_PLUS', False)
+        assert get_error_type(msg).ctx.may_raw_rejection is expected
+
+    def test_the_flag_follows_the_installed_version(self):
+        installed = _parse_msgspec_version(msgspec.__version__)
+        assert MSGSPEC_0_22_PLUS == (installed >= (0, 22))
 
 
 class TestTokenTypeMismatch:

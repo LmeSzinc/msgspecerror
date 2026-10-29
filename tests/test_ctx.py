@@ -88,6 +88,25 @@ class TestErrorCtx:
         assert ctx.max_length == 7
         assert ctx.tz is False
 
+    def test_may_raw_rejection_defaults_to_false(self):
+        """The raw flag is off unless `_make_error()` sets it."""
+        assert ErrorCtx().may_raw_rejection is False
+
+    def test_may_raw_rejection_is_not_in_repr(self):
+        """It is an internal hint, the repr keeps the parsed values only."""
+        ctx = ErrorCtx(expected='any', got='str', may_raw_rejection=True)
+        assert repr(ctx) == "ErrorCtx(expected='any', got='str')"
+
+    def test_may_raw_rejection_is_omitted_when_false(self):
+        """omit_defaults keeps the serialized form unchanged while it is False."""
+        assert msgspec.json.encode(ErrorCtx()) == b'{}'
+        assert msgspec.json.encode(ErrorCtx(may_raw_rejection=True)) == b'{"may_raw_rejection":true}'
+
+    def test_may_raw_rejection_is_a_field(self):
+        """Two contexts that only differ by the flag are not equal."""
+        assert ErrorCtx(may_raw_rejection=True) != ErrorCtx()
+        assert ErrorCtx(may_raw_rejection=True) == ErrorCtx(may_raw_rejection=True)
+
 
 class TestGetPatternCtx:
     """Tests for get_pattern_ctx — extracts the regex pattern from error context strings.

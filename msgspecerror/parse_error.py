@@ -2,7 +2,7 @@ from typing import Any, Tuple, Union
 
 from msgspec import NODEFAULT, UNSET, Struct, field
 
-from .const import ErrorType
+from .const import ErrorType, MSGSPEC_0_22_PLUS
 from .parse_ctx import ErrorCtx, KEY_got, get_length_ctx, get_number_ctx, get_pattern_ctx
 from .parse_path import KEY_at, KEY_at_check, KEY_at_key_in, get_error_path
 
@@ -86,6 +86,11 @@ def _make_error(error, error_type, ctx=NODEFAULT, expected=None):
     """
     Create an ErrorInfo with the given message, type, optional ctx, and expected.
 
+    A type mismatch whose expected type name can name a `msgspec.Raw` is marked
+    with `ctx.may_raw_rejection`. The flag is a candidate only: the typehint at
+    the error location still has to be checked against the model, because a
+    `Raw` in a union reports the name of the member that rejected the value.
+
     Args:
         error (str): The raw error message.
         error_type (ErrorType): The classified error type.
@@ -102,6 +107,21 @@ def _make_error(error, error_type, ctx=NODEFAULT, expected=None):
         err = ErrorInfo(msg=error, type=error_type)
     if expected:
         err.ctx.expected = expected
+    # A raw field always reports through `Expected ..., got ...`, so only a type
+    # mismatch can be a raw rejection. `Raw` has no type bit of its own: 0.22 and
+    # later names it `raw`, before 0.22 it shares the typecode of `typing.Any`
+    # and is named `any`, and a field carrying metadata has no name at all. The
+    # sets do not overlap, an empty name is only accepted from the versions that
+    # can produce it.
+    # A miss leaves the flag alone: a Struct default is materialized on access,
+    # so writing False here would create an `ErrorCtx` that was never there.
+    if error_type is ErrorType.TYPE_MISMATCH:
+        if MSGSPEC_0_22_PLUS:
+            if expected == 'raw':
+                err.ctx.may_raw_rejection = True
+        else:
+            if not expected or expected == 'any':
+                err.ctx.may_raw_rejection = True
     return err
 
 
@@ -146,9 +166,8 @@ def get_error_type(error):
         # Expected `int`, got `str`
         if remain.startswith(KEY_got):
             got_val = _extract_got(remain)
-            err = _make_error(error, ErrorType.TYPE_MISMATCH)
-            if expected:
-                err.ctx.expected = expected
+            # `expected` goes into `_make_error`, it decides the raw flag
+            err = _make_error(error, ErrorType.TYPE_MISMATCH, expected=expected)
             if got_val:
                 err.ctx.got = got_val
             return err
