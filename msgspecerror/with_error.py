@@ -23,7 +23,9 @@ from .const import DECODE_ERRORS, T_NODEFAULT, T_json_data, T_msgpack_data
 from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msgspec_error
 from .parse_struct import get_field_typehint
 from .parse_type import is_struct_type, origin_args, unwrap_typehint
-from .repair import _find_failing_dict_key, _find_failing_dict_value, _get_item_model, _get_model, _resolve_union_member
+from .repair import (
+    _find_failing_dict_key, _find_failing_dict_value, _get_item_model, _get_model_options, _resolve_union_member
+)
 
 T = TypeVar('T')
 
@@ -54,7 +56,7 @@ def _missing_value(loc, index, keys):
     return keys + list(tail), NODEFAULT
 
 
-def _resolve_loc(loc, data, model):
+def _resolve_loc(loc, data, model, options):
     """
     Resolve the placeholders of an error location against the raw data.
 
@@ -62,6 +64,8 @@ def _resolve_loc(loc, data, model):
         loc (tuple): Error location, may contain `...` / `...key`
         data (Any): Raw data that failed validation
         model: Type that was being converted into
+        options (dict): Extra keyword arguments for `convert`, the same ones the
+            call that failed used
 
     Returns:
         tuple[list, Any] | NODEFAULT: (keys, value) with every placeholder
@@ -89,7 +93,7 @@ def _resolve_loc(loc, data, model):
             if type(obj) is not dict or not args:
                 return NODEFAULT
             child_model = args[1]
-            key = _find_failing_dict_value(obj, child_model)
+            key = _find_failing_dict_value(obj, child_model, options)
             if key is NODEFAULT:
                 return NODEFAULT
             keys.append(key)
@@ -102,7 +106,7 @@ def _resolve_loc(loc, data, model):
         if part == '...key':
             if not is_last or type(obj) is not dict or not args:
                 return NODEFAULT
-            key = _find_failing_dict_key(obj, args[0])
+            key = _find_failing_dict_key(obj, args[0], options)
             if key is NODEFAULT:
                 return NODEFAULT
             keys.append(key)
@@ -142,7 +146,7 @@ def _resolve_loc(loc, data, model):
     return keys, value
 
 
-def resolve_error(error, data, model_or_decoder):
+def resolve_error(error, data, model_or_decoder, **kwargs):
     """
     Resolve the dict keys that msgspec leaves as `...` in an error location.
 
@@ -164,8 +168,14 @@ def resolve_error(error, data, model_or_decoder):
             yaml / json / msgpack object. It must be the data before
             validation, not the converted model instance.
         model_or_decoder: The type that was being converted into, or a
-            msgspec.json.Decoder / msgspec.msgpack.Decoder whose `type` is
-            used. A decoder is never used to decode anything here.
+            msgspec.json.Decoder / msgspec.msgpack.Decoder to take `.type`,
+            `.strict` and `.dec_hook` from. A decoder is never used to decode
+            anything here, its options only describe how the data was
+            validated, so the key search sees the same rules.
+        **kwargs: Options of the equivalent `msgspec.convert` call, they
+            override the decoder ones. Pass whatever the failing call passed,
+            e.g. `strict=False`: validation rules decide which entry fails, so
+            a key searched with other rules can point at the wrong entry.
 
     Returns:
         ErrorInfoDetail: `loc` with every `...` / `...key` replaced by the real
@@ -201,9 +211,9 @@ def resolve_error(error, data, model_or_decoder):
     if not isinstance(error, ErrorInfo):
         error = parse_msgspec_error(error)
 
-    model = _get_model(model_or_decoder)
+    model, options = _get_model_options(model_or_decoder, kwargs)
     try:
-        resolved = _resolve_loc(error.loc, data, model)
+        resolved = _resolve_loc(error.loc, data, model, options)
     except Exception:
         # A loc that doesn't match the data / model must not escape, the same
         # contract as tests/repair/test_malformed_loc.py for the repair engine
@@ -242,26 +252,29 @@ def convert_with_error(
 ) -> T_error_result: ...
 
 
-def convert_with_error(data, model_or_decoder):
+def convert_with_error(data, model_or_decoder, **kwargs):
     """
     Convert an in-memory object, returning the first error instead of raising.
 
     A validation failure comes back as an ErrorInfo, a wrong argument (an
-    illegal type hint, a decoder of the other format) still raises TypeError,
-    since that is a caller bug rather than bad data.
+    illegal type hint) still raises TypeError, since that is a caller bug
+    rather than bad data.
 
     Args:
         data (Any): The raw value that failed validation
         model_or_decoder: The target type to convert into, or a msgspec decoder
-            whose `type` is used
+            to take `.type` / `.strict` / `.dec_hook` from
+        **kwargs: Options of the equivalent `msgspec.convert` call (`strict`,
+            `from_attributes`, `dec_hook`, `builtin_types`, `str_keys`), they
+            override the decoder ones
 
     Returns:
         tuple[Any, ErrorInfo | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, error) on failure
     """
-    model = _get_model(model_or_decoder)
+    model, options = _get_model_options(model_or_decoder, kwargs)
     try:
-        return convert(data, type=model), NODEFAULT
+        return convert(data, type=model, **options), NODEFAULT
     except ValidationError as e:
         return NODEFAULT, parse_msgspec_error(e)
 
@@ -398,27 +411,33 @@ def convert_with_error_detail(
 ) -> T_detail_result: ...
 
 
-def convert_with_error_detail(data, model_or_decoder):
+def convert_with_error_detail(data, model_or_decoder, **kwargs):
     """
     Convert an in-memory object, returning the first error with the offending value.
 
-    Nothing is repaired: the data and the error are left untouched.
+    Nothing is repaired: the data and the error are left untouched. The key
+    search uses the same options as the convert call, so a `strict=False` call
+    points at the entry that really failed, not at one the parser rejected for
+    the wrong rules.
 
     Args:
         data (Any): The raw value that failed validation
         model_or_decoder: The target type to convert into, or a msgspec decoder
-            whose `type` is used
+            to take `.type` / `.strict` / `.dec_hook` from
+        **kwargs: Options of the equivalent `msgspec.convert` call (`strict`,
+            `from_attributes`, `dec_hook`, `builtin_types`, `str_keys`), they
+            override the decoder ones
 
     Returns:
         tuple[Any, ErrorInfoDetail | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, detail) on failure
     """
-    model = _get_model(model_or_decoder)
+    model, options = _get_model_options(model_or_decoder, kwargs)
     try:
-        return convert(data, type=model), NODEFAULT
+        return convert(data, type=model, **options), NODEFAULT
     except ValidationError as e:
         error = parse_msgspec_error(e)
-        return NODEFAULT, resolve_error(error, data, model)
+        return NODEFAULT, resolve_error(error, data, model, **options)
 
 
 @overload
@@ -471,6 +490,9 @@ def load_json_with_error_detail(data, model_or_decoder):
     else:
         decoder = None
         model = model_or_decoder
+    # The key search must validate with the rules the payload was decoded
+    # with, a json payload always carries string keys
+    _, options = _get_model_options(model_or_decoder, {'str_keys': True})
 
     try:
         if decoder is None:
@@ -491,7 +513,7 @@ def load_json_with_error_detail(data, model_or_decoder):
             msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
             loc_resolved=not _has_placeholder(error.loc),
         )
-    return NODEFAULT, resolve_error(error, raw, model)
+    return NODEFAULT, resolve_error(error, raw, model, **options)
 
 
 @overload
@@ -544,6 +566,9 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
     else:
         decoder = None
         model = model_or_decoder
+    # The key search must validate with the rules the payload was decoded with,
+    # msgpack keys are not restricted to strings, so `str_keys` stays False
+    _, options = _get_model_options(model_or_decoder, {})
 
     try:
         if decoder is None:
@@ -564,4 +589,4 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
             msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
             loc_resolved=not _has_placeholder(error.loc),
         )
-    return NODEFAULT, resolve_error(error, raw, model)
+    return NODEFAULT, resolve_error(error, raw, model, **options)

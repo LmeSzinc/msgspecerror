@@ -293,6 +293,122 @@ class TestCallerBugRaises:
             load_msgpack_with_error_detail(msgspec.msgpack.encode({'a': 1}), msgspec.json.Decoder(Req))
 
 
+class TestValidationOptions:
+    """The key search validates with the rules the failed call used.
+
+    Validation rules decide which entry fails, so a key searched with other
+    rules points at the wrong entry: `strict=False` accepts the numeric string
+    `'1'` as an int, and a json payload coerces string dict keys.
+    """
+
+    def test_strict_false_decoder_reports_the_real_key(self):
+        class Inner(Struct):
+            a: int
+
+        decoder = msgspec.json.Decoder(Dict[str, Inner], strict=False)
+        payload = b'{"one": {"a": "1"}, "two": {"a": "bad"}}'
+
+        # `one` is accepted by the decoder, only `two` fails
+        assert decoder.decode(b'{"one": {"a": "1"}}') == {'one': Inner(a=1)}
+        detail = assert_failed(load_json_with_error_detail(payload, decoder))
+        assert detail.loc == ('two', 'a')
+        assert detail.error_value == 'bad'
+
+    def test_strict_true_decoder_reports_the_first_key(self):
+        """Without the coercion the first entry fails, so it is the reported one."""
+        class Inner(Struct):
+            a: int
+
+        decoder = msgspec.json.Decoder(Dict[str, Inner])
+        payload = b'{"one": {"a": "1"}, "two": {"a": "bad"}}'
+        detail = assert_failed(load_json_with_error_detail(payload, decoder))
+        assert detail.loc == ('one', 'a')
+        assert detail.error_value == '1'
+
+    def test_json_dict_keys_are_coerced(self):
+        class Inner(Struct):
+            d: Dict[int, int] = {}
+
+        payload = b'{"d": {"1": 5, "x": 1}}'
+        # `'1'` is a valid int key of a json payload, `'x'` is not
+        assert msgspec.json.decode(b'{"d": {"1": 5}}', type=Inner) == Inner(d={1: 5})
+        detail = assert_failed(load_json_with_error_detail(payload, Inner))
+        assert detail.loc == ('d', 'x')
+        assert detail.error_value == 'x'
+
+    def test_json_plain_dict_keys_are_coerced(self):
+        detail = assert_failed(
+            load_json_with_error_detail(b'{"1": 5, "x": 1}', Dict[int, int]))
+        assert detail.loc == ('x',)
+        assert detail.error_value == 'x'
+
+    def test_msgpack_dict_keys_are_not_coerced(self):
+        """Msgpack keys may be any type, a str key is not an int key."""
+        class Inner(Struct):
+            d: Dict[int, int] = {}
+
+        payload = msgspec.msgpack.encode({'d': {'1': 5, 'x': 1}})
+        detail = assert_failed(load_msgpack_with_error_detail(payload, Inner))
+        assert detail.loc == ('d', '1')
+        assert detail.error_value == '1'
+
+    def test_msgpack_int_keys_pass(self):
+        class Inner(Struct):
+            d: Dict[int, int] = {}
+
+        payload = msgspec.msgpack.encode({'d': {1: 5, 'x': 1}})
+        detail = assert_failed(load_msgpack_with_error_detail(payload, Inner))
+        assert detail.loc == ('d', 'x')
+        assert detail.error_value == 'x'
+
+    def test_convert_strict_false(self):
+        class Inner(Struct):
+            a: int
+
+        data = {'one': {'a': '1'}, 'two': {'a': 'bad'}}
+        detail = assert_failed(
+            convert_with_error_detail(data, Dict[str, Inner], strict=False))
+        assert detail.loc == ('two', 'a')
+        assert detail.error_value == 'bad'
+
+    def test_convert_str_keys(self):
+        detail = assert_failed(
+            convert_with_error_detail({'1': 5, 'x': 1}, Dict[int, int], str_keys=True))
+        assert detail.loc == ('x',)
+
+    def test_convert_kwargs_override_the_decoder(self):
+        decoder = msgspec.json.Decoder(Dict[int, int])
+        detail = assert_failed(
+            convert_with_error_detail({'1': 5, 'x': 1}, decoder, str_keys=False))
+        assert detail.loc == ('1',)
+
+    def test_dec_hook_is_reused(self):
+        class Custom:
+            def __init__(self, v):
+                self.v = v
+
+        def dec_hook(typ, obj):
+            if typ is Custom:
+                return Custom(obj)
+            raise NotImplementedError
+
+        class Inner(Struct):
+            c: Custom
+            n: int
+
+        model = Dict[str, Inner]
+        data = {'one': {'c': 1, 'n': 1}, 'two': {'c': 2, 'n': 'bad'}}
+
+        detail = assert_failed(convert_with_error_detail(data, model, dec_hook=dec_hook))
+        assert detail.loc == ('two', 'n')
+        assert detail.error_value == 'bad'
+
+        # Without the hook the first entry looks invalid, the answer is not the
+        # one the caller's call would have produced
+        without_hook = assert_failed(convert_with_error_detail(data, model))
+        assert without_hook.loc == ('one', 'c')
+
+
 class TestConsistencyWithRepair:
     """The resolved location must match the one the repair engine finds."""
 

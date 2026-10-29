@@ -765,3 +765,64 @@ class TestContainerRepair:
         assert result == FixedTupleModel(v=("ok", WithDefaults(a=42, b="good")))
         assert len(errors) == 1
         assert errors[0].loc == ("v", 1, "a")
+
+
+class TestDecoderOptions:
+    """A msgpack decoder carries its options into the repair as well."""
+
+    def test_dec_hook_is_reused(self):
+        def dec_hook(typ, obj):
+            if typ is OptionPoint:
+                return OptionPoint(obj)
+            raise NotImplementedError
+
+        data = _msgpack({"layers": {"one": {"p": [1, 2], "n": 1}, "two": {"p": [3, 4], "n": "xx"}}})
+        decoder = msgspec.msgpack.Decoder(OptionDoc, dec_hook=dec_hook)
+
+        result, errors = load_msgpack_with_default(data, decoder, guess_default=True)
+        assert result == OptionDoc(layers={
+            "one": OptionLayer(p=OptionPoint([1, 2]), n=1),
+            "two": OptionLayer(p=OptionPoint([3, 4]), n=0),
+        })
+        assert [e.loc for e in errors] == [("layers", "two", "n")]
+
+    def test_strict_false_decoder_keeps_a_coerced_value(self):
+        data = _msgpack({"items": {"good": {"n": "1"}, "bad": {"n": "xx"}}})
+        decoder = msgspec.msgpack.Decoder(OptionModel, strict=False)
+
+        result, errors = load_msgpack_with_default(data, decoder, guess_default=True)
+        assert result == OptionModel(items={"good": OptionItem(n=1), "bad": OptionItem(n=0)})
+        assert [e.loc for e in errors] == [("items", "bad", "n")]
+
+
+# --- Models for the decoder option tests ---
+
+class OptionItem(Struct):
+    """A field that a `strict=False` decoder coerces and `convert` does not."""
+    n: int = 0
+
+
+class OptionModel(Struct):
+    items: Dict[str, OptionItem] = {}
+
+
+class OptionPoint:
+    """A custom type that only a `dec_hook` can build."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def __eq__(self, other):
+        return isinstance(other, OptionPoint) and other.value == self.value
+
+    def __repr__(self):
+        return f'OptionPoint({self.value!r})'
+
+
+class OptionLayer(Struct):
+    p: OptionPoint
+    n: int = 0
+
+
+class OptionDoc(Struct):
+    layers: Dict[str, OptionLayer] = {}

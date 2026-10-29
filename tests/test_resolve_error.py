@@ -683,3 +683,49 @@ class TestUnresolvable:
         assert detail.loc == ('a', 'b')
         assert detail.loc_resolved is True
         assert detail.error_value_resolved is False
+
+
+class TestResolveErrorOptions:
+    """`resolve_error` validates with the options of the failed call."""
+
+    def test_strict_false_finds_the_real_key(self):
+        class Inner(Struct):
+            a: int
+
+        model = Dict[str, Inner]
+        data = {'one': {'a': '1'}, 'two': {'a': 'bad'}}
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=('...', 'a'))
+
+        detail = resolve_error(error, data, model, strict=False)
+        assert_invariants(detail)
+        assert detail.loc == ('two', 'a')
+        assert detail.error_value == 'bad'
+
+    def test_without_the_option_the_first_key_fails(self):
+        class Inner(Struct):
+            a: int
+
+        model = Dict[str, Inner]
+        data = {'one': {'a': '1'}, 'two': {'a': 'bad'}}
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=('...', 'a'))
+
+        detail = resolve_error(error, data, model)
+        assert detail.loc == ('one', 'a')
+        assert detail.error_value == '1'
+
+    def test_str_keys_coerces_the_key(self):
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=('...key',))
+        detail = resolve_error(error, {'1': 5, 'x': 1}, Dict[int, int], str_keys=True)
+        assert detail.loc == ('x',)
+
+    def test_a_json_decoder_carries_str_keys(self):
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=('...key',))
+        detail = resolve_error(
+            error, {'1': 5, 'x': 1}, msgspec.json.Decoder(Dict[int, int]))
+        assert detail.loc == ('x',)
+
+    def test_a_msgpack_decoder_does_not(self):
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=('...key',))
+        detail = resolve_error(
+            error, {'1': 5, 'x': 1}, msgspec.msgpack.Decoder(Dict[int, int]))
+        assert detail.loc == ('1',)

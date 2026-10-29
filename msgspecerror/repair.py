@@ -146,20 +146,64 @@ def _resolve_union_member(model_args, part, obj):
     return NODEFAULT
 
 
-def _find_failing_dict_value(obj, value_model):
+def _get_model_options(model_or_decoder, kwargs):
+    """
+    Get the target type and the options of the equivalent convert call.
+
+    A decoder carries the rules it validates with, they become the defaults of
+    the convert call so every re-validation sees the same rules. `str_keys`
+    follows the format: json keys are always strings, msgpack keys may be
+    anything. An explicit keyword argument always wins over a decoder.
+
+    Args:
+        model_or_decoder (type | Decoder): Target type, or a decoder to take
+            `.type` / `.strict` / `.dec_hook` / format from
+        kwargs (dict): Explicit options, they override the decoder ones
+
+    Returns:
+        tuple[Any, dict]: The target type and the convert keyword arguments
+    """
+    cls = type(model_or_decoder)
+    if cls is JsonDecoder:
+        options = {
+            'strict': model_or_decoder.strict,
+            'dec_hook': model_or_decoder.dec_hook,
+            'str_keys': True,
+        }
+        model = model_or_decoder.type
+    elif cls is MsgpackDecoder:
+        options = {
+            'strict': model_or_decoder.strict,
+            'dec_hook': model_or_decoder.dec_hook,
+        }
+        model = model_or_decoder.type
+    else:
+        options = {}
+        model = model_or_decoder
+
+    options.update(kwargs)
+    return model, options
+
+
+def _find_failing_dict_value(obj, value_model, kwargs=None):
     """
     Find the dict entry whose value fails validation.
 
     Args:
         obj (dict): Raw dict to search
         value_model: Typehint of the dict values
+        kwargs (dict): Extra keyword arguments for `convert`, the same ones the
+            failed call used. Validation rules may change which entry fails
+            (`strict=False` accepts a numeric string), so the search has to see
+            exactly the rules the caller's call saw.
 
     Returns:
         Any: The first failing key, or NODEFAULT if no key can be identified
     """
+    kwargs = kwargs or {}
     for key, value in obj.items():
         try:
-            convert(value, type=value_model)
+            convert(value, type=value_model, **kwargs)
         except ValidationError:
             return key
         except TypeError:
@@ -168,20 +212,31 @@ def _find_failing_dict_value(obj, value_model):
     return NODEFAULT
 
 
-def _find_failing_dict_key(obj, key_model):
+def _find_failing_dict_key(obj, key_model, kwargs=None):
     """
     Find the dict key that fails validation.
 
     Args:
         obj (dict): Raw dict to search
         key_model: Typehint of the dict keys
+        kwargs (dict): Extra keyword arguments for `convert`, see
+            `_find_failing_dict_value`
 
     Returns:
         Any: The first failing key, or NODEFAULT if no key can be identified
     """
+    kwargs = kwargs or {}
+    # A key alone can't be validated: `str_keys` only applies to the keys of a
+    # dict, so the key is wrapped back into one. `Dict[key_model, Any]` keeps
+    # the key coercion rules of the model the failed call was using.
+    try:
+        key_dict_model = Dict[key_model, Any]
+    except TypeError:
+        # `key_model` is not a typehint that can be used as a dict key type
+        return NODEFAULT
     for key in obj.keys():
         try:
-            convert(key, type=key_model)
+            convert({key: None}, type=key_dict_model, **kwargs)
         except ValidationError:
             return key
         except TypeError:
@@ -191,7 +246,7 @@ def _find_failing_dict_key(obj, key_model):
 
 
 def _repair_once(
-        raw_obj, model, error: ErrorInfo, guess_default=False
+        raw_obj, model, error: ErrorInfo, guess_default=False, kwargs=None
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
     """
     Args:
@@ -204,6 +259,9 @@ def _repair_once(
             If True, a failing dict value or list item is replaced by a guessed default
                 (e.g. 0 for int, "" for str), falling back to deletion if the type has no
                 guessable default or the guessed value fails validation.
+        kwargs (dict): Options of the equivalent `msgspec.convert` call, the
+            same ones the failed call used, so an entry is judged with the same
+            rules that rejected the input
 
     Returns:
         tuple[Any, ErrorInfo | _NoDefault]: (obj, error) the repaired object and fixed error.
@@ -269,7 +327,7 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
-            failing_key = _find_failing_dict_value(obj, child_model)
+            failing_key = _find_failing_dict_value(obj, child_model, kwargs)
             if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
                 if not _pop_last_collection(last_collection_data, last_collection_key):
@@ -325,7 +383,7 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
-            failing_key = _find_failing_dict_key(obj, key_model)
+            failing_key = _find_failing_dict_key(obj, key_model, kwargs)
             if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
                 if not _pop_last_collection(last_collection_data, last_collection_key):
@@ -480,7 +538,7 @@ def _repair_once(
 
 
 def _handle_obj_repair(
-        raw_obj, model, error: ValidationError, guess_default=False
+        raw_obj, model, error: ValidationError, guess_default=False, kwargs=None
 ) -> "tuple[Any, list[ErrorInfo]]":
     """
     Args:
@@ -488,6 +546,10 @@ def _handle_obj_repair(
         model (type): The target type to decode into.
         error (ValidationError):
         guess_default (bool): Defaults to False, see `_repair_once`
+        kwargs (dict): Options of the equivalent `msgspec.convert` call, used to
+            re-validate the repaired object. A decoder that coerces
+            (`strict=False`) or needs a `dec_hook` would otherwise fight the
+            repair: a value the decoder accepted looks invalid to `convert`.
 
     Returns:
         tuple[any, list[ErrorInfo]]:
@@ -496,7 +558,8 @@ def _handle_obj_repair(
     collected_errors = []
     for _ in range(const.MAXIMUM_REPAIR):
         # repair once
-        raw_obj, error = _repair_once(raw_obj, model, error, guess_default=guess_default)
+        raw_obj, error = _repair_once(
+            raw_obj, model, error, guess_default=guess_default, kwargs=kwargs)
         if error is not NODEFAULT:
             collected_errors.append(error)
 
@@ -506,7 +569,7 @@ def _handle_obj_repair(
 
         # try if all repaired
         try:
-            return convert(raw_obj, model), collected_errors
+            return convert(raw_obj, model, **(kwargs or {})), collected_errors
         except ValidationError as e:
             error = parse_msgspec_error(e)
             # User-code errors (__post_init__, dec_hook, etc.) are wrapped as
@@ -695,6 +758,10 @@ def load_json_with_default(
     else:
         decoder = None
         model = model_or_decoder
+    # A json payload always carries string keys, and the repair has to judge an
+    # entry with the same rules the decoding used, or a value the decoder
+    # accepted (`strict=False`, a `dec_hook`) looks invalid to `convert`
+    _, options = _get_model_options(model_or_decoder, {'str_keys': True})
 
     collected_errors = []
     for _ in range(2):
@@ -717,7 +784,8 @@ def load_json_with_default(
                 else:
                     return _handle_root_error(model, error, guess_default=guess_default)
             # Most errors will enter here
-            raw_obj, new_errors = _handle_obj_repair(raw_obj, model, e, guess_default=guess_default)
+            raw_obj, new_errors = _handle_obj_repair(
+                raw_obj, model, e, guess_default=guess_default, kwargs=options)
             collected_errors.extend(new_errors)
             return raw_obj, collected_errors
         except DecodeError as error:
@@ -828,6 +896,8 @@ def load_msgpack_with_default(
     else:
         decoder = None
         model = model_or_decoder
+    # Msgpack keys are not restricted to strings, so `str_keys` stays False
+    _, options = _get_model_options(model_or_decoder, {})
 
     unicode_errors: List[ErrorInfo] = []
 
@@ -855,7 +925,8 @@ def load_msgpack_with_default(
                 errors.extend(unicode_errors)
                 return result, errors
             # Most errors will enter here
-            return _handle_obj_repair(raw_obj, model, e, guess_default=guess_default)
+            return _handle_obj_repair(
+                raw_obj, model, e, guess_default=guess_default, kwargs=options)
         except DecodeError as error:
             result, errors = _handle_root_error(model, error, guess_default=guess_default)
             errors.extend(unicode_errors)
@@ -902,31 +973,13 @@ def _repair_msgpack_unicode(
     return fixup_msgpack_unicode_slow(data, utf8_error=utf8_error)
 
 
-def _get_model(model_or_decoder):
-    """
-    Get the target type from a model or a msgspec decoder.
-
-    Args:
-        model_or_decoder (type | Decoder): Target type, or a decoder to take
-            `.type` from
-
-    Returns:
-        Any: The target type
-    """
-    # Decoder classes can't be subclassed reliably, an exact type check is
-    # enough and avoids reading a `.type` attribute of an unrelated object
-    cls = type(model_or_decoder)
-    if cls is JsonDecoder or cls is MsgpackDecoder:
-        return model_or_decoder.type
-    return model_or_decoder
-
-
 @overload
 def convert_with_default(
         data: Any,
         model_or_decoder: Type[T],
         *,
         guess_default: bool = ...,
+        **kwargs,
 ) -> Tuple[T, List[ErrorInfo]]: ...
 
 
@@ -936,10 +989,11 @@ def convert_with_default(
         model_or_decoder: "Union[JsonDecoder[T], MsgpackDecoder[T]]",
         *,
         guess_default: bool = ...,
+        **kwargs,
 ) -> Tuple[T, List[ErrorInfo]]: ...
 
 
-def convert_with_default(data, model_or_decoder, *, guess_default=False):
+def convert_with_default(data, model_or_decoder, *, guess_default=False, **kwargs):
     """
     Convert an in-memory object, substituting defaults for fields that fail validation.
 
@@ -952,13 +1006,18 @@ def convert_with_default(data, model_or_decoder, *, guess_default=False):
         model_or_decoder: The target type to convert into, or a msgspec decoder
             whose `type` is used
         guess_default (bool): Defaults to False, see load_json_with_default
+        **kwargs: Options of the equivalent `msgspec.convert` call (`strict`,
+            `from_attributes`, `dec_hook`, `builtin_types`, `str_keys`), they
+            override the decoder ones. The repair re-validates with the same
+            rules, so a value the caller's call accepted is not repaired away.
 
     Returns:
         tuple[Any, List[ErrorInfo]]: (result, errors) validated result and a list
             of collected errors. See load_json_with_default for the details.
     """
-    model = _get_model(model_or_decoder)
+    model, options = _get_model_options(model_or_decoder, kwargs)
     try:
-        return convert(data, type=model), []
+        return convert(data, type=model, **options), []
     except ValidationError as e:
-        return _handle_obj_repair(data, model, e, guess_default=guess_default)
+        return _handle_obj_repair(
+            data, model, e, guess_default=guess_default, kwargs=options)
