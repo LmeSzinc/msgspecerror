@@ -1,7 +1,56 @@
 from enum import Enum
 from typing import Literal, Union
 
+import msgspec
 from msgspec import NODEFAULT, DecodeError, EncodeError, ValidationError
+
+
+def _parse_msgspec_version(version):
+    """
+    Parse the leading numeric components of a msgspec version string.
+
+    Everything after the first `+` (the local version segment) is ignored,
+    and a `dev` suffix is cut from the component it is attached to.
+
+    Args:
+        version (str): Version string, e.g. `0.19.0`, `0.21.2.dev27+gebdc7337a`
+
+    Returns:
+        tuple[int]: At most three leading numeric components, e.g. `(0, 21, 2)`.
+            Missing components are not padded with zeros, because the tuple is
+            compared against a version tuple directly and a shorter tuple sorts
+            before its zero-padded form, so `(0, 19)` < `(0, 19, 0)`.
+    """
+    parts = []
+    for chunk in version.partition('+')[0].split('.'):
+        digits = chunk.partition('dev')[0]
+        # isdecimal, not isdigit: characters like '²' pass isdigit but
+        # make int() raise ValueError
+        if not digits.isdecimal():
+            break
+        parts.append(int(digits))
+        if len(parts) == 3:
+            break
+    return tuple(parts)
+
+
+# The installed msgspec version, parsed once. Every feature flag below is a
+# plain comparison against it, so a new release only needs another threshold
+# here instead of another call to `_parse_msgspec_version()`.
+MSGSPEC_MAJOR_VERSION = _parse_msgspec_version(msgspec.__version__)
+
+# msgspec 0.19 is the first release whose `convert` accepts a `Raw` instance.
+# Before it, a model with a `Raw` field can only be built by decoding a payload,
+# so the repair families need the encode/decode fallback on older versions.
+MSGSPEC_0_19_PLUS = MSGSPEC_MAJOR_VERSION >= (0, 19)
+
+# msgspec 0.22 is the first release that names a `Raw` target `raw` in an error
+# message. Before it, `Raw` shares the typecode of `typing.Any` and is named
+# `any`, and a required TypedDict field or a dataclass field with a
+# `default_factory` is named with an empty string. Both sides are fixed now:
+# a released version never changes its message, so the type name a raw
+# rejection can carry is decided by this flag alone.
+MSGSPEC_0_22_PLUS = MSGSPEC_MAJOR_VERSION >= (0, 22)
 
 # Errors a call into msgspec may raise on bad input. Both codec directions are
 # listed: a bytes payload is decoded to str (UnicodeDecodeError on an invalid
@@ -458,7 +507,7 @@ class ErrorType(str, Enum):
     Note:
         This is an ``msgspecerror``-internal type. It does not correspond
         to any msgspec ``ValidationError`` message.
-    
+
     Format: "Input rejected: too many repair cycles"
     Triggered by: input repaired >100 times, but still fails
 
