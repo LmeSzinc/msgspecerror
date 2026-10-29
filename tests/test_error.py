@@ -272,6 +272,53 @@ class TestRawRejectionGate:
         assert error.ctx.may_raw_rejection is False
 
 
+class TestEmptyExpectedName:
+    """
+    `Expected ``, got `object`` keeps the name the message holds, an empty one.
+
+    msgspec leaves the type name empty before 0.22 when a `Raw` field carries
+    metadata (a required `TypedDict` field, a dataclass field with a
+    `default_factory`). The parser extracts whatever sits between the backticks,
+    so the context carries an empty string, not a missing name. Only a message
+    with no name at all, such as a structural error, leaves it at None.
+    """
+
+    @pytest.mark.parametrize("msg, got", [
+        ("Expected ``, got `object` - at `$.payload`", "object"),
+        ("Expected ``, got `str`", "str"),
+        ("Expected ``, got `int` - at `$[0]`", "int"),
+        ("Expected ``, got `null` - at `$.items[...]`", "null"),
+    ])
+    def test_the_empty_name_is_an_empty_string(self, msg, got):
+        err = get_error_type(msg)
+        assert err.type is ErrorType.TYPE_MISMATCH
+        assert err.ctx.expected == ''
+        assert err.ctx.expected is not None
+        assert err.ctx.got == got
+
+    @pytest.mark.parametrize("msg", [
+        # a structural error has no `Expected ...` block at all
+        "Object missing required field `payload` - at `$`",
+        "Object contains unknown field `extra` - at `$.config`",
+        # a wrapped user-code error keeps whatever the hook wrote
+        "passwords cannot be the same - at `$`",
+        # an error message with an unbalanced backtick
+        "Expected `int, got `str`",
+    ])
+    def test_a_message_without_a_name_has_no_expected(self, msg):
+        err = get_error_type(msg)
+        assert err.ctx.expected is None
+
+    def test_an_empty_name_is_not_a_missing_name(self):
+        """The two are different values, so they must not compare equal."""
+        empty = get_error_type("Expected ``, got `str`").ctx
+        missing = get_error_type("Object contains unknown field `x` - at `$`").ctx
+
+        assert empty.expected == ''
+        assert missing.expected is None
+        assert empty != missing
+
+
 class TestUserCodeErrorsByCause:
     """
     `parse_msgspec_error()` reads the exception cause before the message.
