@@ -338,8 +338,8 @@ class TestRawRejectionReal:
         assert err.ctx.expected == self.RAW
         assert err.ctx.may_raw_rejection is True
 
-    def test_a_user_hook_message_can_mimic_the_shape(self):
-        """Known limit: msgspec does not mark a wrapped user-code error."""
+    def test_a_user_hook_message_does_not_mimic_the_shape(self):
+        """msgspec marks a wrapped user-code error with its cause."""
 
         class Token:
             def __init__(self, value):
@@ -351,8 +351,9 @@ class TestRawRejectionReal:
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(b'"abc"', type=Token, dec_hook=dec_hook)
         err = parse_msgspec_error(exc_info.value)
-        assert err.type == ErrorType.TYPE_MISMATCH
-        assert err.ctx.may_raw_rejection is True
+        assert err.ctx.expected is None
+        assert err.ctx.may_raw_rejection is False
+        assert err.type == ErrorType.WRAPPED_ERROR
 
     def test_a_plain_type_mismatch_is_not_raw_shaped(self):
         """The common case stays cheap: no raw candidate at all."""

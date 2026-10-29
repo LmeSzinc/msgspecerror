@@ -4,12 +4,14 @@ Comprehensive tests for get_error_type().
 Tests every ErrorType member defined in const.py against raw error message
 strings, covering all message variants and constraints formats.
 """
+from typing import Dict
+
 import msgspec
 import pytest
 
 from msgspecerror.const import MSGSPEC_0_22_PLUS, ErrorType, _parse_msgspec_version
 from msgspecerror.parse_ctx import ErrorCtx
-from msgspecerror.parse_error import ErrorInfo, get_error_type
+from msgspecerror.parse_error import ErrorInfo, get_error_type, parse_msgspec_error
 
 # ------------------------------------------------------------------
 # Helper
@@ -89,7 +91,8 @@ class TestMayRawRejection:
     A released msgspec never changes its message, so the version decides which
     names are possible, see `MSGSPEC_0_22_PLUS`. The flag is set while the
     message is classified, it is a candidate rather than a verdict: the
-    typehint at `loc` still has to be checked, see `TestRawFalsePositiveGuard`.
+    typehint at `loc` still has to be checked against the model: a `Raw` in a
+    union reports the name of the member that rejected the value.
     """
 
     # The type name a raw target gets on the installed msgspec version
@@ -132,13 +135,11 @@ class TestMayRawRejection:
         """These are False whatever the msgspec version is."""
         assert get_error_type(msg).ctx.may_raw_rejection is False
 
-    def test_a_user_message_can_mimic_the_shape(self):
+    def test_a_bare_string_can_mimic_the_shape(self):
         """
-        Known limit: msgspec wraps user-code errors without marking them, so a
-        `dec_hook` / `__post_init__` that raises with the same text is
-        indistinguishable from msgspec's own message. Only the model check can
-        reject it, and user code never runs at a raw field, which is why the
-        false positive does not reach the repair.
+        A message alone cannot tell who wrote it, so a raw-shaped string is a
+        candidate. `parse_msgspec_error()` rules out user code by the exception
+        cause, see `TestUserCodeErrorsByCause`: only a string is shape-read.
         """
         info = get_error_type(f"Expected `{self.RAW}`, got `int` - at `$.payload`")
 
@@ -181,6 +182,100 @@ class TestRawMessageVersionGate:
     def test_the_flag_follows_the_installed_version(self):
         installed = _parse_msgspec_version(msgspec.__version__)
         assert MSGSPEC_0_22_PLUS == (installed >= (0, 22))
+
+
+class TestUserCodeErrorsByCause:
+    """
+    `parse_msgspec_error()` reads the exception cause before the message.
+
+    msgspec wraps a `ValueError` / `TypeError` from user code in a
+    `ValidationError` and sets the original as `__cause__`, see
+    `ms_maybe_wrap_validation_error()`. The wrapped message is the user's own
+    text, so it is reported as `WRAPPED_ERROR` whatever it looks like. Only a
+    message without a cause is classified by its shape.
+    """
+
+    # Messages that carry another type when they are read by shape
+    SHAPED = [
+        ('Expected `int`, got `str` - at `$.age`', ErrorType.TYPE_MISMATCH),
+        ('Expected `str` - at `$.kind`', ErrorType.TOKEN_TYPE_MISMATCH),
+        ('Invalid enum value 3 - at `$.type`', ErrorType.INVALID_ENUM_VALUE),
+        ('Invalid value 3 - at `$.type`', ErrorType.INVALID_TAG_VALUE),
+        ('Object missing required field `id`', ErrorType.MISSING_FIELD),
+        ('JSON is malformed: invalid character (byte 0)', ErrorType.JSON_MALFORMED),
+    ]
+
+    @staticmethod
+    def wrapped(message, cause):
+        """Build the exception msgspec builds for a user-code error."""
+        try:
+            raise msgspec.ValidationError(message) from cause
+        except msgspec.ValidationError as e:
+            return e
+
+    @pytest.mark.parametrize('message, shape_type', SHAPED)
+    def test_a_caused_message_is_wrapped(self, message, shape_type):
+        error = self.wrapped(message, ValueError('user code'))
+
+        info = parse_msgspec_error(error)
+
+        assert info.type is ErrorType.WRAPPED_ERROR
+        assert info.msg == message
+        assert info.ctx == ErrorCtx()
+        # the same text without a cause keeps its shape type
+        assert get_error_type(message).type is shape_type
+
+    @pytest.mark.parametrize('cause', [ValueError('bad value'), TypeError('bad type')])
+    def test_both_wrapped_exception_types(self, cause):
+        """ms_maybe_wrap_validation_error() wraps ValueError and TypeError."""
+        error = self.wrapped('Expected `int`, got `str`', cause)
+
+        assert parse_msgspec_error(error).type is ErrorType.WRAPPED_ERROR
+
+    def test_a_caused_message_is_not_raw_shaped(self):
+        """A hook that writes a raw-shaped message is not a raw field rejection."""
+        message = "Expected `raw`, got `int` - at `$.payload`"
+        info = parse_msgspec_error(self.wrapped(message, ValueError('user code')))
+
+        assert info.type is ErrorType.WRAPPED_ERROR
+        assert info.ctx.expected is None
+        assert info.ctx.may_raw_rejection is False
+
+    def test_the_location_is_still_parsed(self):
+        """A wrapped message keeps the path msgspec appended to it."""
+        message = 'Expected `int`, got `str` - at `$.user.profile.age`'
+        info = parse_msgspec_error(self.wrapped(message, ValueError('user code')))
+
+        assert info.type is ErrorType.WRAPPED_ERROR
+        assert info.loc == ('user', 'profile', 'age')
+
+    def test_a_message_without_a_cause_keeps_its_shape(self):
+        """msgspec's own errors carry no cause."""
+        try:
+            msgspec.json.decode(b'{"age": "x"}', type=Dict[str, int])
+        except msgspec.ValidationError as e:
+            info = parse_msgspec_error(e)
+        else:  # pragma: no cover - the decode has to fail
+            raise AssertionError('the decode should have failed')
+
+        assert info.type is ErrorType.TYPE_MISMATCH
+        assert info.ctx.expected == 'int'
+
+    def test_a_plain_string_is_read_by_shape(self):
+        """A string has no cause to read."""
+        info = parse_msgspec_error('Expected `int`, got `str` - at `$.age`')
+
+        assert info.type is ErrorType.TYPE_MISMATCH
+        assert info.ctx.expected == 'int'
+
+    def test_a_suppressed_cause_is_not_a_wrapped_error(self):
+        """`raise ... from None` leaves no cause, so the shape is used."""
+        try:
+            raise msgspec.ValidationError('Expected `int`, got `str`') from None
+        except msgspec.ValidationError as e:
+            info = parse_msgspec_error(e)
+
+        assert info.type is ErrorType.TYPE_MISMATCH
 
 
 class TestTokenTypeMismatch:

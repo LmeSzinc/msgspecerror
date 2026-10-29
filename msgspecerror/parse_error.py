@@ -314,7 +314,9 @@ def parse_msgspec_error(error: Union[str, Exception]) -> ErrorInfo:
 
     Args:
         error (str | Exception): The raw error message or a
-            msgspec.ValidationError instance.
+            msgspec.ValidationError instance. An exception carrying a `__cause__`
+            is a message from user code wrapped by msgspec, so it is reported as
+            `WRAPPED_ERROR` rather than classified by its text.
 
     Returns:
         ErrorInfo: Structured error with type, location, and context.
@@ -352,6 +354,15 @@ def parse_msgspec_error(error: Union[str, Exception]) -> ErrorInfo:
             type=<ErrorType.NUMERIC_CONSTRAINT>, ge=18
     """
     msg = str(error)
-    result = get_error_type(msg)
+    # msgspec wraps a ValueError / TypeError raised by user code in a
+    # `ValidationError` and sets the original exception as the cause, see
+    # `ms_maybe_wrap_validation_error()`. Such a message is the user's own text,
+    # not one of msgspec's, so classifying it by its shape would be wrong: a
+    # `dec_hook` that raises `ValueError('Expected `raw`, got `int`')` must not
+    # be read as a raw field rejection.
+    if getattr(error, '__cause__', None) is not None:
+        result = ErrorInfo(msg=msg, type=ErrorType.WRAPPED_ERROR)
+    else:
+        result = get_error_type(msg)
     result.loc = get_error_path(msg)
     return result

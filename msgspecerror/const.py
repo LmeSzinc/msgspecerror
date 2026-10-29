@@ -393,6 +393,11 @@ class ErrorType(str, Enum):
     Triggered by: `msgspec` catches a `TypeError` or `ValueError` from user code
                  (e.g., in a `dec_hook`, `__post_init__`, or a custom type's
                  `__init__`) and wraps it in a `ValidationError`.
+
+    Detected by the exception cause: `ms_maybe_wrap_validation_error()` sets the
+    original exception as `__cause__`, so `parse_msgspec_error()` reads this
+    type from the exception object. The wrapped message is the user's own text
+    and is never classified by its shape, whatever it looks like.
     """
 
     UNICODE_DECODE_ERROR = 'UNICODE_DECODE_ERROR'

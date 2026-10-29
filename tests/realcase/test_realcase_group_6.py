@@ -18,7 +18,7 @@ import msgspec.msgpack
 import pytest
 
 from msgspecerror import ErrorCtx, parse_msgspec_error
-from msgspecerror.const import ErrorType
+from msgspecerror.const import MSGSPEC_0_22_PLUS, ErrorType
 
 
 class TestWrappedErrorReal:
@@ -118,6 +118,85 @@ class TestWrappedErrorReal:
         assert err.type == ErrorType.WRAPPED_ERROR
         assert err.loc == ("...",)
         assert err.ctx == ErrorCtx()
+
+
+class TestUserCodeMessageReal:
+    """
+    A message written by user code is not classified by its text.
+
+    msgspec wraps the original exception and sets it as `__cause__`, so
+    `parse_msgspec_error()` reports `WRAPPED_ERROR` even when the text looks
+    exactly like one of msgspec's own messages.
+    """
+
+    # The type name a `msgspec.Raw` target gets on the installed version
+    RAW = 'raw' if MSGSPEC_0_22_PLUS else 'any'
+
+    def test_dec_hook_with_a_raw_shaped_message(self):
+        """A hook error must not be read as a raw field rejection."""
+
+        class Token:
+            def __init__(self, value):
+                self.value = value
+
+        def dec_hook(type, obj):
+            raise ValueError(f'Expected `{self.RAW}`, got `str`')
+
+        with pytest.raises(msgspec.ValidationError) as exc_info:
+            msgspec.json.decode(b'"abc"', type=Token, dec_hook=dec_hook)
+        err = parse_msgspec_error(exc_info.value)
+
+        assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.msg == f'Expected `{self.RAW}`, got `str`'
+        assert err.ctx.expected is None
+        assert err.ctx.may_raw_rejection is False
+
+    def test_post_init_with_a_type_mismatch_message(self):
+        """The same for a `__post_init__` that fails with msgspec-like text."""
+
+        class Amount(msgspec.Struct):
+            value: int
+
+            def __post_init__(self):
+                raise ValueError('Expected `int`, got `str` - at `$.value`')
+
+        with pytest.raises(msgspec.ValidationError) as exc_info:
+            msgspec.json.decode(b'{"value": 1}', type=Amount)
+        err = parse_msgspec_error(exc_info.value)
+
+        assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.ctx.expected is None
+        assert err.loc == ('value',)
+
+    def test_dec_hook_with_a_plain_message(self):
+        """The ordinary case still works the same way."""
+
+        class Money:
+            pass
+
+        def dec_hook(type, obj):
+            raise ValueError('amount must be positive')
+
+        with pytest.raises(msgspec.ValidationError) as exc_info:
+            msgspec.json.decode(b'"-1"', type=Money, dec_hook=dec_hook)
+        err = parse_msgspec_error(exc_info.value)
+
+        assert err.type == ErrorType.WRAPPED_ERROR
+        assert err.ctx == ErrorCtx()
+
+    def test_a_native_error_keeps_its_shape(self):
+        """The control: no user code runs, so the message is msgspec's own."""
+
+        class Amount(msgspec.Struct):
+            value: int
+
+        with pytest.raises(msgspec.ValidationError) as exc_info:
+            msgspec.json.decode(b'{"value": "x"}', type=Amount)
+        err = parse_msgspec_error(exc_info.value)
+
+        assert err.type == ErrorType.TYPE_MISMATCH
+        assert err.ctx.expected == 'int'
+        assert err.loc == ('value',)
 
 
 class TestUnicodeDecodeErrorReal:
