@@ -376,7 +376,7 @@ class TestRawShapeFalsePositivesReal:
 
     RAW = 'raw' if MSGSPEC_0_22_PLUS else 'any'
 
-    def test_a_raw_dict_key_is_raw_shaped_but_not_a_raw_field(self):
+    def test_a_raw_dict_key_is_not_a_raw_field(self):
         """`dict[Raw, int]` reports the key, and a key can not hold bytes."""
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.json.decode(b'{"a": 1}', type=Dict[msgspec.Raw, int])
@@ -384,8 +384,9 @@ class TestRawShapeFalsePositivesReal:
         assert err.type == ErrorType.TYPE_MISMATCH
         assert err.loc == ('...key',)
         assert err.ctx.expected == self.RAW
-        # shaped like a raw field, but the location is a key
-        assert err.ctx.may_raw_rejection is True
+        # the message names a raw type, but the location is a key: the decoder
+        # rejects it by itself, so it is not the convert artifact
+        assert err.ctx.may_raw_rejection is False
 
     def test_a_null_check_on_optional_raw_is_a_real_error(self):
         """`Optional[Raw]` means `null`, the decoder rejects the object as well."""

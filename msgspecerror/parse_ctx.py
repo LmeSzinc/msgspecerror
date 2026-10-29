@@ -23,8 +23,10 @@ class ErrorCtx(Struct, omit_defaults=True):
     max_length: Optional[int] = None
     tz: Optional[bool] = None
     # True when the message can be a rejected `msgspec.Raw`, set by `_make_error()`.
-    # It is only a candidate: the typehint at the error location still has to be
-    # checked against the model.
+    # It is only a candidate: it says the type name in the message can name a raw
+    # target, not where the message came from. `convert` rejects an already
+    # decoded object at a raw field, while the typed decoder takes the payload
+    # bytes there, so the caller has to supply that direction.
     may_raw_rejection: bool = False
 
     def _iter_repr_fields(self):

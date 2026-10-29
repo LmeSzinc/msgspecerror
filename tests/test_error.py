@@ -184,6 +184,94 @@ class TestRawMessageVersionGate:
         assert MSGSPEC_0_22_PLUS == (installed >= (0, 22))
 
 
+class TestRawRejectionGate:
+    """
+    `ErrorCtx.may_raw_rejection` is the whole message-level decision.
+
+    `msgspec.Raw` has no type bit of its own, so only a raw target can put these
+    names in a message, and a `Raw` used as a dict key type reports at the key,
+    which is always a real error. The direction is left to the caller: only
+    `convert` rejects an already decoded object at a raw field.
+    """
+
+    # The type name a raw target gets on the installed msgspec version
+    RAW = 'raw' if MSGSPEC_0_22_PLUS else 'any'
+
+    @pytest.mark.parametrize("got", ['object', 'str', 'int', 'null', 'array'])
+    def test_a_raw_field_rejection_is_marked(self, got):
+        """`convert` refuses the decoded object where the decoder took bytes."""
+        error = parse_msgspec_error(f'Expected `{self.RAW}`, got `{got}` - at `$.payload`')
+
+        assert error.ctx.may_raw_rejection is True
+
+    def test_a_raw_dict_key_is_not_marked(self):
+        """`dict[Raw, int]` reports at the key, and a key can not hold bytes."""
+        error = parse_msgspec_error(f'Expected `{self.RAW}`, got `str` - at `key` in `$`')
+
+        assert error.loc == ('...key',)
+        assert error.ctx.may_raw_rejection is False
+
+    def test_a_nested_raw_dict_key_is_not_marked(self):
+        error = parse_msgspec_error(f'Expected `{self.RAW}`, got `str` - at `key` in `$.map`')
+
+        assert error.ctx.may_raw_rejection is False
+
+    @pytest.mark.parametrize('suffix', ['$', '$.map', '$[...]', '$[0]', '$.a.b'])
+    def test_every_key_location_form_is_excluded(self, suffix):
+        """A key sits at the end of the path, wherever the dict is."""
+        error = parse_msgspec_error(f'Expected `{self.RAW}`, got `str` - at `key` in `{suffix}`')
+
+        assert error.loc[-1] == '...key'
+        assert error.ctx.may_raw_rejection is False
+
+    def test_the_location_decides_not_the_message_text(self):
+        """`get_error_type()` is given the parsed loc, it does not re-read the text."""
+        msg = f'Expected `{self.RAW}`, got `str` - at `key` in `$.map`'
+
+        assert get_error_type(msg, ('map', 'value')).ctx.may_raw_rejection is True
+        assert get_error_type(msg, ('map', '...key')).ctx.may_raw_rejection is False
+
+    def test_a_missing_location_is_parsed_for_a_type_mismatch(self):
+        """The default path still decides exactly, and keeps `loc` empty."""
+        info = get_error_type(f'Expected `{self.RAW}`, got `str` - at `key` in `$`')
+
+        assert info.loc == ()
+        assert info.ctx.may_raw_rejection is False
+
+    def test_a_field_named_key_is_marked(self):
+        """Only the `key` in `$` form is a key, `$.key` is a plain field."""
+        error = parse_msgspec_error(f'Expected `{self.RAW}`, got `object` - at `$.key`')
+
+        assert error.ctx.may_raw_rejection is True
+
+    def test_a_non_raw_field_is_not_marked(self):
+        """A sibling field reports a concrete type."""
+        error = parse_msgspec_error('Expected `int`, got `str` - at `$.n`')
+
+        assert error.ctx.may_raw_rejection is False
+
+    def test_a_null_check_on_optional_raw_is_not_marked(self):
+        """`Optional[Raw]` means `null`, the decoder rejects the object as well."""
+        error = parse_msgspec_error('Expected `null`, got `int` - at `$.payload`')
+
+        assert error.ctx.may_raw_rejection is False
+
+    def test_a_union_member_error_is_not_marked(self):
+        """`Union[Raw, int]` names the member that rejected the value."""
+        error = parse_msgspec_error('Expected `int`, got `object` - at `$.v`')
+
+        assert error.ctx.may_raw_rejection is False
+
+    @pytest.mark.parametrize('flag', [True, False])
+    def test_the_name_of_the_other_version_is_not_accepted(self, monkeypatch, flag):
+        """The two name sets never overlap, whatever the installed version is."""
+        monkeypatch.setattr('msgspecerror.parse_error.MSGSPEC_0_22_PLUS', flag)
+        other = 'any' if flag else 'raw'
+        error = parse_msgspec_error(f'Expected `{other}`, got `object` - at `$.payload`')
+
+        assert error.ctx.may_raw_rejection is False
+
+
 class TestUserCodeErrorsByCause:
     """
     `parse_msgspec_error()` reads the exception cause before the message.

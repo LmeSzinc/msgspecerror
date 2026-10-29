@@ -82,14 +82,23 @@ def _extract_got(remain):
     return None
 
 
-def _make_error(error, error_type, ctx=NODEFAULT, expected=None):
+def _make_error(error, error_type, ctx=NODEFAULT, expected=None, loc=None):
     """
     Create an ErrorInfo with the given message, type, optional ctx, and expected.
 
     A type mismatch whose expected type name can name a `msgspec.Raw` is marked
-    with `ctx.may_raw_rejection`. The flag is a candidate only: the typehint at
-    the error location still has to be checked against the model, because a
-    `Raw` in a union reports the name of the member that rejected the value.
+    with `ctx.may_raw_rejection`, and the flag is the whole message-level answer:
+
+    - `Raw` has no type bit of its own, so only a raw target puts `raw`, `any` or
+      an empty name in a message. A `Raw` in a union reports the name of the
+      member that rejected the value, which is never one of those, so a union
+      does not need to be looked at.
+    - A dict key is the `str` taken from the payload and can never hold raw
+      bytes, so a location that ends at a key is excluded.
+
+    What the message cannot say is where it came from: `convert` rejects an
+    already decoded object at a raw field, while the typed decoder takes the
+    payload bytes there. The caller supplies that direction.
 
     Args:
         error (str): The raw error message.
@@ -99,6 +108,9 @@ def _make_error(error, error_type, ctx=NODEFAULT, expected=None):
         expected (str | None): The expected type name, None when the message has
             no name to extract. An empty name is kept as an empty string, because
             that is what the message actually holds between the backticks.
+        loc (tuple | None): Parsed error location, from `get_error_path()`. Only
+            a type mismatch looks at it. Defaults to None, no location is known and
+            the key form is then not excluded.
 
     Returns:
         ErrorInfo
@@ -115,24 +127,35 @@ def _make_error(error, error_type, ctx=NODEFAULT, expected=None):
     # and is named `any`, and a field carrying metadata has no name at all. The
     # sets do not overlap, an empty name is only accepted from the versions that
     # can produce it.
+    # `dict[Raw, int]` reports its key, and a key is the `str` the decoder took
+    # from the payload, never a raw field: the decoder rejects that key by
+    # itself, so the message is a real error.
     # A miss leaves the flag alone: a Struct default is materialized on access,
     # so writing False here would create an `ErrorCtx` that was never there.
-    if error_type is ErrorType.TYPE_MISMATCH:
-        if MSGSPEC_0_22_PLUS:
-            if expected == 'raw':
-                err.ctx.may_raw_rejection = True
-        else:
-            if expected == 'any' or expected == '':
-                err.ctx.may_raw_rejection = True
+    if error_type is not ErrorType.TYPE_MISMATCH or expected is None:
+        return err
+    if loc is not None and PLACEHOLDER_KEY in loc:
+        return err
+    if MSGSPEC_0_22_PLUS:
+        hit = expected == 'raw'
+    else:
+        hit = expected == 'any' or expected == ''
+    if hit:
+        err.ctx.may_raw_rejection = True
     return err
 
 
-def get_error_type(error):
+def get_error_type(error, loc=None):
     """
     Parse error message and return ErrorInfo with type and context set.
 
     Args:
-        error (str):
+        error (str): The error message
+        loc (tuple | None): Parsed error location, from `get_error_path()`. Used
+            to tell a dict key from a field when a type mismatch is classified,
+            which is what `ErrorCtx.may_raw_rejection` needs. When None it is
+            parsed here, and only for a type mismatch. The returned `ErrorInfo`
+            keeps `loc` empty, the caller sets it.
 
     Returns:
         ErrorInfo: Result with type and ctx set, loc is an empty tuple.
@@ -168,8 +191,12 @@ def get_error_type(error):
         # Expected `int`, got `str`
         if remain.startswith(KEY_got):
             got_val = _extract_got(remain)
+            if loc is None:
+                # The raw flag needs the path: a dict key can name a raw type
+                # and still be a real error
+                loc = get_error_path(error)
             # `expected` goes into `_make_error`, it decides the raw flag
-            err = _make_error(error, ErrorType.TYPE_MISMATCH, expected=expected)
+            err = _make_error(error, ErrorType.TYPE_MISMATCH, expected=expected, loc=loc)
             if got_val:
                 err.ctx.got = got_val
             return err
@@ -354,6 +381,9 @@ def parse_msgspec_error(error: Union[str, Exception]) -> ErrorInfo:
             type=<ErrorType.NUMERIC_CONSTRAINT>, ge=18
     """
     msg = str(error)
+    # The path is parsed once and handed over, so the raw flag is decided on the
+    # same location the caller sees
+    loc = get_error_path(msg)
     # msgspec wraps a ValueError / TypeError raised by user code in a
     # `ValidationError` and sets the original exception as the cause, see
     # `ms_maybe_wrap_validation_error()`. Such a message is the user's own text,
@@ -363,6 +393,6 @@ def parse_msgspec_error(error: Union[str, Exception]) -> ErrorInfo:
     if getattr(error, '__cause__', None) is not None:
         result = ErrorInfo(msg=msg, type=ErrorType.WRAPPED_ERROR)
     else:
-        result = get_error_type(msg)
-    result.loc = get_error_path(msg)
+        result = get_error_type(msg, loc)
+    result.loc = loc
     return result
