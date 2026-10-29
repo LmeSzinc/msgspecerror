@@ -45,13 +45,17 @@ class TestErrorCtx:
         assert repr(ctx) == "ErrorCtx(ge=18, pattern='abc', max_length=32)"
 
     def test_field_order_consistency(self):
-        """Repr field order is consistent: gt, ge, lt, le, multiple_of, pattern, min_length, max_length, tz"""
+        """Repr field order is consistent: gt, ge, lt, le, multiple_of, pattern, min_length, max_length, tz, may_raw_rejection"""
         ctx = ErrorCtx(
             ge=10, le=20, gt=5, lt=25,
-            pattern='test', min_length=1, max_length=100, multiple_of=3, tz=True,
+            pattern='test', min_length=1, max_length=100, multiple_of=3, tz=True, may_raw_rejection=True,
         )
-        # The order is: gt, ge, lt, le, multiple_of, pattern, min_length, max_length, tz
-        expected = 'ErrorCtx(gt=5, ge=10, lt=25, le=20, multiple_of=3, pattern=\'test\', min_length=1, max_length=100, tz=True)'
+        # The order is: gt, ge, lt, le, multiple_of, pattern, min_length, max_length, tz,
+        # may_raw_rejection (the bool flag is shown last, and only when set)
+        expected = (
+            "ErrorCtx(gt=5, ge=10, lt=25, le=20, multiple_of=3, pattern='test', min_length=1, max_length=100, "
+            "tz=True, may_raw_rejection=True)"
+        )
         assert repr(ctx) == expected
 
     def test_equality(self):
@@ -92,10 +96,15 @@ class TestErrorCtx:
         """The raw flag is off unless `_make_error()` sets it."""
         assert ErrorCtx().may_raw_rejection is False
 
-    def test_may_raw_rejection_is_not_in_repr(self):
-        """It is an internal hint, the repr keeps the parsed values only."""
+    def test_may_raw_rejection_shows_in_repr_when_set(self):
+        """The flag is worth seeing: it changes how the error is read."""
         ctx = ErrorCtx(expected='any', got='str', may_raw_rejection=True)
-        assert repr(ctx) == "ErrorCtx(expected='any', got='str')"
+        assert repr(ctx) == "ErrorCtx(expected='any', got='str', may_raw_rejection=True)"
+
+    def test_may_raw_rejection_is_hidden_in_repr_when_unset(self):
+        """A False default stays out, like the other None defaults."""
+        assert repr(ErrorCtx()) == 'ErrorCtx()'
+        assert repr(ErrorCtx(expected='int', got='str')) == "ErrorCtx(expected='int', got='str')"
 
     def test_may_raw_rejection_is_omitted_when_false(self):
         """omit_defaults keeps the serialized form unchanged while it is False."""

@@ -24,7 +24,7 @@ class ErrorCtx(Struct, omit_defaults=True):
     tz: Optional[bool] = None
     # True when the message can be a rejected `msgspec.Raw`, set by `_make_error()`.
     # It is only a candidate: the typehint at the error location still has to be
-    # checked against the model. Kept out of the repr, it is an internal hint.
+    # checked against the model.
     may_raw_rejection: bool = False
 
     def _iter_repr_fields(self):
@@ -35,6 +35,9 @@ class ErrorCtx(Struct, omit_defaults=True):
             value = getattr(self, key, None)
             if value is not None:
                 yield f'{key}={value!r}'
+        # A bool default is False, so only the set flag is worth showing
+        if self.may_raw_rejection:
+            yield f'may_raw_rejection={self.may_raw_rejection!r}'
 
     def __repr__(self):
         attrs_str = ', '.join(self._iter_repr_fields())
