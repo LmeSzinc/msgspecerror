@@ -2,7 +2,7 @@ from typing import Any, Tuple, Union
 
 from msgspec import NODEFAULT, UNSET, Struct, field
 
-from .const import ErrorType, MSGSPEC_0_22_PLUS
+from .const import MSGSPEC_0_22_PLUS, ErrorType
 from .parse_ctx import ErrorCtx, KEY_got, get_length_ctx, get_number_ctx, get_pattern_ctx
 from .parse_path import KEY_at, KEY_at_check, KEY_at_key_in, get_error_path
 
@@ -96,7 +96,9 @@ def _make_error(error, error_type, ctx=NODEFAULT, expected=None):
         error_type (ErrorType): The classified error type.
         ctx (ErrorCtx | Type[NODEFAULT]): Pre-built context object to attach.
             When NODEFAULT, the default ErrorCtx() from ErrorInfo is used.
-        expected (str | None): The expected type name. Only set when non-empty.
+        expected (str | None): The expected type name, None when the message has
+            no name to extract. An empty name is kept as an empty string, because
+            that is what the message actually holds between the backticks.
 
     Returns:
         ErrorInfo
@@ -105,7 +107,7 @@ def _make_error(error, error_type, ctx=NODEFAULT, expected=None):
         err = ErrorInfo(msg=error, type=error_type, ctx=ctx)
     else:
         err = ErrorInfo(msg=error, type=error_type)
-    if expected:
+    if expected is not None:
         err.ctx.expected = expected
     # A raw field always reports through `Expected ..., got ...`, so only a type
     # mismatch can be a raw rejection. `Raw` has no type bit of its own: 0.22 and
@@ -120,7 +122,7 @@ def _make_error(error, error_type, ctx=NODEFAULT, expected=None):
             if expected == 'raw':
                 err.ctx.may_raw_rejection = True
         else:
-            if not expected or expected == 'any':
+            if expected == 'any' or expected == '':
                 err.ctx.may_raw_rejection = True
     return err
 

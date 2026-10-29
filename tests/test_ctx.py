@@ -107,6 +107,18 @@ class TestErrorCtx:
         assert ErrorCtx(may_raw_rejection=True) != ErrorCtx()
         assert ErrorCtx(may_raw_rejection=True) == ErrorCtx(may_raw_rejection=True)
 
+    def test_empty_expected_is_a_value(self):
+        """An empty type name is what the message holds, not a missing name."""
+        ctx = ErrorCtx(expected='')
+        assert ctx.expected == ''
+        assert repr(ctx) == "ErrorCtx(expected='')"
+        assert ctx != ErrorCtx()
+
+    def test_empty_expected_is_serialized(self):
+        """Only None is the default, so an empty name survives the encoding."""
+        assert msgspec.json.encode(ErrorCtx(expected='')) == b'{"expected":""}'
+        assert msgspec.json.encode(ErrorCtx()) == b'{}'
+
 
 class TestGetPatternCtx:
     """Tests for get_pattern_ctx — extracts the regex pattern from error context strings.

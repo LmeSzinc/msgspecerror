@@ -61,6 +61,9 @@ class TestTypeMismatch:
          ErrorCtx(expected="raw", got="int", may_raw_rejection=MSGSPEC_0_22_PLUS)),
         ("Expected `raw`, got `str`",
          ErrorCtx(expected="raw", got="str", may_raw_rejection=MSGSPEC_0_22_PLUS)),
+        # an empty type name is kept as an empty string, it is not a missing name
+        ("Expected ``, got `object` - at `$.payload`",
+         ErrorCtx(expected="", got="object", may_raw_rejection=not MSGSPEC_0_22_PLUS)),
         # msgspec >= 0.22.0: a bool literal type that receives a non-bool value
         ("Expected `bool`, got `str` - at `$.enabled`",
          ErrorCtx(expected="bool", got="str")),
@@ -81,7 +84,7 @@ class TestMayRawRejection:
     - before 0.22 it shares the typecode of `typing.Any`, which names it `any`
     - before 0.22 a required TypedDict field, or a dataclass / attrs field with
       a `default_factory`, leaves the name empty, which parses to
-      `expected=None`
+      `expected=''`
 
     A released msgspec never changes its message, so the version decides which
     names are possible, see `MSGSPEC_0_22_PLUS`. The flag is set while the
@@ -149,7 +152,8 @@ class TestRawMessageVersionGate:
     `MSGSPEC_0_22_PLUS`, and the two sets do not overlap.
 
     The flag is set while the message is classified, so it is forced before
-    the message is parsed.
+    the message is parsed. `_make_error()` reads the flag from its own module
+    namespace, so the fake build patches `msgspecerror.parse_error`.
     """
 
     @pytest.mark.parametrize("msg, expected", [
@@ -160,7 +164,7 @@ class TestRawMessageVersionGate:
         ("Expected `int`, got `str` - at `$.payload`", False),
     ])
     def test_a_0_22_or_later_build(self, monkeypatch, msg, expected):
-        monkeypatch.setattr('msgspecerror.const.MSGSPEC_0_22_PLUS', True)
+        monkeypatch.setattr('msgspecerror.parse_error.MSGSPEC_0_22_PLUS', True)
         assert get_error_type(msg).ctx.may_raw_rejection is expected
 
     @pytest.mark.parametrize("msg, expected", [
@@ -171,7 +175,7 @@ class TestRawMessageVersionGate:
         ("Expected `int`, got `str` - at `$.payload`", False),
     ])
     def test_a_build_before_0_22(self, monkeypatch, msg, expected):
-        monkeypatch.setattr('msgspecerror.const.MSGSPEC_0_22_PLUS', False)
+        monkeypatch.setattr('msgspecerror.parse_error.MSGSPEC_0_22_PLUS', False)
         assert get_error_type(msg).ctx.may_raw_rejection is expected
 
     def test_the_flag_follows_the_installed_version(self):

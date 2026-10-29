@@ -321,7 +321,7 @@ class TestRawRejectionReal:
         with pytest.raises(msgspec.ValidationError) as exc_info:
             msgspec.convert({'payload': {'x': 1}}, type=Envelope)
         err = parse_msgspec_error(exc_info.value)
-        assert err.ctx.expected == ('raw' if MSGSPEC_0_22_PLUS else None)
+        assert err.ctx.expected == ('raw' if MSGSPEC_0_22_PLUS else '')
         assert err.ctx.may_raw_rejection is True
 
     def test_a_typed_dict_raw_field(self):

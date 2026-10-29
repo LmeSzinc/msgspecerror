@@ -9,6 +9,8 @@ class ErrorCtx(Struct, omit_defaults=True):
     """
     An optional object which contains extra info
     """
+    # None when the message has no type name to extract, '' when the name it
+    # holds is empty, e.g. "Expected ``, got `object`"
     expected: Optional[str] = None
     got: Optional[str] = None
     gt: Union[int, float, None] = None
