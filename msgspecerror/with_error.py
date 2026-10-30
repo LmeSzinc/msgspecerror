@@ -19,13 +19,15 @@ from msgspec import NODEFAULT, UNSET, ValidationError, convert
 from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
-from .const import DECODE_ERRORS, T_NODEFAULT, T_json_data, T_msgpack_data
+from .const import DECODE_ERRORS, MSG_RAW_FROM_MEMORY, T_NODEFAULT, ErrorType, T_json_data, T_msgpack_data
 from .parse_decoder import get_decoder_model
 from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_slow
 from .parse_struct import get_field_typehint
 from .parse_type import is_struct_type, origin_args, unwrap_typehint
-from .repair import _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _resolve_union_member
+from .repair import (
+    _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _resolve_union_member, _validate_entry
+)
 
 T = TypeVar('T')
 
@@ -394,6 +396,15 @@ def convert_with_error_detail(data, model_or_decoder, **kwargs):
     points at the entry that really failed, not at one the parser rejected for
     the wrong rules.
 
+    A `msgspec.Raw` field can not be built from an in-memory object: `convert`
+    stops there, so the location it reports names the raw field and not the
+    error behind it, if any. A placeholder `Raw` is pinned at that location and
+    the value is validated again, the same way a dict entry is judged by the key
+    search, so a real error still comes back with its own location and value.
+    When only the raw field complains there is no verdict to report, and the
+    call is answered with `INPUT_REJECTED` instead of a location that looks
+    precise while it only names the raw field.
+
     Args:
         data (Any): The raw value that failed validation
         model_or_decoder: The target type to convert into, or a msgspec decoder
@@ -411,7 +422,24 @@ def convert_with_error_detail(data, model_or_decoder, **kwargs):
         return convert(data, type=model, **options), NODEFAULT
     except ValidationError as e:
         error = parse_msgspec_error(e)
-        return NODEFAULT, resolve_error(error, data, model, **options)
+
+    # Only `convert` reports here, and it rejects an already decoded object at a
+    # `msgspec.Raw` field, so a raw-shaped error is that artifact and not a data
+    # error. The field itself can not be judged: what matters is the error it
+    # hides, so the value is validated again with a placeholder raw pinned at
+    # the reported location.
+    if error.ctx.may_raw_rejection:
+        error = _validate_entry(data, model, options)
+    if error is None or error is NODEFAULT:
+        # Only a raw field complains: every value is the one the caller passed,
+        # but an in-memory object can never build a raw field, so there is no
+        # verdict to hand back
+        return NODEFAULT, ErrorInfoDetail(
+            msg=MSG_RAW_FROM_MEMORY, type=ErrorType.INPUT_REJECTED, loc=(),
+            # An empty location is the whole document: concrete, but there is
+            # no entry to point at and no offending value to hand back
+            loc_resolved=True)
+    return NODEFAULT, resolve_error(error, data, model, **options)
 
 
 @overload

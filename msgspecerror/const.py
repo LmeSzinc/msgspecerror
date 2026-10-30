@@ -61,6 +61,13 @@ DECODE_ERRORS = (ValidationError, DecodeError, UnicodeDecodeError, UnicodeEncode
 ENCODE_ERRORS = (EncodeError, UnicodeEncodeError)
 MAXIMUM_REPAIR = 100
 
+# Verdict for an object that can not be validated at all: a `msgspec.Raw` field
+# needs the payload bytes, which `convert` does not have. Both the repair family
+# and `convert_with_error_detail()` report the same text, so a caller can match
+# on the message and not only on the type.
+MSG_RAW_FROM_MEMORY = 'Input rejected: a msgspec.Raw field can not be built from an in-memory object'
+MSG_RAW_FROM_DECODED = 'Input rejected: a msgspec.Raw field can not be built from a decoded object'
+
 # Shared utf8_error type for public repair API
 T_utf8_error = Literal['strict', 'replace', 'ignore']
 

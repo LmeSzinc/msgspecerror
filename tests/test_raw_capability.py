@@ -132,15 +132,16 @@ class TestConvertRawRequired:
         assert error.loc == ('payload',)
         assert msgspec.json.decode(msgspec.json.encode(self.DATA), type=RawReq)
 
-    def test_with_error_detail_looks_trustworthy(self):
-        """Both flags are True while the verdict is an artifact of `convert`."""
+    def test_with_error_detail_reports_an_input_rejection(self):
+        """Every value is fine, only the raw field complains, so there is no verdict."""
         obj, detail = convert_with_error_detail(self.DATA, RawReq)
 
         assert obj is NODEFAULT
-        assert detail.loc == ('payload',)
-        assert detail.error_value == {'a': 1}
+        assert detail.type is ErrorType.INPUT_REJECTED
+        assert detail.loc == ()
+        assert detail.error_value is UNSET
         assert detail.loc_resolved is True
-        assert detail.error_value_resolved is True
+        assert detail.error_value_resolved is False
 
     def test_with_default_rejects_without_touching_the_input(self):
         snapshot = msgspec.json.encode(self.DATA)
@@ -162,12 +163,14 @@ class TestConvertRawDefaulted:
         assert obj is NODEFAULT
         assert error.loc == ('payload',)
 
-    def test_with_error_detail_looks_trustworthy(self):
+    def test_with_error_detail_reveals_the_real_error(self):
+        """The raw field is pinned, so `convert` reaches the real error at `n`."""
         obj, detail = convert_with_error_detail(self.DATA, RawDefault)
 
         assert obj is NODEFAULT
-        assert detail.loc == ('payload',)
-        assert detail.error_value == {'a': 1}
+        assert detail.type is ErrorType.TYPE_MISMATCH
+        assert detail.loc == ('n',)
+        assert detail.error_value == 'bad'
         assert detail.loc_resolved is True
         assert detail.error_value_resolved is True
 
@@ -195,14 +198,15 @@ class TestRootRaw:
         assert error.type is ErrorType.TYPE_MISMATCH
         assert error.loc == ()
 
-    def test_with_error_detail_hands_back_the_document(self):
+    def test_with_error_detail_reports_an_input_rejection(self):
         obj, detail = convert_with_error_detail(self.DATA, Raw)
 
         assert obj is NODEFAULT
+        assert detail.type is ErrorType.INPUT_REJECTED
         assert detail.loc == ()
-        assert detail.error_value == self.DATA
+        assert detail.error_value is UNSET
         assert detail.loc_resolved is True
-        assert detail.error_value_resolved is True
+        assert detail.error_value_resolved is False
 
     def test_with_default_has_no_instance_to_return(self):
         result, errors = convert_with_default(self.DATA, Raw)
@@ -492,20 +496,31 @@ class TestJsonHugeIntegerInRaw:
         assert [e.type for e in errors] == [ErrorType.INTEGER_OUT_OF_RANGE]
 
 
-class TestOldMsgspecPinGivesUp:
-    """Row 11: a msgspec that refuses a `Raw` instance makes the pin useless.
+class TestOldMsgspecPinFallsBack:
+    """Row 11: a msgspec that refuses a `Raw` instance is judged by decoding.
 
-    Only the give-up rule is testable here, the release itself is selected by
-    the installed msgspec. `tests/repair/test_malformed_loc.py` covers the rule
+    Pinning a placeholder `Raw` can not settle the entry there, so the entry is
+    decoded again instead: the typed decoder does take the payload bytes. Only
+    this fallback is testable here, the release itself is selected by the
+    installed msgspec. `tests/repair/test_malformed_loc.py` covers both steps
     with a patched `_pin_raw`.
     """
 
-    def test_the_pinned_loc_is_not_reported(self, monkeypatch):
+    def test_the_key_is_still_found(self, monkeypatch):
         import msgspecerror.repair as repair_mod
         from msgspecerror.repair import _find_failing_dict_value
 
         monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
         obj = {'one': {'payload': {'a': 1}, 'n': 1}, 'two': {'payload': {'b': 2}, 'n': 'bad'}}
+
+        assert _find_failing_dict_value(obj, RawReq, {}) == 'two'
+
+    def test_an_entry_whose_only_issue_is_raw_is_not_the_failing_one(self, monkeypatch):
+        import msgspecerror.repair as repair_mod
+        from msgspecerror.repair import _find_failing_dict_value
+
+        monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
+        obj = {'one': {'payload': {'a': 1}, 'n': 1}}
 
         assert _find_failing_dict_value(obj, RawReq, {}) is NODEFAULT
 

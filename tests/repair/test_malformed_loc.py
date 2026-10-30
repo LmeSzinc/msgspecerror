@@ -25,7 +25,8 @@ import msgspecerror.repair as repair_mod
 from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
 from msgspecerror.parse_error import ErrorInfo
 from msgspecerror.repair import (
-    _handle_obj_repair, _pin_raw, _repair_once, _validate_entry, load_json_with_default, load_msgpack_with_default
+    _handle_obj_repair, _pin_raw, _repair_once, _validate_by_decode, _validate_entry, load_json_with_default,
+    load_msgpack_with_default
 )
 
 # --- Test Models ---
@@ -418,7 +419,7 @@ class TestPinRaw:
 
 
 class TestValidateEntry:
-    """`_validate_entry` answers pass / failure loc / unknown, never raises."""
+    """`_validate_entry` answers pass / the real error / unknown, never raises."""
 
     @pytest.mark.skipif(
         not MSGSPEC_0_19_PLUS,
@@ -432,15 +433,19 @@ class TestValidateEntry:
         reason='msgspec < 0.19.0 refuses a Raw instance in convert, pinning can not settle an entry',
     )
     def test_reports_the_real_failure_behind_the_raw_field(self):
-        loc = _validate_entry({'payload': {'a': 1}, 'n': 'bad'}, RawHolder, {})
-        assert loc == ('n',)
+        error = _validate_entry({'payload': {'a': 1}, 'n': 'bad'}, RawHolder, {})
+        assert error.loc == ('n',)
+        assert error.type is ErrorType.TYPE_MISMATCH
 
     def test_reports_a_missing_field(self):
-        loc = _validate_entry({'n': 1}, RawHolder, {})
-        assert loc == ('payload',)
+        error = _validate_entry({'n': 1}, RawHolder, {})
+        assert error.loc == ('payload',)
+        assert error.type is ErrorType.MISSING_FIELD
 
     def test_reports_a_plain_failure(self):
-        assert _validate_entry({'n': 'bad'}, PlainHolder, {}) == ('n',)
+        error = _validate_entry({'n': 'bad'}, PlainHolder, {})
+        assert error.loc == ('n',)
+        assert error.type is ErrorType.TYPE_MISMATCH
 
     def test_returns_none_for_a_valid_entry(self):
         assert _validate_entry({'n': 1}, PlainHolder, {}) is None
@@ -450,15 +455,46 @@ class TestValidateEntry:
         from msgspec import NODEFAULT
         assert _validate_entry({'n': 1}, model, {}) is NODEFAULT
 
-    def test_a_pin_that_changes_nothing_gives_up(self, monkeypatch):
-        """msgspec 0.18.6 refuses a `Raw` instance, pinning can not help there.
+    def test_a_pin_that_changes_nothing_falls_back_to_a_decode(self, monkeypatch):
+        """msgspec 0.18.6 refuses a `Raw` instance, so the value is decoded again.
 
         The loc stays the same after pinning, which means the pin was not the
-        problem, so the entry is unknown rather than failing.
+        problem: this msgspec never takes a `Raw` instance in `convert`. The
+        typed decoder does take the payload bytes, so it judges the value.
         """
-        from msgspec import NODEFAULT
-
         import msgspecerror.repair as repair_mod
 
         monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
-        assert _validate_entry({'payload': {'a': 1}, 'n': 1}, RawHolder, {}) is NODEFAULT
+        assert _validate_entry({'payload': {'a': 1}, 'n': 1}, RawHolder, {}) is None
+
+    def test_the_decode_fallback_still_reports_a_real_error(self, monkeypatch):
+        import msgspecerror.repair as repair_mod
+
+        monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
+        error = _validate_entry({'payload': {'a': 1}, 'n': 'bad'}, RawHolder, {})
+        assert error.loc == ('n',)
+
+
+class TestValidateByDecode:
+    """The decode fallback answers pass / the real error / unknown."""
+
+    def test_passes_when_only_the_raw_field_complains(self):
+        assert _validate_by_decode({'payload': {'a': 1}, 'n': 1}, RawHolder, {}) is None
+
+    def test_reports_the_real_error(self):
+        error = _validate_by_decode({'payload': {'a': 1}, 'n': 'bad'}, RawHolder, {})
+        assert error.loc == ('n',)
+        assert error.type is ErrorType.TYPE_MISMATCH
+
+    def test_a_value_msgpack_can_not_carry_is_unknown(self):
+        from msgspec import NODEFAULT
+        assert _validate_by_decode({'n': object()}, PlainHolder, {}) is NODEFAULT
+
+    @pytest.mark.parametrize('model', [12345, object(), 'int'])
+    def test_unknown_model_is_not_a_verdict(self, model):
+        from msgspec import NODEFAULT
+        assert _validate_by_decode({'n': 1}, model, {}) is NODEFAULT
+
+    def test_the_convert_only_options_are_not_forwarded(self):
+        """`str_keys` is a `convert` option, `decode` would reject it."""
+        assert _validate_by_decode({'payload': {'a': 1}, 'n': 1}, RawHolder, {'str_keys': True}) is None

@@ -400,7 +400,9 @@ result, errors = load_msgpack_with_default(data, MyStruct)
 - 格式：
   - `"Input rejected: too many repair cycles"` — 修复次数超过 100 次上限
   - `"Input rejected: validation failed on struct defaults"` — 结构体默认值的校验失败
-- 触发条件：msgspecerror 自动修复循环无法修复输入
+  - `"Input rejected: a msgspec.Raw field can not be built from an in-memory object"` — `convert` 无法从已解码对象构造 `msgspec.Raw` 字段
+  - `"Input rejected: a msgspec.Raw field can not be built from a decoded object"` — 当前 msgspec 不接受 `Raw` 实例，对象无法重建
+- 触发条件：msgspecerror 无法修复输入，或输入无法判定（`convert_*` 遇到带 `msgspec.Raw` 字段的模型，且没有别的值出错）
 - 注意：此类型由 msgspecerror 内部使用，msgspec 本身不会产生这类错误
 
 

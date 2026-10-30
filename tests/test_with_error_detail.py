@@ -8,7 +8,7 @@ from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
 
 import msgspecerror.with_error as with_error_mod
 from msgspecerror import (
-    ErrorInfoDetail, convert_with_error, convert_with_error_detail, load_json_with_error_detail,
+    ErrorInfoDetail, convert_with_default, convert_with_error, convert_with_error_detail, load_json_with_error_detail,
     load_msgpack_with_error_detail, parse_msgspec_error
 )
 from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
@@ -618,6 +618,207 @@ class TestRawFieldModel:
 
         detail = assert_failed(convert_with_error_detail(data, Dict[str, Plain]))
         assert detail.loc == ('one', 'ghost')
+
+
+class TestConvertRawField:
+    """A `msgspec.Raw` field can not be built from an in-memory object.
+
+    When every value is otherwise fine, there is no verdict to report: the data
+    is the one the caller passed and only `convert` refuses it. The family then
+    answers with the same `INPUT_REJECTED` verdict and the same message as the
+    repair family, instead of a location that looks precise while it only names
+    the raw field. An error hidden behind the raw field is reported instead, see
+    `TestConvertRawFieldHiddenError`.
+    """
+
+    class Doc(Struct):
+        payload: msgspec.Raw
+        n: int
+
+    DATA = {'payload': {'a': 1}, 'n': 1}
+
+    def test_a_required_raw_field(self):
+        detail = assert_failed(convert_with_error_detail(self.DATA, self.Doc))
+
+        assert detail.type is ErrorType.INPUT_REJECTED
+        assert detail.loc == ()
+        assert detail.error_value is UNSET
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is False
+
+    def test_a_raw_field_with_a_default(self):
+        class Defaulted(Struct):
+            payload: msgspec.Raw = msgspec.Raw(b'')
+            n: int = 0
+
+        detail = assert_failed(convert_with_error_detail(self.DATA, Defaulted))
+
+        assert detail.type is ErrorType.INPUT_REJECTED
+        assert detail.loc == ()
+
+    def test_a_dict_of_raw_models(self):
+        detail = assert_failed(convert_with_error_detail(
+            {'one': {'payload': {'a': 1}, 'n': 1}}, Dict[str, self.Doc]))
+
+        assert detail.type is ErrorType.INPUT_REJECTED
+        assert detail.loc == ()
+
+    def test_a_dict_of_raw_values(self):
+        """`$[...]` only says a value is not raw, the whole dict is rejected."""
+        detail = assert_failed(convert_with_error_detail({'a': {'x': 1}}, Dict[str, msgspec.Raw]))
+
+        assert detail.type is ErrorType.INPUT_REJECTED
+        assert detail.loc == ()
+
+    def test_a_root_raw_model(self):
+        detail = assert_failed(convert_with_error_detail({'a': 1}, msgspec.Raw))
+
+        assert detail.type is ErrorType.INPUT_REJECTED
+        assert detail.loc == ()
+
+    def test_the_message_is_the_one_the_repair_family_gives(self):
+        """One verdict, one text, so a caller can match on either."""
+        detail = assert_failed(convert_with_error_detail(self.DATA, self.Doc))
+        _, errors = convert_with_default(self.DATA, self.Doc)
+
+        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
+        assert detail.msg == errors[0].msg
+
+
+@pytest.mark.skipif(
+    not MSGSPEC_0_19_PLUS,
+    reason='msgspec < 0.19.0 refuses a Raw instance in convert, the pin makes no progress',
+)
+class TestConvertRawFieldHiddenError:
+    """A raw-shaped error is judged by the error it hides, not by itself.
+
+    `convert` stops at the raw field, so the location it reports is the field and
+    not the error behind it. A placeholder `Raw` is pinned there and the value is
+    validated again: a real error comes back with its own location and value.
+    """
+
+    class Doc(Struct):
+        payload: msgspec.Raw
+        n: int
+
+    def test_a_real_error_behind_the_raw_field_is_located(self):
+        """A placeholder raw is pinned, so the error at `n` is reached and reported."""
+        data = {'payload': {'a': 1}, 'n': 'bad'}
+
+        detail = assert_failed(convert_with_error_detail(data, self.Doc))
+
+        assert detail.type is ErrorType.TYPE_MISMATCH
+        assert detail.loc == ('n',)
+        assert detail.error_value == 'bad'
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is True
+
+    def test_a_real_error_behind_two_raw_fields(self):
+        class Pair(Struct):
+            first: msgspec.Raw
+            second: msgspec.Raw
+            n: int
+
+        data = {'first': {'a': 1}, 'second': {'b': 2}, 'n': 'bad'}
+
+        detail = assert_failed(convert_with_error_detail(data, Pair))
+
+        assert detail.loc == ('n',)
+        assert detail.error_value == 'bad'
+
+    def test_a_real_error_inside_a_dict_of_raw_models(self):
+        data = {'one': {'payload': {'a': 1}, 'n': 'bad'}}
+
+        detail = assert_failed(convert_with_error_detail(data, Dict[str, self.Doc]))
+
+        assert detail.loc == ('one', 'n')
+        assert detail.error_value == 'bad'
+
+    def test_a_missing_field_behind_the_raw_field(self):
+        """A structural error is reached the same way, but there is no value."""
+        detail = assert_failed(convert_with_error_detail({'payload': {'a': 1}}, self.Doc))
+
+        assert detail.type is ErrorType.MISSING_FIELD
+        assert detail.loc == ('n',)
+        assert detail.error_value is UNSET
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is False
+
+    def test_the_options_of_the_call_are_used(self):
+        """`strict=False` makes `'3'` a valid `int`, so nothing is left to report."""
+        data = {'payload': {'a': 1}, 'n': '3'}
+
+        strict = assert_failed(convert_with_error_detail(data, self.Doc))
+        assert strict.loc == ('n',)
+
+        loose = assert_failed(convert_with_error_detail(data, self.Doc, strict=False))
+        assert loose.type is ErrorType.INPUT_REJECTED
+        assert loose.loc == ()
+
+    def test_a_raw_field_with_a_default_does_not_hide_it(self):
+        class Defaulted(Struct):
+            payload: msgspec.Raw = msgspec.Raw(b'')
+            n: int = 0
+
+        detail = assert_failed(convert_with_error_detail({'payload': {'a': 1}, 'n': 'bad'}, Defaulted))
+
+        assert detail.type is ErrorType.TYPE_MISMATCH
+        assert detail.loc == ('n',)
+        assert detail.error_value == 'bad'
+
+    def test_the_input_is_not_modified_by_the_pin(self):
+        data = {'payload': {'a': 1}, 'n': 'bad'}
+        snapshot = copy.deepcopy(data)
+
+        assert_failed(convert_with_error_detail(data, self.Doc))
+
+        assert data == snapshot
+        assert type(data['payload']) is dict
+
+    def test_a_pin_that_makes_no_progress_falls_back_to_a_decode(self, monkeypatch):
+        """msgspec before 0.19.0 refuses a `Raw` instance, so the object is decoded.
+
+        The pin can not settle a raw field there, but the typed decoder takes the
+        payload bytes, so the real error is still found.
+        """
+        import msgspecerror.repair as repair_mod
+
+        monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
+        data = {'payload': {'a': 1}, 'n': 'bad'}
+
+        detail = assert_failed(convert_with_error_detail(data, self.Doc))
+
+        assert detail.type is ErrorType.TYPE_MISMATCH
+        assert detail.loc == ('n',)
+        assert type(data['payload']) is dict
+
+    def test_the_decode_fallback_has_no_verdict_without_an_error(self, monkeypatch):
+        """The values are fine, only the raw field can not be built."""
+        import msgspecerror.repair as repair_mod
+
+        monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
+
+        detail = assert_failed(convert_with_error_detail({'payload': {'a': 1}, 'n': 1}, self.Doc))
+
+        assert detail.type is ErrorType.INPUT_REJECTED
+        assert detail.loc == ()
+
+    def test_a_raw_instance_satisfies_the_field(self):
+        """The rest of the object is judged as usual when no raw error is left."""
+        data = {'payload': msgspec.Raw(b'{"a": 1}'), 'n': 'bad'}
+
+        detail = assert_failed(convert_with_error_detail(data, self.Doc))
+
+        assert detail.type is ErrorType.TYPE_MISMATCH
+        assert detail.loc == ('n',)
+        assert detail.error_value == 'bad'
+
+    def test_a_missing_raw_field_is_a_real_error(self):
+        """Only a type mismatch at the field is the artifact, a missing field is not."""
+        detail = assert_failed(convert_with_error_detail({'n': 1}, self.Doc))
+
+        assert detail.type is ErrorType.MISSING_FIELD
+        assert detail.loc == ('payload',)
 
 
 class TestConsistencyWithRepair:

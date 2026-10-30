@@ -279,22 +279,72 @@ def _pin_raw(value, loc, model, encoder=None):
     return pinned
 
 
-def _validate_entry(value, model, kwargs):
-    """
-    Validate one dict entry the way the failed call did.
+# Options `msgspec.decode` takes over from a `convert` call. `convert` accepts
+# more of them (`str_keys`, `from_attributes`, `builtin_types`), which have no
+# meaning for a value decoded from its own bytes.
+_DECODE_KWARGS = ('strict', 'dec_hook')
 
-    A raw field is pinned and the entry is validated again, so a raw field
-    ahead of the real error does not hide it.
+
+def _validate_by_decode(value, model, kwargs):
+    """
+    Validate a value by decoding it again, so a `Raw` field gets its bytes.
+
+    `convert` can only take a `Raw` instance at a raw field, and a msgspec before
+    0.19.0 refuses that instance. The typed decoder takes the payload bytes
+    there, so decoding the value is another way to validate it. msgpack carries
+    every type a decoded payload can hold, whatever codec the payload came from.
 
     Args:
-        value (Any): The decoded entry value
-        model (Any): Typehint of the dict values
+        value (Any): The value to validate, it is never modified
+        model (Any): Typehint the value is validated against
         kwargs (dict): Options of the equivalent `msgspec.convert` call
 
     Returns:
-        tuple | None | NODEFAULT: The location of the failure inside the entry,
-            None when the entry passes, NODEFAULT when the entry can't be judged
+        ErrorInfo | None | NODEFAULT: The error of the decode, with a location
+            relative to `value`, None when the value passes, NODEFAULT when it
+            can not be carried by msgpack and so can not be judged this way
     """
+    try:
+        packed = encode_msgpack(value)
+    except (EncodeError, TypeError):
+        # A value msgpack can not carry, e.g. an object built by a `dec_hook`
+        return NODEFAULT
+    options = {key: kwargs[key] for key in _DECODE_KWARGS if key in kwargs}
+    try:
+        decode_msgpack(packed, type=model, **options)
+    except ValidationError as e:
+        return parse_msgspec_error(e)
+    except (DecodeError, TypeError):
+        # The model is not a type msgspec can decode into
+        return NODEFAULT
+    return None
+
+
+def _validate_entry(value, model, kwargs):
+    """
+    Validate a decoded value the way the failed call did.
+
+    An already decoded object can not satisfy a `msgspec.Raw` field, so `convert`
+    stops at that field and a real error behind it is never reached. Writing a
+    placeholder `Raw` at the reported location removes the complaint, so the next
+    validation either passes or reports the real error. This is what makes both a
+    dict entry and a whole object judgeable.
+
+    When even the placeholder is refused, the msgspec is one whose `convert`
+    never takes a `Raw` instance (before 0.19.0): the value is decoded again
+    instead, see `_validate_by_decode()`.
+
+    Args:
+        value (Any): The value to validate, it is never modified
+        model (Any): Typehint the value is validated against
+        kwargs (dict): Options of the equivalent `msgspec.convert` call
+
+    Returns:
+        ErrorInfo | None | NODEFAULT: The first error that is not the artifact of
+            validating a decoded object, None when the raw fields are the only
+            complaint, NODEFAULT when the value can't be judged
+    """
+    original = value
     previous_loc = None
     for _ in range(_MAXIMUM_RAW_PATCH):
         try:
@@ -304,11 +354,13 @@ def _validate_entry(value, model, kwargs):
             # `convert` only, so a raw-shaped error is the artifact of validating
             # an already decoded object
             if not error.ctx.may_raw_rejection:
-                return error.loc
+                return error
             if error.loc == previous_loc:
-                # Pinning made no difference, this msgspec refuses a `Raw`
-                # instance here (fixed in 0.19.0), so the entry can't be judged
-                return NODEFAULT
+                # Pinning made no difference: this msgspec refuses a `Raw`
+                # instance, so `convert` can never accept a value holding a raw
+                # field. The pinned copy holds placeholders, the original is
+                # decoded instead.
+                return _validate_by_decode(original, model, kwargs)
             previous_loc = error.loc
             value = _pin_raw(value, error.loc, model)
             if value is NODEFAULT:
@@ -319,7 +371,7 @@ def _validate_entry(value, model, kwargs):
             return NODEFAULT
         return None
 
-    # Still complaining about raw fields, the entry can't be judged
+    # Still complaining about raw fields, the value can't be judged
     return NODEFAULT
 
 
@@ -340,11 +392,11 @@ def _find_failing_dict_value(obj, value_model, kwargs=None):
     """
     kwargs = kwargs or {}
     for key, value in obj.items():
-        loc = _validate_entry(value, value_model, kwargs)
-        if loc is None:
+        error = _validate_entry(value, value_model, kwargs)
+        if error is None:
             # The entry passes, a raw field was the only complaint
             continue
-        if loc is NODEFAULT:
+        if error is NODEFAULT:
             return NODEFAULT
         return key
     return NODEFAULT
@@ -757,7 +809,7 @@ def _handle_obj_repair(
         # would write a placeholder into the caller's object and still fail, so
         # stop before touching it.
         rejected = ErrorInfo(
-            'Input rejected: a msgspec.Raw field can not be built from an in-memory object',
+            const.MSG_RAW_FROM_MEMORY,
             type=ErrorType.INPUT_REJECTED, loc=())
         return get_default(model, guess_default=guess_default, return_obj=True), [rejected]
 
@@ -771,7 +823,7 @@ def _handle_obj_repair(
             # by the typed decoder instead, which does accept raw bytes.
             if codec is None:
                 # No payload to re-decode, an in-memory object can not be built
-                rejected_msg = 'Input rejected: a msgspec.Raw field can not be built from an in-memory object'
+                rejected_msg = const.MSG_RAW_FROM_MEMORY
                 break
             try:
                 return _rebuild(raw_obj, model, codec, decoder, kwargs), collected_errors
@@ -784,10 +836,10 @@ def _handle_obj_repair(
                 # The decoder rejects a raw field as well, so this msgspec can
                 # not build the model from the object either
                 if error.type is ErrorType.WRAPPED_ERROR or error.ctx.may_raw_rejection:
-                    rejected_msg = 'Input rejected: a msgspec.Raw field can not be built from a decoded object'
+                    rejected_msg = const.MSG_RAW_FROM_DECODED
                     break
             except (DecodeError, TypeError, EncodeError):
-                rejected_msg = 'Input rejected: a msgspec.Raw field can not be built from a decoded object'
+                rejected_msg = const.MSG_RAW_FROM_DECODED
                 break
             continue
 

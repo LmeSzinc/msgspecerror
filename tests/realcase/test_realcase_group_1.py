@@ -11,8 +11,8 @@ import msgspec
 import pytest
 from typing_extensions import TypedDict
 
-from msgspecerror import parse_msgspec_error
-from msgspecerror.const import MSGSPEC_0_22_PLUS, ErrorType
+from msgspecerror import convert_with_default, convert_with_error_detail, load_json_with_default, parse_msgspec_error
+from msgspecerror.const import MSGSPEC_0_19_PLUS, MSGSPEC_0_22_PLUS, ErrorType
 
 
 class TestTypeMismatchReal:
@@ -363,6 +363,70 @@ class TestRawRejectionReal:
         assert err.type == ErrorType.TYPE_MISMATCH
         assert err.loc == ('kind',)
         assert err.ctx.may_raw_rejection is False
+
+
+class TestRawRejectionRealConvert:
+    """A raw field is not the error, only the place `convert` stops at.
+
+    A decoded object has no bytes, so `convert` can never build a `Raw` field.
+    That failure must not be reported as the error of the document: the real
+    error sits behind the field, and `*_with_error_detail` reads it by pinning a
+    placeholder raw and validating again.
+    """
+
+    class Event(msgspec.Struct):
+        """A webhook-like event, the sub-document is kept as bytes for later."""
+        kind: str
+        payload: msgspec.Raw
+        retries: int = 0
+
+    PAYLOAD = b'{"kind": "click", "payload": {"x": 1}, "retries": "many"}'
+
+    @pytest.mark.skipif(not MSGSPEC_0_19_PLUS, reason='msgspec < 0.19.0 refuses a Raw instance')
+    def test_the_error_behind_the_raw_field_is_located(self):
+        data = msgspec.json.decode(self.PAYLOAD)
+
+        # The raw field stops `convert` first, so the error at `retries` would
+        # be invisible without reading past it
+        with pytest.raises(msgspec.ValidationError) as exc_info:
+            msgspec.convert(data, type=self.Event)
+        assert str(exc_info.value).endswith('at `$.payload`')
+
+        obj, detail = convert_with_error_detail(data, self.Event)
+        assert obj is msgspec.NODEFAULT
+        assert detail.type is ErrorType.TYPE_MISMATCH
+        assert detail.loc == ('retries',)
+        assert detail.error_value == 'many'
+
+    def test_a_clean_document_is_rejected_not_mislocated(self):
+        """No value is wrong, so there is no location to give."""
+        data = msgspec.json.decode(b'{"kind": "click", "payload": {"x": 1}, "retries": 2}')
+
+        obj, detail = convert_with_error_detail(data, self.Event)
+        assert obj is msgspec.NODEFAULT
+        assert detail.type is ErrorType.INPUT_REJECTED
+        assert detail.loc == ()
+
+    def test_the_load_family_still_returns_the_model(self):
+        """The payload has bytes, so the same document is decoded and repaired.
+
+        The raw field is re-encoded with the repaired document, so the value is
+        kept but its formatting is not (json is written compact, §3.9.7).
+        """
+        result, errors = load_json_with_default(self.PAYLOAD, self.Event, guess_default=True)
+
+        assert result.kind == 'click'
+        assert result.retries == 0
+        assert msgspec.json.decode(result.payload) == {'x': 1}
+        assert [e.loc for e in errors] == [('retries',)]
+
+    def test_the_convert_family_never_builds_the_model(self):
+        """An in-memory object can not carry the raw bytes, whatever it holds."""
+        data = msgspec.json.decode(b'{"kind": "click", "payload": {"x": 1}, "retries": 2}')
+
+        obj, errors = convert_with_default(data, self.Event)
+        assert obj is msgspec.NODEFAULT
+        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
 
 
 class TestRawShapeFalsePositivesReal:
