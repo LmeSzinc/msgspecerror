@@ -21,6 +21,7 @@ from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
 from .const import DECODE_ERRORS, T_NODEFAULT, T_json_data, T_msgpack_data
 from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msgspec_error
+from .parse_msgpack import fixup_msgpack_unicode_slow
 from .parse_struct import get_field_typehint
 from .parse_type import is_struct_type, origin_args, unwrap_typehint
 from .repair import (
@@ -503,8 +504,20 @@ def load_json_with_error_detail(data, model_or_decoder):
 
     # The typed decode stops at the first value error, so a later malformed
     # byte is never reached: the second decode is allowed to fail
+    repaired = False
     try:
         raw = decode_json(data)
+    except UnicodeDecodeError:
+        # A `msgspec.Raw` field keeps the payload bytes, so the typed decode
+        # reads a string that an untyped decode rejects. Rewriting the invalid
+        # bytes is enough to find the failing key, the same way the msgpack
+        # family does it.
+        try:
+            raw = decode_json(_replace_invalid_utf8(data))
+        except DECODE_ERRORS:
+            raw = NODEFAULT
+        else:
+            repaired = True
     except DECODE_ERRORS:
         raw = NODEFAULT
     if raw is NODEFAULT:
@@ -513,7 +526,78 @@ def load_json_with_error_detail(data, model_or_decoder):
             msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
             loc_resolved=not _has_placeholder(error.loc),
         )
-    return NODEFAULT, resolve_error(error, raw, model, **options)
+    return NODEFAULT, _drop_rewritten_value(resolve_error(error, raw, model, **options), repaired)
+
+
+def _contains_replacement(value):
+    """
+    Check whether a value holds the character the byte repair writes.
+
+    The repair rewrites an invalid utf-8 sequence to U+FFFD, so a value that
+    holds one may not be the value the payload had. Only the value itself is
+    walked, the rest of the document is not touched.
+
+    Args:
+        value (Any): Value to check, a container is walked
+
+    Returns:
+        bool: True if a U+FFFD character is reachable
+    """
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        item_type = type(item)
+        if item_type is str:
+            if '\ufffd' in item:
+                return True
+        elif item_type is dict:
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif item_type in (list, tuple, set, frozenset):
+            stack.extend(item)
+    return False
+
+
+def _replace_invalid_utf8(data):
+    """
+    Rewrite the invalid utf-8 bytes of a json payload to U+FFFD.
+
+    Args:
+        data (bytes | bytearray | memoryview | str): Payload to rewrite, a str
+            payload is already text and is returned as it is
+
+    Returns:
+        str: The payload as text, every invalid sequence replaced
+    """
+    if isinstance(data, str):
+        return data
+    return bytes(data).decode('utf-8', errors='replace')
+
+
+def _drop_rewritten_value(detail, repaired):
+    """
+    Withdraw the value a byte repair wrote, keeping the location.
+
+    Args:
+        detail (ErrorInfoDetail): Detail resolved against the untyped decode
+        repaired (bool): True if the payload had to be rewritten before that
+            decode, so a located value may hold a character the payload did
+            not have
+
+    Returns:
+        ErrorInfoDetail: `detail` when the value is trustworthy, a copy without
+            `error_value` when it holds a written character
+    """
+    if not repaired:
+        return detail
+    if not _contains_replacement(detail.error_value):
+        return detail
+    # The located value holds a character the repair wrote, it is not the real
+    # one. The location is still useful, the value is not handed back.
+    return ErrorInfoDetail(
+        msg=detail.msg, type=detail.type, loc=detail.loc, ctx=detail.ctx,
+        loc_resolved=detail.loc_resolved,
+    )
 
 
 @overload
@@ -579,8 +663,20 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
 
     # The typed decode stops at the first value error, so a later malformed
     # byte is never reached: the second decode is allowed to fail
+    repaired = False
     try:
         raw = decode_msgpack(data)
+    except UnicodeDecodeError:
+        # A `msgspec.Raw` field keeps the payload bytes, so the typed decode
+        # reads a string with invalid utf-8 that an untyped decode rejects.
+        # Repairing the bytes is enough to find the failing key, but the
+        # repaired value is not the real one, it is never handed back.
+        try:
+            raw = decode_msgpack(fixup_msgpack_unicode_slow(data, utf8_error='replace'))
+        except DECODE_ERRORS:
+            raw = NODEFAULT
+        else:
+            repaired = True
     except DECODE_ERRORS:
         raw = NODEFAULT
     if raw is NODEFAULT:
@@ -589,4 +685,5 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
             msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
             loc_resolved=not _has_placeholder(error.loc),
         )
-    return NODEFAULT, resolve_error(error, raw, model, **options)
+    detail = resolve_error(error, raw, model, **options)
+    return NODEFAULT, _drop_rewritten_value(detail, repaired)

@@ -1,9 +1,9 @@
 import re
 from typing import Any, Dict, List, Tuple, Type, TypeVar, Union, overload
 
-from msgspec import NODEFAULT, DecodeError, UnsetType, ValidationError, convert
-from msgspec.json import Decoder as JsonDecoder, decode as decode_json
-from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
+from msgspec import NODEFAULT, DecodeError, EncodeError, Raw, UnsetType, ValidationError, convert
+from msgspec.json import Decoder as JsonDecoder, decode as decode_json, encode as encode_json
+from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack, encode as encode_msgpack
 
 from . import const
 from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
@@ -185,6 +185,156 @@ def _get_model_options(model_or_decoder, kwargs):
     return model, options
 
 
+_MAXIMUM_RAW_PATCH = 8
+
+
+def _pin_raw(value, loc, model, encoder=None):
+    """
+    Put a `msgspec.Raw` where an error location points, on a copy of the path.
+
+    Pinning makes the raw field acceptable, so the rest of the entry can be
+    judged: an entry that only looked invalid because of a raw field passes,
+    and one with a real error reports it. Only the containers on the way to
+    `loc` are copied, the caller's object is never modified.
+
+    A container whose items all share one typehint is pinned in one go, so an
+    entry holding a long list of raw values is settled by a single round
+    instead of one round per item.
+
+    Args:
+        value (Any): The value to copy
+        loc (tuple): Location to pin, taken from an error message
+        model (Any): Typehint `value` was validated against
+        encoder (callable): Encodes the value at `loc` into the bytes the raw
+            field should hold. Defaults to None, an empty `Raw` is written, which
+            is enough to probe an entry but is not the payload. The repair
+            families pass the codec encoder, so the filled field is the real
+            content and the model can be built from it.
+
+    Returns:
+        Any | NODEFAULT: The pinned copy, or NODEFAULT if `loc` can't be walked
+    """
+    if not loc:
+        if encoder is None:
+            return Raw(b'')
+        try:
+            return Raw(encoder(value))
+        except (EncodeError, TypeError):
+            # The value can not be encoded by this codec
+            return NODEFAULT
+
+    part = loc[0]
+    rest = loc[1:]
+    model = unwrap_typehint(model)
+    origin, args = origin_args(model)
+
+    if part == '...':
+        # A dict value failure, the failing key is unknown, pin every entry
+        if type(value) is not dict:
+            return NODEFAULT
+        child_model = args[1] if args else NODEFAULT
+        pinned = dict(value)
+        for key, item in value.items():
+            patched = _pin_raw(item, rest, child_model, encoder)
+            if patched is NODEFAULT:
+                if encoder is None:
+                    return NODEFAULT
+                # Filling mode: an entry that can not be walked is not the one
+                # this error is about, keep it as it is
+                continue
+            pinned[key] = patched
+        return pinned
+
+    if type(part) is int:
+        if type(value) is not list or not 0 <= part < len(value):
+            return NODEFAULT
+        item_model = _get_item_model(origin, args, part)
+        if item_model is NODEFAULT:
+            return NODEFAULT
+        if origin in (list, set, frozenset) or (origin is tuple and Ellipsis in (args or ())):
+            # Every item shares one typehint, pin the whole container at once
+            pinned = list(value)
+            for index, item in enumerate(value):
+                patched = _pin_raw(item, rest, item_model, encoder)
+                if patched is NODEFAULT:
+                    if encoder is None:
+                        return NODEFAULT
+                    continue
+                pinned[index] = patched
+            return pinned
+        item = _pin_raw(value[part], rest, item_model, encoder)
+        if item is NODEFAULT:
+            return NODEFAULT
+        pinned = list(value)
+        pinned[part] = item
+        return pinned
+
+    if type(value) is not dict:
+        return NODEFAULT
+    try:
+        child = value[part]
+    except (KeyError, TypeError):
+        if encoder is None:
+            # The key is missing, or the segment is not usable as a key at all
+            return NODEFAULT
+        # Filling mode: an absent field is a different error, not this one
+        return value
+    try:
+        child_model = get_field_typehint(model, part)
+    except AttributeError:
+        child_model = NODEFAULT
+    item = _pin_raw(child, rest, child_model, encoder)
+    if item is NODEFAULT:
+        return NODEFAULT
+    pinned = dict(value)
+    pinned[part] = item
+    return pinned
+
+
+def _validate_entry(value, model, kwargs):
+    """
+    Validate one dict entry the way the failed call did.
+
+    A raw field is pinned and the entry is validated again, so a raw field
+    ahead of the real error does not hide it.
+
+    Args:
+        value (Any): The decoded entry value
+        model (Any): Typehint of the dict values
+        kwargs (dict): Options of the equivalent `msgspec.convert` call
+
+    Returns:
+        tuple | None | NODEFAULT: The location of the failure inside the entry,
+            None when the entry passes, NODEFAULT when the entry can't be judged
+    """
+    previous_loc = None
+    for _ in range(_MAXIMUM_RAW_PATCH):
+        try:
+            convert(value, type=model, **kwargs)
+        except ValidationError as e:
+            error = parse_msgspec_error(e)
+            # `convert` only, so a raw-shaped error is the artifact of validating
+            # an already decoded object
+            if not error.ctx.may_raw_rejection:
+                return error.loc
+            if error.loc == previous_loc:
+                # Pinning made no difference, this msgspec refuses a `Raw`
+                # instance here (fixed in 0.19.0), so the entry can't be judged
+                return NODEFAULT
+            previous_loc = error.loc
+            value = _pin_raw(value, error.loc, model)
+            if value is NODEFAULT:
+                return NODEFAULT
+            continue
+        except TypeError:
+            # `model` is not a type msgspec supports
+            return NODEFAULT
+        return None
+
+    # Still complaining about raw fields, the entry can't be judged
+    return NODEFAULT
+
+
 def _find_failing_dict_value(obj, value_model, kwargs=None):
     """
     Find the dict entry whose value fails validation.
@@ -202,13 +352,13 @@ def _find_failing_dict_value(obj, value_model, kwargs=None):
     """
     kwargs = kwargs or {}
     for key, value in obj.items():
-        try:
-            convert(value, type=value_model, **kwargs)
-        except ValidationError:
-            return key
-        except TypeError:
-            # `value_model` is not a type msgspec supports
-            break
+        loc = _validate_entry(value, value_model, kwargs)
+        if loc is None:
+            # The entry passes, a raw field was the only complaint
+            continue
+        if loc is NODEFAULT:
+            return NODEFAULT
+        return key
     return NODEFAULT
 
 
@@ -246,7 +396,7 @@ def _find_failing_dict_key(obj, key_model, kwargs=None):
 
 
 def _repair_once(
-        raw_obj, model, error: ErrorInfo, guess_default=False, kwargs=None
+        raw_obj, model, error: ErrorInfo, guess_default=False, kwargs=None, encoder=None, from_convert=False
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
     """
     Args:
@@ -262,12 +412,28 @@ def _repair_once(
         kwargs (dict): Options of the equivalent `msgspec.convert` call, the
             same ones the failed call used, so an entry is judged with the same
             rules that rejected the input
+        encoder (callable): Encodes a sub-value into the bytes a raw field holds.
+            Defaults to None, a raw field then can not be filled.
+        from_convert (bool): True when `error` came from `convert` rather than
+            from the typed decoder. Only `convert` rejects an already decoded
+            object at a `msgspec.Raw` field, so only then can a raw-shaped error
+            be an artifact instead of a real one. Defaults to False.
 
     Returns:
         tuple[Any, ErrorInfo | _NoDefault]: (obj, error) the repaired object and fixed error.
             If repair failed, obj will be NODEFAULT.
             If this error is not consider as an error, error will be NODEFAULT and won't be collected.
     """
+    if encoder is not None and from_convert and error.ctx.may_raw_rejection:
+        # The typehint at the error is a `msgspec.Raw`, and `convert` only takes
+        # a `Raw` instance there. The payload bytes go back into that spot, so
+        # the model can be built from this object instead of a re-decode.
+        # This is not a data error: the field is restored, not repaired.
+        filled = _pin_raw(raw_obj, error.loc, model, encoder)
+        if filled is NODEFAULT:
+            return NODEFAULT, error
+        return filled, NODEFAULT
+
     # handle root error
     if not error.loc:
         value = get_default(model, guess_default=guess_default)
@@ -537,8 +703,40 @@ def _repair_once(
         return value, error
 
 
+# Codec of a repair family, the repair engine needs it to put payload bytes back
+# into a `msgspec.Raw` field. The module already imports both codecs, so the
+# loaders only pass a name instead of a closure.
+ENCODERS = {'json': encode_json, 'msgpack': encode_msgpack}
+DECODERS = {'json': decode_json, 'msgpack': decode_msgpack}
+
+
+def _rebuild(raw_obj, model, codec, decoder, kwargs):
+    """
+    Decode the repaired object again, so a `msgspec.Raw` field gets its bytes.
+
+    Only used on msgspec before 0.19.0, whose `convert` refuses a `Raw`
+    instance, so the object alone can never become a model with a raw field.
+
+    Args:
+        raw_obj (Any): The repaired object
+        model (Any): The target type
+        codec (str): 'json' or 'msgpack'
+        decoder (Decoder | None): The caller's decoder, its options are kept
+        kwargs (dict): Options of the equivalent `convert` call
+
+    Returns:
+        Any: The model instance built from `raw_obj`
+    """
+    packed = ENCODERS[codec](raw_obj)
+    if decoder is not None:
+        return decoder.decode(packed)
+    # `str_keys` is a `convert` option, a decode takes only the codec ones
+    options = {key: value for key, value in kwargs.items() if key != 'str_keys'}
+    return DECODERS[codec](packed, type=model, **options)
+
+
 def _handle_obj_repair(
-        raw_obj, model, error: ValidationError, guess_default=False, kwargs=None
+        raw_obj, model, error: ValidationError, guess_default=False, kwargs=None, codec=None, decoder=None
 ) -> "tuple[Any, list[ErrorInfo]]":
     """
     Args:
@@ -550,16 +748,65 @@ def _handle_obj_repair(
             re-validate the repaired object. A decoder that coerces
             (`strict=False`) or needs a `dec_hook` would otherwise fight the
             repair: a value the decoder accepted looks invalid to `convert`.
+        codec (str): 'json' or 'msgpack' for a repair family that holds a
+            payload. Defaults to None, an in-memory object has no bytes to fill
+            a `msgspec.Raw` field with.
+        decoder (Decoder): The caller's decoder, used to keep its options when
+            the object has to be decoded again. Defaults to None.
 
     Returns:
         tuple[any, list[ErrorInfo]]:
     """
     error = parse_msgspec_error(error)
+    # `codec is None` means the failed call was `convert`, the only direction
+    # that rejects an already decoded object at a `msgspec.Raw` field. A load
+    # family fails inside the typed decoder instead, which takes the payload
+    # bytes at such a field, so an error it reports there is a real one.
+    from_convert = codec is None
+    if from_convert and error.ctx.may_raw_rejection:
+        # The input can not be validated at all: a `msgspec.Raw` field needs the
+        # payload bytes, which an in-memory object does not have. Repairing
+        # would write a placeholder into the caller's object and still fail, so
+        # stop before touching it.
+        rejected = ErrorInfo(
+            'Input rejected: a msgspec.Raw field can not be built from an in-memory object',
+            type=ErrorType.INPUT_REJECTED, loc=())
+        return get_default(model, guess_default=guess_default, return_obj=True), [rejected]
+
+    encoder = ENCODERS[codec] if codec is not None else None
     collected_errors = []
+    rejected_msg = 'Input rejected: too many repair cycles'
     for _ in range(const.MAXIMUM_REPAIR):
+        if not const.MSGSPEC_0_19_PLUS and from_convert and error.ctx.may_raw_rejection:
+            # msgspec before 0.19.0 refuses a `Raw` instance in `convert`, so the
+            # field can not be filled in place. The re-encoded object is decoded
+            # by the typed decoder instead, which does accept raw bytes.
+            if codec is None:
+                # No payload to re-decode, an in-memory object can not be built
+                rejected_msg = 'Input rejected: a msgspec.Raw field can not be built from an in-memory object'
+                break
+            try:
+                return _rebuild(raw_obj, model, codec, decoder, kwargs), collected_errors
+            except ValidationError as rebuild_error:
+                # The raw field was ahead of another error. The re-encoded object
+                # has the same shape, so its location is usable and the repair
+                # goes on instead of giving up on the entry.
+                error = parse_msgspec_error(rebuild_error)
+                from_convert = False
+                # The decoder rejects a raw field as well, so this msgspec can
+                # not build the model from the object either
+                if error.type is ErrorType.WRAPPED_ERROR or error.ctx.may_raw_rejection:
+                    rejected_msg = 'Input rejected: a msgspec.Raw field can not be built from a decoded object'
+                    break
+            except (DecodeError, TypeError, EncodeError):
+                rejected_msg = 'Input rejected: a msgspec.Raw field can not be built from a decoded object'
+                break
+            continue
+
         # repair once
         raw_obj, error = _repair_once(
-            raw_obj, model, error, guess_default=guess_default, kwargs=kwargs)
+            raw_obj, model, error, guess_default=guess_default, kwargs=kwargs, encoder=encoder,
+            from_convert=from_convert)
         if error is not NODEFAULT:
             collected_errors.append(error)
 
@@ -572,6 +819,10 @@ def _handle_obj_repair(
             return convert(raw_obj, model, **(kwargs or {})), collected_errors
         except ValidationError as e:
             error = parse_msgspec_error(e)
+            from_convert = True
+            if encoder is not None and error.ctx.may_raw_rejection:
+                # Another raw field, the loop fills it in the next round
+                continue
             # User-code errors (__post_init__, dec_hook, etc.) are wrapped as
             # WRAPPED_ERROR. Retrying the same fix won't help — bail immediately.
             if error.type is ErrorType.WRAPPED_ERROR:
@@ -581,10 +832,7 @@ def _handle_obj_repair(
                 collected_errors.append(rejected)
                 return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
 
-    # Too many iterations — possible malicious input
-    rejected = ErrorInfo(
-        'Input rejected: too many repair cycles',
-        type=ErrorType.INPUT_REJECTED, loc=())
+    rejected = ErrorInfo(rejected_msg, type=ErrorType.INPUT_REJECTED, loc=())
     collected_errors.append(rejected)
     return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
 
@@ -785,7 +1033,8 @@ def load_json_with_default(
                     return _handle_root_error(model, error, guess_default=guess_default)
             # Most errors will enter here
             raw_obj, new_errors = _handle_obj_repair(
-                raw_obj, model, e, guess_default=guess_default, kwargs=options)
+                raw_obj, model, e, guess_default=guess_default, kwargs=options,
+                codec='json', decoder=decoder)
             collected_errors.extend(new_errors)
             return raw_obj, collected_errors
         except DecodeError as error:
@@ -926,7 +1175,8 @@ def load_msgpack_with_default(
                 return result, errors
             # Most errors will enter here
             return _handle_obj_repair(
-                raw_obj, model, e, guess_default=guess_default, kwargs=options)
+                raw_obj, model, e, guess_default=guess_default, kwargs=options,
+                codec='msgpack', decoder=decoder)
         except DecodeError as error:
             result, errors = _handle_root_error(model, error, guess_default=guess_default)
             errors.extend(unicode_errors)

@@ -10,6 +10,7 @@ import pytest
 from msgspec import NODEFAULT, Struct, field
 from typing_extensions import Annotated
 
+from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
 from msgspecerror.repair import load_json_with_default
 
 # --- Test Models ---
@@ -817,3 +818,64 @@ class OptionLayer(Struct):
 
 class OptionDoc(Struct):
     layers: Dict[str, OptionLayer] = {}
+
+
+@pytest.mark.skipif(
+    not MSGSPEC_0_19_PLUS,
+    reason='msgspec < 0.19.0 refuses a Raw instance in convert, the key can not be located',
+)
+class TestRawFieldModel:
+    """A `msgspec.Raw` field can not be built by `convert`, but a typed decode can.
+
+    The repair re-encodes the repaired object and decodes it again, so the raw
+    field gets bytes and the model instance is real. Only the repair family of
+    the loaders can do that, they hold the payload format.
+    """
+
+    def test_the_real_error_is_located(self):
+        data = b'{"items": {"one": {"payload": {"a": 1}, "n": 1}, "two": {"payload": {"a": 2}, "n": "xx"}}}'
+        result, errors = load_json_with_default(data, RawDoc, guess_default=True)
+
+        assert [e.loc for e in errors] == [('items', 'two', 'n')]
+        assert errors[0].type is ErrorType.TYPE_MISMATCH
+
+    def test_the_model_instance_is_built(self):
+        """No `INPUT_REJECTED`, the raw fields are filled in."""
+        data = b'{"items": {"one": {"payload": {"a": 1}, "n": 1}, "two": {"payload": {"a": 2}, "n": "xx"}}}'
+        result, errors = load_json_with_default(data, RawDoc, guess_default=True)
+
+        assert isinstance(result, RawDoc)
+        assert sorted(result.items) == ['one', 'two']
+        assert result.items['one'].n == 1
+        assert result.items['two'].n == 0
+        assert all(isinstance(item.payload, msgspec.Raw) for item in result.items.values())
+        assert ErrorType.INPUT_REJECTED not in [e.type for e in errors]
+
+    def test_the_raw_bytes_are_the_reencoded_form(self):
+        """Json raw bytes are compacted, the value is what was asked for."""
+        data = b'{"items": {"one": {"payload": {"a": 1,   "b": [1,2]}, "n": 1}}}'
+        data = data.replace(b'"n": 1}', b'"n": "xx"}')
+        result, errors = load_json_with_default(data, RawDoc, guess_default=True)
+
+        assert result.items['one'].n == 0
+        assert bytes(result.items['one'].payload) == b'{"a":1,"b":[1,2]}'
+
+    def test_a_required_raw_field_still_fails_without_bytes(self):
+        """A raw field the payload does not carry can not be invented."""
+        data = b'{"items": {"one": {"n": "xx"}}}'
+        result, errors = load_json_with_default(data, RawDoc, guess_default=True)
+
+        assert result == RawDoc(items={})
+        # Both fields of the entry are reported: the repair rewrites `n` and the
+        # entry is then rejected for the missing raw field
+        assert [e.loc for e in errors] == [('items', 'one', 'n'), ('items', 'one', 'payload')]
+
+
+class RawMsg(Struct):
+    """A raw field plus a field that can fail."""
+    payload: msgspec.Raw
+    n: int = 0
+
+
+class RawDoc(Struct):
+    items: Dict[str, RawMsg] = {}

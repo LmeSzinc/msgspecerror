@@ -301,3 +301,45 @@ class TestDecoderOptions:
         assert result.layers["one"].p.value == [1, 2]
         assert result.layers["bad"].n == 0
         assert [e.loc for e in errors] == [("layers", "bad", "n")]
+
+
+class TestRawFieldModel:
+    """An in-memory object has no bytes for a `msgspec.Raw` field.
+
+    `convert` can not fill it and this family has no payload to re-decode, so
+    the repair stops right away instead of writing a placeholder raw value into
+    the caller's object and failing anyway.
+    """
+
+    class Msg(Struct):
+        payload: msgspec.Raw
+        n: int = 0
+
+    def test_the_dead_end_is_reported(self):
+        class Doc(Struct):
+            items: Dict[str, self.Msg] = {}
+
+        data = {'items': {'one': {'payload': {'a': 1}, 'n': 1}}}
+        result, errors = convert_with_default(data, Doc, guess_default=True)
+
+        assert result == Doc(items={})
+        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
+        assert 'msgspec.Raw' in errors[0].msg
+
+    def test_the_input_is_not_touched(self):
+        """The old behaviour wrote `Raw(b'')` over the original sub-document.
+
+        A raw field with a default is the case that used to corrupt the input:
+        the repair wrote the default value into the caller's object.
+        """
+
+        class Defaulted(Struct):
+            payload: msgspec.Raw = msgspec.Raw(b'')
+            n: int = 0
+
+        data = {'payload': {'a': 1}, 'n': 'bad'}
+        snapshot = copy.deepcopy(data)
+        convert_with_default(data, Defaulted, guess_default=True)
+
+        assert data == snapshot
+        assert data['payload'] == {'a': 1}

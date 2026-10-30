@@ -22,9 +22,11 @@ from msgspec import NODEFAULT, Struct, ValidationError, convert
 
 import msgspecerror.const
 import msgspecerror.repair as repair_mod
-from msgspecerror.const import ErrorType
+from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
 from msgspecerror.parse_error import ErrorInfo
-from msgspecerror.repair import _handle_obj_repair, _repair_once, load_json_with_default, load_msgpack_with_default
+from msgspecerror.repair import (
+    _handle_obj_repair, _pin_raw, _repair_once, _validate_entry, load_json_with_default, load_msgpack_with_default
+)
 
 # --- Test Models ---
 
@@ -360,3 +362,103 @@ class TestFallbackValidity:
 
         assert result == ()
         assert len(errors) == 1
+
+
+class RawHolder(Struct):
+    """A raw field plus a field that can fail."""
+    payload: msgspec.Raw
+    n: int = 0
+
+
+class PlainHolder(Struct):
+    """The same shape without the raw field."""
+    n: int = 0
+
+
+class TestPinRaw:
+    """`_pin_raw` replaces one spot on a copy, and never raises on a bad loc."""
+
+    def test_pins_without_touching_the_input(self):
+        data = {'payload': {'a': 1}, 'n': 1}
+        snapshot = copy.deepcopy(data)
+        pinned = _pin_raw(data, ('payload',), RawHolder)
+
+        assert isinstance(pinned['payload'], msgspec.Raw)
+        assert pinned['n'] == 1
+        assert data == snapshot
+
+    def test_pins_every_dict_value(self):
+        data = {'a': {'x': 1}, 'b': {'y': 2}}
+        pinned = _pin_raw(data, ('...',), Dict[str, msgspec.Raw])
+
+        assert all(isinstance(value, msgspec.Raw) for value in pinned.values())
+
+    def test_pins_every_list_item(self):
+        data = [{'a': 1}, {'b': 2}]
+        pinned = _pin_raw(data, (0,), List[msgspec.Raw])
+
+        assert all(isinstance(value, msgspec.Raw) for value in pinned)
+
+    def test_pins_one_item_of_a_fixed_tuple(self):
+        model = Tuple[msgspec.Raw, int]
+        pinned = _pin_raw([{'a': 1}, 5], (0,), model)
+
+        assert isinstance(pinned[0], msgspec.Raw)
+        assert pinned[1] == 5
+
+    @pytest.mark.parametrize('model', [RawHolder, Dict[str, RawHolder], PlainHolder, None, 12345])
+    @pytest.mark.parametrize('loc', [
+        ('ghost',), ('...', 0), (0,), (99,), (None,), (['x'],), ('payload', 'deeper'),
+    ])
+    def test_never_raises(self, model, loc):
+        data = {'payload': {'a': 1}, 'n': 1}
+        snapshot = copy.deepcopy(data)
+        _pin_raw(data, loc, model)
+        assert data == snapshot
+
+
+class TestValidateEntry:
+    """`_validate_entry` answers pass / failure loc / unknown, never raises."""
+
+    @pytest.mark.skipif(
+        not MSGSPEC_0_19_PLUS,
+        reason='msgspec < 0.19.0 refuses a Raw instance in convert, pinning can not settle an entry',
+    )
+    def test_passes_after_pinning(self):
+        assert _validate_entry({'payload': {'a': 1}, 'n': 1}, RawHolder, {}) is None
+
+    @pytest.mark.skipif(
+        not MSGSPEC_0_19_PLUS,
+        reason='msgspec < 0.19.0 refuses a Raw instance in convert, pinning can not settle an entry',
+    )
+    def test_reports_the_real_failure_behind_the_raw_field(self):
+        loc = _validate_entry({'payload': {'a': 1}, 'n': 'bad'}, RawHolder, {})
+        assert loc == ('n',)
+
+    def test_reports_a_missing_field(self):
+        loc = _validate_entry({'n': 1}, RawHolder, {})
+        assert loc == ('payload',)
+
+    def test_reports_a_plain_failure(self):
+        assert _validate_entry({'n': 'bad'}, PlainHolder, {}) == ('n',)
+
+    def test_returns_none_for_a_valid_entry(self):
+        assert _validate_entry({'n': 1}, PlainHolder, {}) is None
+
+    @pytest.mark.parametrize('model', [12345, object(), 'int'])
+    def test_unknown_model_is_not_a_verdict(self, model):
+        from msgspec import NODEFAULT
+        assert _validate_entry({'n': 1}, model, {}) is NODEFAULT
+
+    def test_a_pin_that_changes_nothing_gives_up(self, monkeypatch):
+        """msgspec 0.18.6 refuses a `Raw` instance, pinning can not help there.
+
+        The loc stays the same after pinning, which means the pin was not the
+        problem, so the entry is unknown rather than failing.
+        """
+        from msgspec import NODEFAULT
+
+        import msgspecerror.repair as repair_mod
+
+        monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
+        assert _validate_entry({'payload': {'a': 1}, 'n': 1}, RawHolder, {}) is NODEFAULT

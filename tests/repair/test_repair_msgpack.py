@@ -10,6 +10,7 @@ import pytest
 from msgspec import NODEFAULT, Struct, field
 from typing_extensions import Annotated
 
+from msgspecerror.const import MSGSPEC_0_19_PLUS
 from msgspecerror.repair import load_msgpack_with_default
 
 # --- Test Models ---
@@ -826,3 +827,49 @@ class OptionLayer(Struct):
 
 class OptionDoc(Struct):
     layers: Dict[str, OptionLayer] = {}
+
+
+class RawMsg(Struct):
+    """A raw field plus a field that can fail."""
+    payload: msgspec.Raw
+    n: int = 0
+
+
+class RawDoc(Struct):
+    items: Dict[str, RawMsg] = {}
+
+
+@pytest.mark.skipif(
+    not MSGSPEC_0_19_PLUS,
+    reason='msgspec < 0.19.0 refuses a Raw instance in convert, the key can not be located',
+)
+class TestRawFieldModel:
+    """A msgpack payload can rebuild a `msgspec.Raw` field, unlike a converted object.
+
+    Msgpack has no whitespace, so re-encoding the repaired object gives the raw
+    field bytes with the same content as the original span.
+    """
+
+    def test_the_model_instance_is_built(self):
+        data = _msgpack({
+            'items': {
+                'one': {'payload': {'a': 1}, 'n': 1},
+                'two': {'payload': {'a': 2}, 'n': 'xx'},
+            }
+        })
+        result, errors = load_msgpack_with_default(data, RawDoc, guess_default=True)
+
+        assert isinstance(result, RawDoc)
+        assert sorted(result.items) == ['one', 'two']
+        assert result.items['one'].n == 1
+        assert result.items['two'].n == 0
+        assert all(isinstance(item.payload, msgspec.Raw) for item in result.items.values())
+        assert [e.loc for e in errors] == [('items', 'two', 'n')]
+
+    def test_the_raw_content_is_preserved(self):
+        """Msgpack re-encoding is value preserving, unlike a json re-format."""
+        data = _msgpack({'items': {'one': {'payload': {'a': 1, 'b': [1, 2]}, 'n': 'xx'}}})
+        result, errors = load_msgpack_with_default(data, RawDoc, guess_default=True)
+
+        assert result.items['one'].n == 0
+        assert msgspec.msgpack.decode(bytes(result.items['one'].payload)) == {'a': 1, 'b': [1, 2]}
