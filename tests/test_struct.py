@@ -6,7 +6,9 @@ from msgspec import NODEFAULT, UNSET, Meta, Struct, UnsetType, field
 from msgspec.structs import fields as struct_fields
 from typing_extensions import Annotated
 
-from msgspecerror.parse_struct import get_field_default, get_field_name, get_field_typehint
+from msgspecerror.parse_struct import (
+    get_arraylike_field_typehint, get_field_default, get_field_name, get_field_typehint
+)
 
 
 # --- Test Data Setup ---
@@ -530,3 +532,109 @@ class TestGetFieldWithGenericAlias:
         """An alias of a non-struct type is rejected like a non-struct class."""
         with pytest.raises(AttributeError, match="is not a valid msgspec.Struct"):
             get_field_name(List[int], "data")
+
+
+# =================================================================
+# `array_like=True` struct: a failing field is filled by position
+# =================================================================
+class ArrayLikeFilled(Struct, array_like=True):
+    required: str
+    with_default: int = 7
+    with_factory: List[int] = field(default_factory=list)
+
+
+class NoDefaultStruct(Struct, array_like=True):
+    value: Annotated[int, Meta(ge=18)]
+
+
+class ArrayLikeBox(Struct, Generic[T], array_like=True):
+    item: T
+
+
+class ArrayLikeConstrained(Struct, array_like=True):
+    n: int
+    constrained: Annotated[int, Meta(ge=18)] = 0
+
+
+class TestGetFieldDefaultByIndex:
+    """`get_field_default` accepts the position an `array_like` error reports."""
+
+    @pytest.mark.parametrize('index, expected', [
+        (0, NODEFAULT), (1, 7), (2, []),
+    ])
+    def test_a_position(self, index, expected):
+        assert get_field_default(ArrayLikeFilled, index) == expected
+
+    def test_a_position_with_a_guess(self):
+        assert get_field_default(ArrayLikeFilled, 0, guess_default=True) == ""
+
+    def test_a_position_with_validate(self):
+        """A default that fails its own constraint is not written into the input."""
+        assert get_field_default(ArrayLikeConstrained, 1, validate=True) is NODEFAULT
+
+    def test_a_position_out_of_range(self):
+        with pytest.raises(AttributeError, match="has no field at index 9"):
+            get_field_default(ArrayLikeFilled, 9)
+
+    def test_a_negative_index_is_python_indexing(self):
+        assert get_field_default(ArrayLikeFilled, -1) == []
+
+    def test_a_plain_struct_by_name_still_works(self):
+        assert get_field_default(SimpleStruct, "c_default_value") == 3.14
+
+    @pytest.mark.parametrize('model', [List[int], int, None, NotAStruct])
+    def test_a_model_without_fields(self, model):
+        with pytest.raises(AttributeError):
+            get_field_default(model, 0)
+
+    def test_an_unknown_name(self):
+        with pytest.raises(AttributeError, match="has no field with name=\"ghost\""):
+            get_field_default(ArrayLikeFilled, "ghost")
+
+
+class TestGetFieldDefaultGuess:
+    """`get_field_default(guess_default=True)` falls back to the field typehint."""
+
+    def test_a_declared_default_wins(self):
+        assert get_field_default(ArrayLikeFilled, "with_default", guess_default=True) == 7
+
+    def test_a_factory_default(self):
+        assert get_field_default(ArrayLikeFilled, "with_factory", guess_default=True) == []
+
+    def test_a_declared_default(self):
+        assert get_field_default(ArrayLikeFilled, "with_default") == 7
+
+    def test_a_guessed_value(self):
+        assert get_field_default(ArrayLikeFilled, "required", guess_default=True) == ""
+
+    def test_guessing_is_off_by_default(self):
+        assert get_field_default(ArrayLikeFilled, "required") is NODEFAULT
+
+    def test_a_type_without_a_guessable_value(self):
+        """A constrained field has no value the typehint can supply."""
+        assert get_field_default(NoDefaultStruct, "value", guess_default=True) is NODEFAULT
+
+
+class TestGetArraylikeFieldTypehint:
+    """`get_arraylike_field_typehint` reads a field typehint by position."""
+
+    @pytest.mark.parametrize('index, expected', [(0, str), (1, int), (2, List[int])])
+    def test_the_field_at_a_position(self, index, expected):
+        assert get_arraylike_field_typehint(ArrayLikeFilled, index) is expected
+
+    def test_a_position_out_of_range(self):
+        with pytest.raises(AttributeError, match="has no field at index 9"):
+            get_arraylike_field_typehint(ArrayLikeFilled, 9)
+
+    def test_a_negative_index_is_python_indexing(self):
+        assert get_arraylike_field_typehint(ArrayLikeFilled, -1) is List[int]
+
+    def test_a_generic_alias(self):
+        """The alias resolves its TypeVar like the named lookup does."""
+        assert get_arraylike_field_typehint(ArrayLikeBox[str], 0) is str
+        assert get_arraylike_field_typehint(ArrayLikeBox[int], 0) is int
+
+    @pytest.mark.parametrize('model', [List[int], int, None, NotAStruct])
+    def test_a_model_that_is_not_a_struct(self, model):
+        with pytest.raises(AttributeError, match="is not a valid msgspec.Struct"):
+            get_arraylike_field_typehint(model, 0)

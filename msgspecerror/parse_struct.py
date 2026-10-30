@@ -12,7 +12,7 @@ from msgspec._core import Factory
 from msgspec._utils import _apply_params, _get_class_mro_and_typevar_mappings
 from typing_extensions import Literal
 
-from .parse_type import _AnnotatedAlias, _eval_type, _forward_ref
+from .parse_type import _AnnotatedAlias, _eval_type, _forward_ref, get_default
 
 # Python 3.14 computes the annotations lazily (PEP 649),
 # see `_get_own_annotations`
@@ -38,6 +38,49 @@ def _unwrap_struct_model(model):
     if origin is not None and isinstance(origin, type):
         return origin
     return model
+
+
+def is_struct_arraylike(model):
+    """
+    Check whether a struct is decoded from an array instead of an object
+
+    An `array_like=True` struct is encoded as an array of its field values, so
+    an error location addresses it by position rather than by field name.
+
+    Args:
+        model: A msgspec.Struct class, or a parametrized generic alias of one
+
+    Returns:
+        bool: True for an `array_like=True` struct
+    """
+    config = getattr(_unwrap_struct_model(model), '__struct_config__', None)
+    return config is not None and config.array_like
+
+
+def get_arraylike_field_typehint(model, index):
+    """
+    Get the typehint of a field of an `array_like` struct by position
+
+    Args:
+        model: An `array_like=True` struct class, or a parametrized generic alias of one
+        index (int): Position of the field in the encoded array
+
+    Returns:
+        Any: typehint of the field at `index`
+
+    Raises:
+        AttributeError: if `index` is out of range, or `model` is not a struct
+    """
+    struct_model = _unwrap_struct_model(model)
+    try:
+        field_names = struct_model.__struct_fields__
+    except AttributeError:
+        raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
+    try:
+        field_name = field_names[index]
+    except IndexError:
+        raise AttributeError(f'Type {model} has no field at index {index}')
+    return get_field_typehint(model, field_name)
 
 
 def get_field_name(model: Type[Struct], name: str) -> str:
@@ -111,23 +154,27 @@ def _default_is_accepted(model: Type[Struct], name: str, value):
     return True
 
 
-def get_field_default(model: Type[Struct], name: str, validate: bool = False):
+def get_field_default(model: Type[Struct], name_or_index, validate: bool = False, guess_default: bool = False):
     """
     Get default and default_factory of model.field_name
 
     Args:
         model: Subclass of msgspec.Struct, or a parametrized generic alias of one (e.g. `Box[int]`)
-        name (str): Field name (Python attribute) or encode name (serialization name)
+        name_or_index (str | int): Field name (Python attribute), encode name
+            (serialization name), or the position of the field in an
+            `array_like=True` struct, which is how an error reports it
         validate (bool): False by default. If True, the default value is checked
             against the field typehint with `msgspec.convert`. msgspec does not
             validate struct defaults, a default may be rejected when it is
             explicitly present in the input (e.g. `v: Annotated[int, Meta(ge=18)] = 0`),
             such a default returns NODEFAULT. Note that msgspec still applies that
             default when the field is absent from the input.
+        guess_default (bool): False by default. If True, a field that has no
+            accepted default falls back to a value guessed from its typehint
 
     Returns:
         Any | NODEFAULT:
-            default value of given field
+            default value of given field, or a guessed value when allowed
             NODEFAULT if field doesn't have a default
             NODEFAULT if default factory can't be constructed
             NODEFAULT if the default value is not accepted with `validate=True`
@@ -143,8 +190,16 @@ def get_field_default(model: Type[Struct], name: str, validate: bool = False):
     except AttributeError:
         raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
 
-    # 2. Resolve the name to a field name (supports both field_name and encode_name).
-    field_name = get_field_name(model, name)
+    # 2. Resolve the position or the name to a field name (supports both
+    # field_name and encode_name). An `array_like` struct is decoded from an
+    # array, so an error addresses its fields by position.
+    if type(name_or_index) is int:
+        try:
+            field_name = field_names[name_or_index]
+        except IndexError:
+            raise AttributeError(f'Type {model} has no field at index {name_or_index}')
+    else:
+        field_name = get_field_name(model, name_or_index)
 
     # 3. Find the index of the target field.
     idx = field_names.index(field_name)
@@ -172,7 +227,9 @@ def get_field_default(model: Type[Struct], name: str, validate: bool = False):
             return NODEFAULT
         return value
 
-    return NODEFAULT
+    if not guess_default:
+        return NODEFAULT
+    return get_default(get_field_typehint(model, field_name), guess_default=True)
 
 
 def _scan_annotation(tp):

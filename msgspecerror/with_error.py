@@ -25,7 +25,7 @@ from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msg
 from .parse_msgpack import fixup_msgpack_unicode_slow
 from .parse_struct import get_field_typehint
 from .parse_type import is_struct_type, origin_args, unwrap_typehint
-from .repair import _find_failing_dict_key, _find_failing_dict_value, _get_item_model, _resolve_union_member
+from .repair import _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _resolve_union_member
 
 T = TypeVar('T')
 
@@ -121,7 +121,7 @@ def _resolve_loc(loc, data, model, options):
                 return _missing_value(loc, index, keys)
             keys.append(part)
             value = obj
-            model = _get_item_model(origin, args, part)
+            model = _get_index_model(origin, args, part)
             continue
 
         # 4. A struct field

@@ -879,3 +879,80 @@ class RawMsg(Struct):
 
 class RawDoc(Struct):
     items: Dict[str, RawMsg] = {}
+
+
+# =====================================================================
+# `array_like=True` struct: an error location addresses a field by position
+# =====================================================================
+class ArrayLikePoint(Struct, array_like=True):
+    x: int
+    y: int
+
+
+class ArrayLikeDefaults(Struct, array_like=True):
+    x: int = 0
+    y: str = ""
+
+
+class PlainPoint(Struct):
+    x: int
+    y: int
+
+
+class TestArrayLikeStruct:
+    """An error location of an array-like struct addresses a field by position."""
+
+    def test_a_field_default_keeps_the_shape(self):
+        """The position can not be deleted, a field default fills it."""
+        data = b'[[1, "ok"], [2, 3]]'
+
+        result, errors = load_json_with_default(data, List[ArrayLikeDefaults])
+
+        assert result == [ArrayLikeDefaults(x=1, y='ok'), ArrayLikeDefaults(x=2, y='')]
+        assert [e.loc for e in errors] == [(1, 1)]
+
+    def test_a_guessed_value_fills_the_position(self):
+        """Without a field default, `guess_default` supplies the value."""
+        data = b'[[1, 2], [3, "bad"]]'
+
+        result, errors = load_json_with_default(data, List[ArrayLikePoint], guess_default=True)
+
+        assert result == [ArrayLikePoint(x=1, y=2), ArrayLikePoint(x=3, y=0)]
+        assert [e.loc for e in errors] == [(1, 1)]
+
+    def test_the_object_is_dropped_without_a_value(self):
+        """Dropping one position would shift every later field."""
+        data = b'[[1, 2], [3, "bad"]]'
+
+        result, errors = load_json_with_default(data, List[ArrayLikePoint])
+
+        assert result == [ArrayLikePoint(x=1, y=2)]
+        assert [e.loc for e in errors] == [(1, 1)]
+
+    def test_a_dict_entry_is_dropped(self):
+        """The dict key is kept, only the entry that holds the bad array goes."""
+        data = b'{"a": [1, 2], "b": [3, "bad"]}'
+
+        result, errors = load_json_with_default(data, Dict[str, ArrayLikePoint])
+
+        assert list(result) == ['a']
+        assert result['a'] == ArrayLikePoint(x=1, y=2)
+        assert [e.loc for e in errors] == [('b', 1)]
+
+    def test_a_valid_array_like_struct_is_untouched(self):
+        data = b'[[1, 2], [3, 4]]'
+
+        result, errors = load_json_with_default(data, List[ArrayLikePoint])
+
+        assert result == [ArrayLikePoint(x=1, y=2), ArrayLikePoint(x=3, y=4)]
+        assert errors == []
+
+    def test_a_plain_struct_still_addresses_fields_by_name(self):
+        """The position form does not leak into the named-field path."""
+        data = b'{"a": {"x": 1, "y": 2}, "b": {"x": 3, "y": "bad"}}'
+
+        result, errors = load_json_with_default(data, Dict[str, PlainPoint], guess_default=True)
+
+        assert result['a'] == PlainPoint(x=1, y=2)
+        assert result['b'] == PlainPoint(x=3, y=0)
+        assert [e.loc for e in errors] == [('b', 'y')]

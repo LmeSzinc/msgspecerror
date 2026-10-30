@@ -11,7 +11,8 @@ from .parse_decoder import get_decoder_model
 from .parse_error import ErrorInfo, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 from .parse_struct import (
-    _default_is_accepted, _unwrap_struct_model, get_field_default, get_field_name, get_field_typehint
+    _default_is_accepted, _unwrap_struct_model, get_arraylike_field_typehint, get_field_default, get_field_name,
+    get_field_typehint, is_struct_arraylike
 )
 from .parse_type import get_default, is_struct_type, origin_args, unwrap_typehint
 from .repair_unicode import _collect_unicode_replace
@@ -40,6 +41,31 @@ def _get_item_model(model_origin, model_args, index):
             return NODEFAULT
     # list / set / frozenset / variable-length tuple, all items share one type
     return model_args[0]
+
+
+def _get_index_model(model_origin, model_args, index):
+    """
+    Get the typehint an error location addresses by position.
+
+    A sequence shares one item typehint, an `array_like` struct addresses its
+    fields by order instead. Both are looked up here, so a caller that walks an
+    index does not have to ask which kind it is holding.
+
+    Args:
+        model_origin (type): Origin of the typehint, e.g. list, tuple, a struct
+        model_args (tuple | None): Args of the sequence typehint, None for bare typehints
+        index (int): Position in the encoded value
+
+    Returns:
+        Any: The typehint at `index`, or NODEFAULT if it can't be determined
+    """
+    if is_struct_arraylike(model_origin):
+        # The index is the field order
+        try:
+            return get_arraylike_field_typehint(model_origin, index)
+        except AttributeError:
+            return NODEFAULT
+    return _get_item_model(model_origin, model_args, index)
 
 
 def _pop_last_collection(last_collection_data, last_collection_key):
@@ -210,7 +236,7 @@ def _pin_raw(value, loc, model, encoder=None):
     if type(part) is int:
         if type(value) is not list or not 0 <= part < len(value):
             return NODEFAULT
-        item_model = _get_item_model(origin, args, part)
+        item_model = _get_index_model(origin, args, part)
         if item_model is NODEFAULT:
             return NODEFAULT
         if origin in (list, set, frozenset) or (origin is tuple and Ellipsis in (args or ())):
@@ -543,6 +569,23 @@ def _repair_once(
             if type(obj) is not list:
                 # Error path like `0` implies a list, but obj doesn't match.
                 return NODEFAULT, error
+            if is_struct_arraylike(model_origin):
+                # An `array_like` struct is decoded from an array, the index is
+                # the field order. An item can not be deleted here: every later
+                # field would shift into the wrong place. A default keeps the
+                # shape, and without one the object that holds it is dropped.
+                if is_last:
+                    try:
+                        value = get_field_default(
+                            model_origin, part, validate=True, guess_default=guess_default)
+                    except AttributeError:
+                        value = NODEFAULT
+                    if value is not NODEFAULT:
+                        obj[part] = value
+                        return raw_obj, error
+                if not _pop_last_collection(last_collection_data, last_collection_key):
+                    return NODEFAULT, error
+                return raw_obj, error
             item_model = _get_item_model(model_origin, model_args, part)
             if is_last:
                 # fix obj

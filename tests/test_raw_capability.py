@@ -277,9 +277,8 @@ class TestUnionRaw:
 class TestArrayLikeRaw:
     """Row 8: a raw field inside an `array_like=True` struct.
 
-    The error location is an index, and the walk only knows sequences from
-    their typehint. It can not map index 1 back to the second field of an
-    array-like struct, so the entry can not be judged.
+    The error location is an index, and the walk maps it back through the field
+    order of the struct.
     """
 
     class Sub(Struct, array_like=True):
@@ -288,13 +287,14 @@ class TestArrayLikeRaw:
 
     DOC = b'{"one": [{"a": 1}, 1], "two": [{"b": 2}, "bad"]}'
 
-    @pytest.mark.xfail(reason='the walk can not map an index to an array-like field', strict=True)
     def test_with_error_detail_resolves_the_failing_key(self):
         obj, detail = load_json_with_error_detail(self.DOC, Dict[str, self.Sub])
 
         assert obj is NODEFAULT
         assert detail.loc == ('two', 1)
+        assert detail.loc_resolved is True
         assert detail.error_value == 'bad'
+        assert detail.error_value_resolved is True
 
     def test_the_index_is_still_precise(self):
         obj, detail = load_json_with_error_detail(self.DOC, Dict[str, self.Sub])
@@ -302,12 +302,20 @@ class TestArrayLikeRaw:
         assert obj is NODEFAULT
         assert detail.loc[1] == 1
 
-    def test_with_default_keeps_the_placeholder(self):
-        """The key stays unknown, so the placeholder is the honest answer."""
+    def test_with_default_fills_the_failing_position(self):
+        """`n` has no default, so the guessed value keeps the shape of the array."""
         result, errors = load_json_with_default(self.DOC, Dict[str, self.Sub], guess_default=True)
 
-        assert result == {}
-        assert [e.loc for e in errors][0] == ('...', 1)
+        assert list(result) == ['one', 'two']
+        assert result['one'].n == 1
+        assert result['two'].n == 0
+        assert [e.loc for e in errors] == [('two', 1)]
+
+    def test_with_default_without_guessing_drops_only_the_bad_entry(self):
+        result, errors = load_json_with_default(self.DOC, Dict[str, self.Sub])
+
+        assert list(result) == ['one']
+        assert [e.loc for e in errors] == [('two', 1)]
 
 
 @needs_convert_raw
