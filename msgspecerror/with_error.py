@@ -529,6 +529,12 @@ def load_json_with_error_detail(data, model_or_decoder):
     return NODEFAULT, _drop_rewritten_value(resolve_error(error, raw, model, **options), repaired)
 
 
+# The container kinds the replacement walk descends into. A frozenset lookup is
+# one hash probe, a tuple would compare every entry, and a scalar is the common
+# case in a decoded payload.
+_CONTAINER_TYPES = frozenset({list, tuple, set, frozenset})
+
+
 def _contains_replacement(value):
     """
     Check whether a value holds the character the byte repair writes.
@@ -537,24 +543,29 @@ def _contains_replacement(value):
     holds one may not be the value the payload had. Only the value itself is
     walked, the rest of the document is not touched.
 
+    The walk collects the next level into a fresh list and iterates the current
+    one with `for`: a `pop()` per item costs more than the two loop conditions,
+    and the level order does not matter for a yes / no answer.
+
     Args:
         value (Any): Value to check, a container is walked
 
     Returns:
         bool: True if a U+FFFD character is reachable
     """
-    stack = [value]
-    while stack:
-        item = stack.pop()
-        item_type = type(item)
-        if item_type is str:
-            if '\ufffd' in item:
-                return True
-        elif item_type is dict:
-            stack.extend(item.keys())
-            stack.extend(item.values())
-        elif item_type in (list, tuple, set, frozenset):
-            stack.extend(item)
+    level = [value]
+    while level:
+        current, level = level, []
+        for item in current:
+            item_type = type(item)
+            if item_type is str:
+                if '\ufffd' in item:
+                    return True
+            elif item_type is dict:
+                level.extend(item.keys())
+                level.extend(item.values())
+            elif item_type in _CONTAINER_TYPES:
+                level.extend(item)
     return False
 
 
