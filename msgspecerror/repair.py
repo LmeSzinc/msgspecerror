@@ -396,7 +396,7 @@ def _find_failing_dict_key(obj, key_model, kwargs=None):
 
 
 def _repair_once(
-        raw_obj, model, error: ErrorInfo, guess_default=False, kwargs=None, encoder=None, from_convert=False
+        raw_obj, model, error: ErrorInfo, guess_default=False, kwargs=None
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
     """
     Args:
@@ -412,28 +412,11 @@ def _repair_once(
         kwargs (dict): Options of the equivalent `msgspec.convert` call, the
             same ones the failed call used, so an entry is judged with the same
             rules that rejected the input
-        encoder (callable): Encodes a sub-value into the bytes a raw field holds.
-            Defaults to None, a raw field then can not be filled.
-        from_convert (bool): True when `error` came from `convert` rather than
-            from the typed decoder. Only `convert` rejects an already decoded
-            object at a `msgspec.Raw` field, so only then can a raw-shaped error
-            be an artifact instead of a real one. Defaults to False.
-
     Returns:
         tuple[Any, ErrorInfo | _NoDefault]: (obj, error) the repaired object and fixed error.
             If repair failed, obj will be NODEFAULT.
             If this error is not consider as an error, error will be NODEFAULT and won't be collected.
     """
-    if encoder is not None and from_convert and error.ctx.may_raw_rejection:
-        # The typehint at the error is a `msgspec.Raw`, and `convert` only takes
-        # a `Raw` instance there. The payload bytes go back into that spot, so
-        # the model can be built from this object instead of a re-decode.
-        # This is not a data error: the field is restored, not repaired.
-        filled = _pin_raw(raw_obj, error.loc, model, encoder)
-        if filled is NODEFAULT:
-            return NODEFAULT, error
-        return filled, NODEFAULT
-
     # handle root error
     if not error.loc:
         value = get_default(model, guess_default=guess_default)
@@ -803,16 +786,28 @@ def _handle_obj_repair(
                 break
             continue
 
-        # repair once
-        raw_obj, error = _repair_once(
-            raw_obj, model, error, guess_default=guess_default, kwargs=kwargs, encoder=encoder,
-            from_convert=from_convert)
-        if error is not NODEFAULT:
-            collected_errors.append(error)
+        if from_convert and encoder is not None and error.ctx.may_raw_rejection:
+            # The typehint at the error is a `msgspec.Raw`, and `convert` only
+            # takes a `Raw` instance there. The payload bytes go back into that
+            # spot, so the model can be built from this object instead of a
+            # re-decode. This is not a data error: the field is restored, so
+            # nothing is collected.
+            filled = _pin_raw(raw_obj, error.loc, model, encoder)
+            if filled is NODEFAULT:
+                # The path can not be walked, the field can not be restored
+                collected_errors.append(error)
+                return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
+            raw_obj = filled
+        else:
+            # repair once
+            raw_obj, error = _repair_once(
+                raw_obj, model, error, guess_default=guess_default, kwargs=kwargs)
+            if error is not NODEFAULT:
+                collected_errors.append(error)
 
-        # repair failed
-        if raw_obj is NODEFAULT:
-            return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
+            # repair failed
+            if raw_obj is NODEFAULT:
+                return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
 
         # try if all repaired
         try:
@@ -1033,8 +1028,7 @@ def load_json_with_default(
                     return _handle_root_error(model, error, guess_default=guess_default)
             # Most errors will enter here
             raw_obj, new_errors = _handle_obj_repair(
-                raw_obj, model, e, guess_default=guess_default, kwargs=options,
-                codec='json', decoder=decoder)
+                raw_obj, model, e, guess_default=guess_default, kwargs=options, codec='json', decoder=decoder)
             collected_errors.extend(new_errors)
             return raw_obj, collected_errors
         except DecodeError as error:
@@ -1175,8 +1169,7 @@ def load_msgpack_with_default(
                 return result, errors
             # Most errors will enter here
             return _handle_obj_repair(
-                raw_obj, model, e, guess_default=guess_default, kwargs=options,
-                codec='msgpack', decoder=decoder)
+                raw_obj, model, e, guess_default=guess_default, kwargs=options, codec='msgpack', decoder=decoder)
         except DecodeError as error:
             result, errors = _handle_root_error(model, error, guess_default=guess_default)
             errors.extend(unicode_errors)
