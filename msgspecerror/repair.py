@@ -7,6 +7,7 @@ from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack,
 
 from . import const
 from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
+from .parse_decoder import get_decoder_model
 from .parse_error import ErrorInfo, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 from .parse_struct import (
@@ -144,45 +145,6 @@ def _resolve_union_member(model_args, part, obj):
         if _struct_tag_matches(struct, obj):
             return struct
     return NODEFAULT
-
-
-def _get_model_options(model_or_decoder, kwargs):
-    """
-    Get the target type and the options of the equivalent convert call.
-
-    A decoder carries the rules it validates with, they become the defaults of
-    the convert call so every re-validation sees the same rules. `str_keys`
-    follows the format: json keys are always strings, msgpack keys may be
-    anything. An explicit keyword argument always wins over a decoder.
-
-    Args:
-        model_or_decoder (type | Decoder): Target type, or a decoder to take
-            `.type` / `.strict` / `.dec_hook` / format from
-        kwargs (dict): Explicit options, they override the decoder ones
-
-    Returns:
-        tuple[Any, dict]: The target type and the convert keyword arguments
-    """
-    cls = type(model_or_decoder)
-    if cls is JsonDecoder:
-        options = {
-            'strict': model_or_decoder.strict,
-            'dec_hook': model_or_decoder.dec_hook,
-            'str_keys': True,
-        }
-        model = model_or_decoder.type
-    elif cls is MsgpackDecoder:
-        options = {
-            'strict': model_or_decoder.strict,
-            'dec_hook': model_or_decoder.dec_hook,
-        }
-        model = model_or_decoder.type
-    else:
-        options = {}
-        model = model_or_decoder
-
-    options.update(kwargs)
-    return model, options
 
 
 _MAXIMUM_RAW_PATCH = 8
@@ -987,24 +949,11 @@ def load_json_with_default(
         # [ErrorInfo(msg='Expected `int`, got `str` - at `$.s.a`',
         # type=<ErrorType.TYPE_MISMATCH>, loc=('s', 'a'), ctx=ErrorCtx())]
     """
-    # Decoder classes can't be subclassed reliably, an exact type check is
-    # enough and avoids reading a `.type` attribute of an unrelated object
-    cls = type(model_or_decoder)
-    if cls is MsgpackDecoder:
-        raise TypeError(
-            'load_json_with_default() requires a msgspec.json.Decoder, '
-            'got a msgspec.msgpack.Decoder'
-        )
-    if cls is JsonDecoder:
-        decoder = model_or_decoder
-        model = decoder.type
-    else:
-        decoder = None
-        model = model_or_decoder
-    # A json payload always carries string keys, and the repair has to judge an
-    # entry with the same rules the decoding used, or a value the decoder
-    # accepted (`strict=False`, a `dec_hook`) looks invalid to `convert`
-    _, options = _get_model_options(model_or_decoder, {'str_keys': True})
+    # The repair has to judge an entry with the same rules the decoding used,
+    # or a value the decoder accepted (`strict=False`, a `dec_hook`) looks
+    # invalid to `convert`
+    decoder, model, options = get_decoder_model(
+        model_or_decoder, JsonDecoder, {'str_keys': True}, 'load_json_with_default')
 
     collected_errors = []
     for _ in range(2):
@@ -1125,22 +1074,9 @@ def load_msgpack_with_default(
 
     See load_json_with_default for more info.
     """
-    # Decoder classes can't be subclassed reliably, an exact type check is
-    # enough and avoids reading a `.type` attribute of an unrelated object
-    cls = type(model_or_decoder)
-    if cls is JsonDecoder:
-        raise TypeError(
-            'load_msgpack_with_default() requires a msgspec.msgpack.Decoder, '
-            'got a msgspec.json.Decoder'
-        )
-    if cls is MsgpackDecoder:
-        decoder = model_or_decoder
-        model = decoder.type
-    else:
-        decoder = None
-        model = model_or_decoder
-    # Msgpack keys are not restricted to strings, so `str_keys` stays False
-    _, options = _get_model_options(model_or_decoder, {})
+    # Msgpack keys are not restricted to strings, so `str_keys` stays off
+    decoder, model, options = get_decoder_model(
+        model_or_decoder, MsgpackDecoder, None, 'load_msgpack_with_default')
 
     unicode_errors: List[ErrorInfo] = []
 
@@ -1258,7 +1194,7 @@ def convert_with_default(data, model_or_decoder, *, guess_default=False, **kwarg
         tuple[Any, List[ErrorInfo]]: (result, errors) validated result and a list
             of collected errors. See load_json_with_default for the details.
     """
-    model, options = _get_model_options(model_or_decoder, kwargs)
+    _, model, options = get_decoder_model(model_or_decoder, options=kwargs)
     try:
         return convert(data, type=model, **options), []
     except ValidationError as e:

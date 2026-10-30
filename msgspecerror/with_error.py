@@ -20,13 +20,12 @@ from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
 from .const import DECODE_ERRORS, T_NODEFAULT, T_json_data, T_msgpack_data
+from .parse_decoder import get_decoder_model
 from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_slow
 from .parse_struct import get_field_typehint
 from .parse_type import is_struct_type, origin_args, unwrap_typehint
-from .repair import (
-    _find_failing_dict_key, _find_failing_dict_value, _get_item_model, _get_model_options, _resolve_union_member
-)
+from .repair import _find_failing_dict_key, _find_failing_dict_value, _get_item_model, _resolve_union_member
 
 T = TypeVar('T')
 
@@ -212,7 +211,7 @@ def resolve_error(error, data, model_or_decoder, **kwargs):
     if not isinstance(error, ErrorInfo):
         error = parse_msgspec_error(error)
 
-    model, options = _get_model_options(model_or_decoder, kwargs)
+    _, model, options = get_decoder_model(model_or_decoder, options=kwargs)
     try:
         resolved = _resolve_loc(error.loc, data, model, options)
     except Exception:
@@ -273,7 +272,7 @@ def convert_with_error(data, model_or_decoder, **kwargs):
         tuple[Any, ErrorInfo | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, error) on failure
     """
-    model, options = _get_model_options(model_or_decoder, kwargs)
+    _, model, options = get_decoder_model(model_or_decoder, options=kwargs)
     try:
         return convert(data, type=model, **options), NODEFAULT
     except ValidationError as e:
@@ -316,20 +315,7 @@ def load_json_with_error(data, model_or_decoder):
         tuple[Any, ErrorInfo | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, error) on failure
     """
-    # Decoder classes can't be subclassed reliably, an exact type check is
-    # enough and avoids reading a `.type` attribute of an unrelated object
-    cls = type(model_or_decoder)
-    if cls is MsgpackDecoder:
-        raise TypeError(
-            'load_json_with_error() requires a msgspec.json.Decoder, '
-            'got a msgspec.msgpack.Decoder'
-        )
-    if cls is JsonDecoder:
-        decoder = model_or_decoder
-        model = decoder.type
-    else:
-        decoder = None
-        model = model_or_decoder
+    decoder, model, _ = get_decoder_model(model_or_decoder, JsonDecoder, caller='load_json_with_error')
 
     try:
         if decoder is None:
@@ -375,20 +361,7 @@ def load_msgpack_with_error(data, model_or_decoder):
         tuple[Any, ErrorInfo | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, error) on failure
     """
-    # Decoder classes can't be subclassed reliably, an exact type check is
-    # enough and avoids reading a `.type` attribute of an unrelated object
-    cls = type(model_or_decoder)
-    if cls is JsonDecoder:
-        raise TypeError(
-            'load_msgpack_with_error() requires a msgspec.msgpack.Decoder, '
-            'got a msgspec.json.Decoder'
-        )
-    if cls is MsgpackDecoder:
-        decoder = model_or_decoder
-        model = decoder.type
-    else:
-        decoder = None
-        model = model_or_decoder
+    decoder, model, _ = get_decoder_model(model_or_decoder, MsgpackDecoder, caller='load_msgpack_with_error')
 
     try:
         if decoder is None:
@@ -433,7 +406,7 @@ def convert_with_error_detail(data, model_or_decoder, **kwargs):
         tuple[Any, ErrorInfoDetail | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, detail) on failure
     """
-    model, options = _get_model_options(model_or_decoder, kwargs)
+    _, model, options = get_decoder_model(model_or_decoder, options=kwargs)
     try:
         return convert(data, type=model, **options), NODEFAULT
     except ValidationError as e:
@@ -477,23 +450,9 @@ def load_json_with_error_detail(data, model_or_decoder):
         tuple[Any, ErrorInfoDetail | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, detail) on failure
     """
-    # Decoder classes can't be subclassed reliably, an exact type check is
-    # enough and avoids reading a `.type` attribute of an unrelated object
-    cls = type(model_or_decoder)
-    if cls is MsgpackDecoder:
-        raise TypeError(
-            'load_json_with_error_detail() requires a msgspec.json.Decoder, '
-            'got a msgspec.msgpack.Decoder'
-        )
-    if cls is JsonDecoder:
-        decoder = model_or_decoder
-        model = decoder.type
-    else:
-        decoder = None
-        model = model_or_decoder
-    # The key search must validate with the rules the payload was decoded
-    # with, a json payload always carries string keys
-    _, options = _get_model_options(model_or_decoder, {'str_keys': True})
+    # The key search must validate with the rules the payload was decoded with
+    decoder, model, options = get_decoder_model(
+        model_or_decoder, JsonDecoder, {'str_keys': True}, 'load_json_with_error_detail')
 
     try:
         if decoder is None:
@@ -629,23 +588,10 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
         tuple[Any, ErrorInfoDetail | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, detail) on failure
     """
-    # Decoder classes can't be subclassed reliably, an exact type check is
-    # enough and avoids reading a `.type` attribute of an unrelated object
-    cls = type(model_or_decoder)
-    if cls is JsonDecoder:
-        raise TypeError(
-            'load_msgpack_with_error_detail() requires a msgspec.msgpack.Decoder, '
-            'got a msgspec.json.Decoder'
-        )
-    if cls is MsgpackDecoder:
-        decoder = model_or_decoder
-        model = decoder.type
-    else:
-        decoder = None
-        model = model_or_decoder
     # The key search must validate with the rules the payload was decoded with,
-    # msgpack keys are not restricted to strings, so `str_keys` stays False
-    _, options = _get_model_options(model_or_decoder, {})
+    # msgpack keys are not restricted to strings, so `str_keys` stays off
+    decoder, model, options = get_decoder_model(
+        model_or_decoder, MsgpackDecoder, None, 'load_msgpack_with_error_detail')
 
     try:
         if decoder is None:
