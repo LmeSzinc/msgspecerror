@@ -143,13 +143,14 @@ class TestConvertRawRequired:
         assert detail.loc_resolved is True
         assert detail.error_value_resolved is False
 
-    def test_with_default_rejects_without_touching_the_input(self):
-        snapshot = msgspec.json.encode(self.DATA)
-        result, errors = convert_with_default(self.DATA, RawReq, guess_default=True)
+    def test_with_default_fills_the_raw_field(self):
+        """No payload, so the value is encoded as msgpack to build the field."""
+        data = {'payload': {'a': 1}, 'n': 1}
+        result, errors = convert_with_default(data, RawReq)
 
-        assert result is NODEFAULT
-        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
-        assert msgspec.json.encode(self.DATA) == snapshot
+        assert errors == []
+        assert result.n == 1
+        assert msgspec.msgpack.decode(result.payload) == {'a': 1}
 
 
 class TestConvertRawDefaulted:
@@ -174,15 +175,16 @@ class TestConvertRawDefaulted:
         assert detail.loc_resolved is True
         assert detail.error_value_resolved is True
 
-    def test_with_default_leaves_the_raw_value_alone(self):
-        """The old behaviour overwrote it with `Raw(b'')`."""
+    def test_with_default_repairs_the_real_error(self):
+        """The raw field is filled, so the error at `n` is reached and repaired."""
         data = {'payload': {'a': 1}, 'n': 'bad'}
-        snapshot = msgspec.json.encode(data)
         result, errors = convert_with_default(data, RawDefault, guess_default=True)
 
-        assert result == RawDefault()
-        assert errors[-1].type is ErrorType.INPUT_REJECTED
-        assert msgspec.json.encode(data) == snapshot
+        assert result.n == 0
+        assert msgspec.msgpack.decode(result.payload) == {'a': 1}
+        assert [e.loc for e in errors] == [('n',)]
+        # The sub-document is never replaced by a placeholder inside the object
+        assert data['payload'] == {'a': 1}
 
 
 class TestRootRaw:
@@ -208,11 +210,11 @@ class TestRootRaw:
         assert detail.loc_resolved is True
         assert detail.error_value_resolved is False
 
-    def test_with_default_has_no_instance_to_return(self):
+    def test_with_default_encodes_the_document(self):
         result, errors = convert_with_default(self.DATA, Raw)
 
-        assert result is NODEFAULT
-        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
+        assert errors == []
+        assert msgspec.msgpack.decode(result) == self.DATA
 
     @pytest.mark.parametrize('loader', [load_json_with_error, load_json_with_error_detail, load_json_with_default])
     def test_load_families_decode_the_document(self, loader):
@@ -674,19 +676,18 @@ class TestOldMsgspecBuildFallback:
         assert result.a == 1
         assert errors == []
 
-    def test_an_in_memory_object_still_can_not_be_built(self, monkeypatch):
-        """No payload means no bytes, whatever the msgspec version."""
+    def test_an_in_memory_object_is_rebuilt_through_msgpack(self, monkeypatch):
+        """No payload, so the object is encoded as msgpack and decoded again."""
         monkeypatch.setattr(msgspecerror.const, 'MSGSPEC_0_19_PLUS', False)
 
         result, errors = convert_with_default({'payload': {'a': 1}, 'a': 1, 'b': 2}, self.Msg)
 
-        assert result is NODEFAULT
-        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
+        assert isinstance(result, self.Msg)
+        assert msgspec.msgpack.decode(result.payload) == {'a': 1}
+        assert errors == []
 
-    def test_a_raw_field_after_the_real_error_is_refused_not_crashed(self, monkeypatch):
-        """The raw field is only reached after `a` is repaired, and there is no
-        payload to re-decode, so the object is refused instead of encoding None.
-        """
+    def test_a_raw_field_after_the_real_error_is_rebuilt(self, monkeypatch):
+        """The raw field is only reached after `a` is repaired, then re-encoded."""
 
         class Late(Struct):
             a: int
@@ -697,9 +698,9 @@ class TestOldMsgspecBuildFallback:
         result, errors = convert_with_default(
             {'a': 'bad', 'payload': {'x': 1}}, Late, guess_default=True)
 
-        assert result is NODEFAULT
-        assert [e.loc for e in errors] == [('a',), ()]
-        assert errors[-1].type is ErrorType.INPUT_REJECTED
+        assert result.a == 0
+        assert msgspec.msgpack.decode(result.payload) == {'x': 1}
+        assert [e.loc for e in errors] == [('a',)]
 
 
 class TestWithErrorIsFaithful:
@@ -987,12 +988,12 @@ class TestNonStructRawFamilies:
         assert 'one' in result
 
     @pytest.mark.parametrize('model, doc_name, bad_loc', CASES)
-    def test_convert_with_default_rejects_an_in_memory_object(self, model, doc_name, bad_loc):
-        """An in-memory object has no bytes for the raw field, so it is refused."""
+    def test_convert_with_default_never_writes_a_placeholder(self, model, doc_name, bad_loc):
+        """These models are a known gap, but a refusal never corrupts the input."""
         data = msgspec.json.decode(getattr(self, doc_name))
         before = copy.deepcopy(data)
 
-        _, errors = convert_with_default(data, Dict[str, model])
+        result, errors = convert_with_default(data, Dict[str, model])
 
+        assert errors
         assert data == before
-        assert errors[0].type is ErrorType.INPUT_REJECTED

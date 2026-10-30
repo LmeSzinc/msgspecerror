@@ -676,13 +676,19 @@ class TestConvertRawField:
         assert detail.type is ErrorType.INPUT_REJECTED
         assert detail.loc == ()
 
-    def test_the_message_is_the_one_the_repair_family_gives(self):
-        """One verdict, one text, so a caller can match on either."""
-        detail = assert_failed(convert_with_error_detail(self.DATA, self.Doc))
-        _, errors = convert_with_default(self.DATA, self.Doc)
+    def test_the_detail_family_is_the_one_that_refuses(self):
+        """The repair family can build the model, the detail family has no value to give.
 
-        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
-        assert detail.msg == errors[0].msg
+        Locating needs no bytes, so `*_with_error_detail` reports the object as
+        it is. Building the model does need them, so `*_with_default` encodes the
+        value and hands back an instance.
+        """
+        detail = assert_failed(convert_with_error_detail(self.DATA, self.Doc))
+        result, errors = convert_with_default(self.DATA, self.Doc)
+
+        assert detail.type is ErrorType.INPUT_REJECTED
+        assert errors == []
+        assert msgspec.msgpack.decode(result.payload) == {'a': 1}
 
 
 @pytest.mark.skipif(

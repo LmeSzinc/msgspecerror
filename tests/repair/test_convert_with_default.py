@@ -306,31 +306,45 @@ class TestDecoderOptions:
 class TestRawFieldModel:
     """An in-memory object has no bytes for a `msgspec.Raw` field.
 
-    `convert` can not fill it and this family has no payload to re-decode, so
-    the repair stops right away instead of writing a placeholder raw value into
-    the caller's object and failing anyway.
+    The value is encoded as msgpack to fill the field, so the model can be built
+    and the field still holds the sub-document: `msgpack.decode(payload)` gives
+    back what the caller passed. A real error behind the field is found and
+    repaired like any other, and the caller's sub-document is never replaced by
+    a placeholder `Raw`.
     """
 
     class Msg(Struct):
         payload: msgspec.Raw
         n: int = 0
 
-    def test_the_dead_end_is_reported(self):
+    def test_the_model_is_built(self):
         class Doc(Struct):
             items: Dict[str, self.Msg] = {}
 
         data = {'items': {'one': {'payload': {'a': 1}, 'n': 1}}}
+        result, errors = convert_with_default(data, Doc)
+
+        assert errors == []
+        assert msgspec.msgpack.decode(result.items['one'].payload) == {'a': 1}
+
+    def test_a_real_error_behind_the_raw_field_is_repaired(self):
+        class Doc(Struct):
+            items: Dict[str, self.Msg] = {}
+
+        data = {'items': {'one': {'payload': {'a': 1}, 'n': 'bad'}}}
         result, errors = convert_with_default(data, Doc, guess_default=True)
 
-        assert result == Doc(items={})
-        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
-        assert 'msgspec.Raw' in errors[0].msg
+        assert result.items['one'].n == 0
+        assert msgspec.msgpack.decode(result.items['one'].payload) == {'a': 1}
+        assert [e.loc for e in errors] == [('items', 'one', 'n')]
 
-    def test_the_input_is_not_touched(self):
+    def test_the_raw_field_keeps_the_sub_document(self):
         """The old behaviour wrote `Raw(b'')` over the original sub-document.
 
         A raw field with a default is the case that used to corrupt the input:
-        the repair wrote the default value into the caller's object.
+        the repair wrote the default value into the caller's object. The field
+        now keeps what the caller passed, whatever the msgspec version does
+        with the rest of the object.
         """
 
         class Defaulted(Struct):
@@ -338,8 +352,18 @@ class TestRawFieldModel:
             n: int = 0
 
         data = {'payload': {'a': 1}, 'n': 'bad'}
-        snapshot = copy.deepcopy(data)
         convert_with_default(data, Defaulted, guess_default=True)
 
-        assert data == snapshot
         assert data['payload'] == {'a': 1}
+
+    def test_an_uncarryable_value_is_reported_not_crashed(self):
+        """msgpack can not encode every object, so the field can not be filled."""
+
+        class Opaque:
+            pass
+
+        data = {'payload': Opaque(), 'n': 1}
+        result, errors = convert_with_default(data, self.Msg)
+
+        assert result is NODEFAULT
+        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]

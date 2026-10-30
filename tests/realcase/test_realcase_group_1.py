@@ -420,13 +420,23 @@ class TestRawRejectionRealConvert:
         assert msgspec.json.decode(result.payload) == {'x': 1}
         assert [e.loc for e in errors] == [('retries',)]
 
-    def test_the_convert_family_never_builds_the_model(self):
-        """An in-memory object can not carry the raw bytes, whatever it holds."""
+    def test_the_convert_family_builds_the_model(self):
+        """No payload, so the raw field is filled with the msgpack of the value."""
         data = msgspec.json.decode(b'{"kind": "click", "payload": {"x": 1}, "retries": 2}')
 
         obj, errors = convert_with_default(data, self.Event)
-        assert obj is msgspec.NODEFAULT
-        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
+        assert errors == []
+        assert obj.kind == 'click'
+        assert obj.retries == 2
+        assert msgspec.msgpack.decode(obj.payload) == {'x': 1}
+
+    def test_the_convert_family_repairs_the_real_error(self):
+        data = msgspec.json.decode(self.PAYLOAD)
+
+        obj, errors = convert_with_default(data, self.Event, guess_default=True)
+        assert obj.retries == 0
+        assert msgspec.msgpack.decode(obj.payload) == {'x': 1}
+        assert [e.loc for e in errors] == [('retries',)]
 
 
 class TestRawShapeFalsePositivesReal:

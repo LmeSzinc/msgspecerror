@@ -402,7 +402,7 @@ All `ErrorType` enum members and their corresponding error message formats. `<Pa
   - `` Input rejected: validation failed on struct defaults `` — struct default value validation failed
   - `` Input rejected: a msgspec.Raw field can not be built from an in-memory object `` — `convert` can not build a `msgspec.Raw` field from a decoded object
   - `` Input rejected: a msgspec.Raw field can not be built from a decoded object `` — this msgspec refuses a `Raw` instance, the object can not be rebuilt
-- Triggered by: The msgspecerror auto-repair loop cannot fix the input, or the input cannot be judged at all (a `convert_*` call on a model with a `msgspec.Raw` field, where no other value is wrong)
+- Triggered by: The msgspecerror auto-repair loop cannot fix the input, or the input cannot be judged at all (`convert_with_error_detail` on a model with a `msgspec.Raw` field and no other error, or a value msgpack cannot encode at such a field)
 - Note: This type is internal to msgspecerror; msgspec itself never produces this error
 
 ## 5. Limitations

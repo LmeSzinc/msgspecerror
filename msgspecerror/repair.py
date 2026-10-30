@@ -756,11 +756,13 @@ def _rebuild(raw_obj, model, codec, decoder, kwargs):
 
     Only used on msgspec before 0.19.0, whose `convert` refuses a `Raw`
     instance, so the object alone can never become a model with a raw field.
+    The `convert` family has no payload either, so it names the codec the value
+    is encoded in.
 
     Args:
         raw_obj (Any): The repaired object
         model (Any): The target type
-        codec (str): 'json' or 'msgpack'
+        codec (str): Codec the object is encoded in, 'json' or 'msgpack'
         decoder (Decoder | None): The caller's decoder, its options are kept
         kwargs (dict): Options of the equivalent `convert` call
 
@@ -770,8 +772,8 @@ def _rebuild(raw_obj, model, codec, decoder, kwargs):
     packed = ENCODERS[codec](raw_obj)
     if decoder is not None:
         return decoder.decode(packed)
-    # `str_keys` is a `convert` option, a decode takes only the codec ones
-    options = {key: value for key, value in kwargs.items() if key != 'str_keys'}
+    # Only the options a decode takes are forwarded, `convert` has more
+    options = {key: kwargs[key] for key in _DECODE_KWARGS if key in kwargs}
     return DECODERS[codec](packed, type=model, **options)
 
 
@@ -789,8 +791,10 @@ def _handle_obj_repair(
             (`strict=False`) or needs a `dec_hook` would otherwise fight the
             repair: a value the decoder accepted looks invalid to `convert`.
         codec (str): 'json' or 'msgpack' for a repair family that holds a
-            payload. Defaults to None, an in-memory object has no bytes to fill
-            a `msgspec.Raw` field with.
+            payload. Defaults to None, an in-memory object has no payload. A
+            `msgspec.Raw` field still needs bytes there, so the value is encoded
+            as msgpack to fill it: that is the one builtin format which carries
+            every type a decoded payload can hold.
         decoder (Decoder): The caller's decoder, used to keep its options when
             the object has to be decoded again. Defaults to None.
 
@@ -803,17 +807,10 @@ def _handle_obj_repair(
     # family fails inside the typed decoder instead, which takes the payload
     # bytes at such a field, so an error it reports there is a real one.
     from_convert = codec is None
-    if from_convert and error.ctx.may_raw_rejection:
-        # The input can not be validated at all: a `msgspec.Raw` field needs the
-        # payload bytes, which an in-memory object does not have. Repairing
-        # would write a placeholder into the caller's object and still fail, so
-        # stop before touching it.
-        rejected = ErrorInfo(
-            const.MSG_RAW_FROM_MEMORY,
-            type=ErrorType.INPUT_REJECTED, loc=())
-        return get_default(model, guess_default=guess_default, return_obj=True), [rejected]
-
-    encoder = ENCODERS[codec] if codec is not None else None
+    # No payload means no bytes for a raw field. The object is re-encoded as
+    # msgpack to fill it, which is what a caller would do by hand.
+    refill_codec = codec if codec is not None else 'msgpack'
+    encoder = ENCODERS[refill_codec]
     collected_errors = []
     rejected_msg = 'Input rejected: too many repair cycles'
     for _ in range(const.MAXIMUM_REPAIR):
@@ -821,12 +818,8 @@ def _handle_obj_repair(
             # msgspec before 0.19.0 refuses a `Raw` instance in `convert`, so the
             # field can not be filled in place. The re-encoded object is decoded
             # by the typed decoder instead, which does accept raw bytes.
-            if codec is None:
-                # No payload to re-decode, an in-memory object can not be built
-                rejected_msg = const.MSG_RAW_FROM_MEMORY
-                break
             try:
-                return _rebuild(raw_obj, model, codec, decoder, kwargs), collected_errors
+                return _rebuild(raw_obj, model, refill_codec, decoder, kwargs), collected_errors
             except ValidationError as rebuild_error:
                 # The raw field was ahead of another error. The re-encoded object
                 # has the same shape, so its location is usable and the repair
@@ -843,15 +836,19 @@ def _handle_obj_repair(
                 break
             continue
 
-        if from_convert and encoder is not None and error.ctx.may_raw_rejection:
+        if from_convert and error.ctx.may_raw_rejection:
             # The typehint at the error is a `msgspec.Raw`, and `convert` only
-            # takes a `Raw` instance there. The payload bytes go back into that
+            # takes a `Raw` instance there. The value is encoded back into that
             # spot, so the model can be built from this object instead of a
             # re-decode. This is not a data error: the field is restored, so
             # nothing is collected.
             filled = _pin_raw(raw_obj, error.loc, model, encoder)
             if filled is NODEFAULT:
-                # The path can not be walked, the field can not be restored
+                # The path can not be walked, or the value there is one msgpack
+                # can not carry, so the field can not be restored
+                if codec is None:
+                    rejected = ErrorInfo(const.MSG_RAW_FROM_MEMORY, type=ErrorType.INPUT_REJECTED, loc=())
+                    return get_default(model, guess_default=guess_default, return_obj=True), [rejected]
                 collected_errors.append(error)
                 return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
             raw_obj = filled
@@ -872,7 +869,7 @@ def _handle_obj_repair(
         except ValidationError as e:
             error = parse_msgspec_error(e)
             from_convert = True
-            if encoder is not None and error.ctx.may_raw_rejection:
+            if error.ctx.may_raw_rejection:
                 # Another raw field, the loop fills it in the next round
                 continue
             # User-code errors (__post_init__, dec_hook, etc.) are wrapped as
@@ -1274,6 +1271,11 @@ def convert_with_default(data, model_or_decoder, *, guess_default=False, **kwarg
     The repair is applied to `data` in place, the same way
     load_json_with_default() repairs the object it just decoded.
     A caller that still needs the original value must copy it first.
+
+    A `msgspec.Raw` field can not be built from an in-memory object: it needs
+    bytes, and there is no payload to take them from. The value at that field is
+    encoded as msgpack and filled in, so the model is built and the field holds
+    the sub-document (`msgpack.decode(payload)` gives it back).
 
     Args:
         data (Any): The raw value to convert. It is modified in place.
