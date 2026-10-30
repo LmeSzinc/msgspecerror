@@ -252,6 +252,38 @@ class TestOptionalRaw:
         assert detail.error_value == 1
         assert detail.error_value_resolved is True
 
+    @pytest.mark.parametrize('guess_default', [False, True])
+    def test_with_default_writes_null(self, guess_default):
+        """`None` is a member of the union, so no guess is needed to repair it."""
+        result, errors = load_json_with_default(self.DOC, Dict[str, self.Opt], guess_default=guess_default)
+
+        assert result == {'one': self.Opt(payload=None, n=1)}
+        assert [e.loc for e in errors] == [('one', 'payload')]
+
+    def test_with_default_keeps_the_other_entries(self):
+        doc = b'{"good": {"payload": null, "n": 1}, "bad": {"payload": 1, "n": 2}}'
+
+        result, errors = load_json_with_default(doc, Dict[str, self.Opt])
+
+        assert result == {'good': self.Opt(payload=None, n=1), 'bad': self.Opt(payload=None, n=2)}
+        assert [e.loc for e in errors] == [('bad', 'payload')]
+
+    def test_with_default_from_msgpack(self):
+        doc = msgspec.msgpack.encode({'one': {'payload': 1, 'n': 1}})
+
+        result, errors = load_msgpack_with_default(doc, Dict[str, self.Opt])
+
+        assert result == {'one': self.Opt(payload=None, n=1)}
+        assert [e.loc for e in errors] == [('one', 'payload')]
+
+    def test_with_default_from_convert(self):
+        data = {'one': {'payload': 1, 'n': 1}}
+
+        result, errors = convert_with_default(data, Dict[str, self.Opt])
+
+        assert result == {'one': self.Opt(payload=None, n=1)}
+        assert [e.loc for e in errors] == [('one', 'payload')]
+
 
 class TestUnionRaw:
     """Row 7: `Union[Raw, int]`, the decoder gives the object to the `int` member."""
@@ -278,6 +310,40 @@ class TestUnionRaw:
         assert detail.loc_resolved is True
         assert detail.error_value == {'a': 1}
         assert detail.error_value_resolved is True
+
+    def test_with_default_guesses_the_int_member(self):
+        """`0` is the guessed value of the `int` member the object was given to."""
+        TWO = b'{"good": {"v": 5, "n": 1}, "bad": {"v": {"a": 1}, "n": 2}}'
+
+        result, errors = load_json_with_default(TWO, Dict[str, self.Uni], guess_default=True)
+
+        assert result == {'good': self.Uni(v=5, n=1), 'bad': self.Uni(v=0, n=2)}
+        assert [e.loc for e in errors] == [('bad', 'v')]
+
+    def test_with_default_drops_only_the_bad_entry(self):
+        """`v` is required and has no default, so the minimal repair drops its entry."""
+        TWO = b'{"good": {"v": 5, "n": 1}, "bad": {"v": {"a": 1}, "n": 2}}'
+
+        result, errors = load_json_with_default(TWO, Dict[str, self.Uni])
+
+        assert result == {'good': self.Uni(v=5, n=1)}
+        assert [e.loc for e in errors] == [('bad', 'v')]
+
+    def test_with_default_from_msgpack(self):
+        doc = msgspec.msgpack.encode({'bad': {'v': {'a': 1}, 'n': 2}})
+
+        result, errors = load_msgpack_with_default(doc, Dict[str, self.Uni], guess_default=True)
+
+        assert result == {'bad': self.Uni(v=0, n=2)}
+        assert [e.loc for e in errors] == [('bad', 'v')]
+
+    def test_with_default_from_convert(self):
+        data = {'bad': {'v': {'a': 1}, 'n': 2}}
+
+        result, errors = convert_with_default(data, Dict[str, self.Uni], guess_default=True)
+
+        assert result == {'bad': self.Uni(v=0, n=2)}
+        assert [e.loc for e in errors] == [('bad', 'v')]
 
 
 class TestArrayLikeRaw:
