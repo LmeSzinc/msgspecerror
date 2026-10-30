@@ -526,7 +526,15 @@ def load_json_with_error_detail(data, model_or_decoder):
             msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
             loc_resolved=not _has_placeholder(error.loc),
         )
-    return NODEFAULT, _drop_rewritten_value(resolve_error(error, raw, model, **options), repaired)
+    detail = resolve_error(error, raw, model, **options)
+    if repaired and _contains_replacement(detail.error_value):
+        # The located value holds a character the repair wrote, it is not the
+        # real one. The location is still useful, the value is not handed back.
+        detail = ErrorInfoDetail(
+            msg=detail.msg, type=detail.type, loc=detail.loc, ctx=detail.ctx,
+            loc_resolved=detail.loc_resolved,
+        )
+    return NODEFAULT, detail
 
 
 # The container kinds the replacement walk descends into. A frozenset lookup is
@@ -583,32 +591,6 @@ def _replace_invalid_utf8(data):
     if isinstance(data, str):
         return data
     return bytes(data).decode('utf-8', errors='replace')
-
-
-def _drop_rewritten_value(detail, repaired):
-    """
-    Withdraw the value a byte repair wrote, keeping the location.
-
-    Args:
-        detail (ErrorInfoDetail): Detail resolved against the untyped decode
-        repaired (bool): True if the payload had to be rewritten before that
-            decode, so a located value may hold a character the payload did
-            not have
-
-    Returns:
-        ErrorInfoDetail: `detail` when the value is trustworthy, a copy without
-            `error_value` when it holds a written character
-    """
-    if not repaired:
-        return detail
-    if not _contains_replacement(detail.error_value):
-        return detail
-    # The located value holds a character the repair wrote, it is not the real
-    # one. The location is still useful, the value is not handed back.
-    return ErrorInfoDetail(
-        msg=detail.msg, type=detail.type, loc=detail.loc, ctx=detail.ctx,
-        loc_resolved=detail.loc_resolved,
-    )
 
 
 @overload
@@ -697,4 +679,11 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
             loc_resolved=not _has_placeholder(error.loc),
         )
     detail = resolve_error(error, raw, model, **options)
-    return NODEFAULT, _drop_rewritten_value(detail, repaired)
+    if repaired and _contains_replacement(detail.error_value):
+        # The located value holds a character the repair wrote, it is not the
+        # real one. The location is still useful, the value is not handed back.
+        detail = ErrorInfoDetail(
+            msg=detail.msg, type=detail.type, loc=detail.loc, ctx=detail.ctx,
+            loc_resolved=detail.loc_resolved,
+        )
+    return NODEFAULT, detail
