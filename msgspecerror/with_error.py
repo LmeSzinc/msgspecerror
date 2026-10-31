@@ -502,7 +502,9 @@ def convert_with_error_detail(data, model_or_decoder, **kwargs):
             # An empty location is the whole document: concrete, but there is
             # no entry to point at and no offending value to hand back
             loc_resolved=True)
-    return NODEFAULT, resolve_error(error, data, model, **options)
+    # The model and the options are already resolved, `resolve_error` would
+    # resolve them a second time from the same arguments
+    return NODEFAULT, _resolve_error_with(error, data, model, options)
 
 
 @overload

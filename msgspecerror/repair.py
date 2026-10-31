@@ -940,17 +940,16 @@ def _handle_obj_repair(
     # family fails inside the typed decoder instead, which takes the payload
     # bytes at such a field, so an error it reports there is a real one.
     from_convert = codec is None
-    # No payload means no bytes for a raw field. The object is re-encoded as
-    # msgpack to fill it, which is what a caller would do by hand.
-    refill_codec = codec if codec is not None else 'msgpack'
-    encoder = ENCODERS[refill_codec]
     collected_errors = []
     rejected_msg = 'Input rejected: too many repair cycles'
     for _ in range(const.MAXIMUM_REPAIR):
         if not const.MSGSPEC_0_19_PLUS and from_convert and error.ctx.may_raw_rejection:
             # msgspec before 0.19.0 refuses a `Raw` instance in `convert`, so the
             # field can not be filled in place. The re-encoded object is decoded
-            # by the typed decoder instead, which does accept raw bytes.
+            # by the typed decoder instead, which does accept raw bytes. No
+            # payload means no bytes for a raw field, the object is re-encoded as
+            # msgpack, which is what a caller would do by hand.
+            refill_codec = codec if codec is not None else 'msgpack'
             try:
                 return _rebuild(raw_obj, model, refill_codec, decoder, kwargs), collected_errors
             except ValidationError as rebuild_error:
@@ -974,8 +973,10 @@ def _handle_obj_repair(
             # takes a `Raw` instance there. The value is encoded back into that
             # spot, so the model can be built from this object instead of a
             # re-decode. This is not a data error: the field is restored, so
-            # nothing is collected.
-            filled = _pin_raw(raw_obj, error.loc, model, encoder, raw_spans)
+            # nothing is collected. The encoder is taken here, no other branch
+            # of the loop encodes anything.
+            refill_codec = codec if codec is not None else 'msgpack'
+            filled = _pin_raw(raw_obj, error.loc, model, ENCODERS[refill_codec], raw_spans)
             if filled is NODEFAULT:
                 # The path can not be walked, or the value there is one msgpack
                 # can not carry, so the field can not be restored
@@ -1197,9 +1198,6 @@ def load_json_with_default(
             else:
                 return decoder.decode(data), collected_errors
         except ValidationError as e:
-            # The repaired object is judged with the rules the decode used
-            _, _, options = get_decoder_model(
-                model_or_decoder, JsonDecoder, {'str_keys': True}, 'load_json_with_default')
             try:
                 raw_obj = decode_json(data)
             except ValidationError:
@@ -1219,7 +1217,12 @@ def load_json_with_default(
                     continue
                 else:
                     return _handle_root_error(model, error, guess_default=guess_default)
-            # Most errors will enter here
+            # Most errors will enter here, and only this path judges the object:
+            # the repaired one is validated with the rules the decode used, or a
+            # value the decoder accepted (`strict=False`, a `dec_hook`) looks
+            # invalid. The paths above return or retry without reading them.
+            _, _, options = get_decoder_model(
+                model_or_decoder, JsonDecoder, {'str_keys': True}, 'load_json_with_default')
             raw_obj, new_errors = _handle_obj_repair(
                 raw_obj, model, e, guess_default=guess_default, kwargs=options, codec='json', decoder=decoder)
             collected_errors.extend(new_errors)
@@ -1341,13 +1344,6 @@ def load_msgpack_with_default(
         # decoded once more just to raise the same error again
         error = failure
 
-    # The repair has to judge an entry with the same rules the decoding used,
-    # or a value the decoder accepted (`strict=False`, a `dec_hook`) looks
-    # invalid to `convert`. Msgpack keys are not restricted to strings, so
-    # `str_keys` stays off
-    _, model, options = get_decoder_model(
-        model_or_decoder, MsgpackDecoder, None, 'load_msgpack_with_default')
-
     unicode_errors: List[ErrorInfo] = []
     # The bytes every unicode rewrite replaced, so a `msgspec.Raw` field can be
     # filled with what the payload really had instead of the repaired string
@@ -1382,7 +1378,12 @@ def load_msgpack_with_default(
                 return result, errors
             else:
                 # Most errors enter here: the payload reads as it is, the object
-                # is repaired in place
+                # is repaired in place. Only this path judges the object, and it
+                # has to use the rules the decoding did, or a value the decoder
+                # accepted (`strict=False`, a `dec_hook`) looks invalid. Msgpack
+                # keys are not restricted to strings, so `str_keys` stays off.
+                _, _, options = get_decoder_model(
+                    model_or_decoder, MsgpackDecoder, None, 'load_msgpack_with_default')
                 return _handle_obj_repair(
                     raw_obj, model, error, guess_default=guess_default, kwargs=options,
                     codec='msgpack', decoder=decoder, raw_spans=raw_spans)

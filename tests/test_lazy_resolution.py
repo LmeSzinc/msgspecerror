@@ -10,10 +10,9 @@ repair options, and an error must still resolve them exactly once.
 `load_*_with_error` is the strictest case, it never resolves them: its failure
 is handed back as msgspec reported it, with no entry to judge.
 """
-from collections import namedtuple
-
 import ast
 import inspect
+from collections import namedtuple
 
 import msgspec
 import pytest
@@ -25,6 +24,7 @@ from msgspecerror import (
     load_json_with_default, load_json_with_error, load_json_with_error_detail, load_msgpack_with_default,
     load_msgpack_with_error, load_msgpack_with_error_detail
 )
+from msgspecerror.const import ErrorType
 from msgspecerror.parse_decoder import get_decoder_model
 
 
@@ -344,3 +344,81 @@ class TestEveryErrorBranch:
 
         assert obj is msgspec.NODEFAULT
         assert reported
+
+
+class Text(Struct):
+    """A struct with a str field, so a repaired unicode string has somewhere to go."""
+    a: int = 0
+    b: str = ''
+
+
+class RawText(Struct):
+    """A struct whose raw field can hide invalid utf-8."""
+    payload: msgspec.Raw
+    n: int
+
+
+# `a` is an int and `b` holds two bytes that are not utf-8
+UNICODE_BAD_MSGPACK = b'\x82\xa1a\x01\xa1b\xa3x\xffy'
+UNICODE_BAD_JSON = b'{"a": 1, "b": "x\xffy"}'
+# The raw field holds invalid utf-8, and `n` is the real error
+RAW_UTF8_JSON = b'{"payload": {"x": "\xff\xfe"}, "n": "bad"}'
+
+
+class TestTheBranchThatReadsTheOptions:
+    """Only the path that judges an object resolves the `convert` options.
+
+    A unicode repair rewrites the bytes and retries the decode, and a root
+    error answers with a default for the whole model: neither judges an entry,
+    so neither reads the options, and resolving them there is work thrown away.
+    """
+
+    def test_a_msgpack_unicode_repair_resolves_nothing(self, resolve_calls):
+        result, errors = load_msgpack_with_default(UNICODE_BAD_MSGPACK, Text)
+
+        assert result == Text(a=1, b='x\ufffdy')
+        assert resolve_calls.calls == 0
+
+    def test_a_msgpack_strict_unicode_error_resolves_nothing(self, resolve_calls):
+        result, errors = load_msgpack_with_default(UNICODE_BAD_MSGPACK, Text, utf8_error='strict')
+
+        assert result == Text()
+        assert [error.type for error in errors] == [ErrorType.UNICODE_DECODE_ERROR]
+        assert resolve_calls.calls == 0
+
+    def test_a_json_unicode_repair_resolves_nothing(self, resolve_calls):
+        result, errors = load_json_with_default(UNICODE_BAD_JSON, Text)
+
+        assert result == Text(a=1, b='x\ufffdy')
+        assert resolve_calls.calls == 0
+
+    def test_a_raw_field_behind_a_unicode_error_resolves_once(self, resolve_calls):
+        """The retry that rewrites the bytes does not resolve, the repair does."""
+        result, errors = load_json_with_default(RAW_UTF8_JSON, RawText, guess_default=True)
+
+        assert result.n == 0
+        assert resolve_calls.calls == 1
+
+    def test_a_decoder_still_hands_its_rules_to_the_repair(self, resolve_calls):
+        """Resolving on the failing branch keeps the decoder's rules."""
+        argument = msgspec.json.Decoder(Text, strict=False)
+
+        result, errors = load_json_with_default(b'{"a": "1", "b": "x"}', argument)
+
+        # `strict=False` coerces the numeric string, so nothing needed repairing
+        assert result == Text(a=1, b='x')
+        assert errors == []
+        assert resolve_calls.calls == 0
+
+
+class TestConvertWithErrorDetail:
+    """`convert_with_error_detail` already holds the model and the options."""
+
+    def test_a_failure_resolves_once(self, resolve_calls):
+        from msgspecerror import convert_with_error_detail
+
+        obj, detail = convert_with_error_detail({'x': 'bad', 'y': 2}, Point)
+
+        assert detail.loc == ('x',)
+        assert detail.error_value == 'bad'
+        assert resolve_calls.calls == 1
