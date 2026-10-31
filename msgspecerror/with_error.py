@@ -338,12 +338,11 @@ def _resolve_error_with(error, data, model, options):
         # One type check, and only on the path that has already failed.
         return _unresolved_detail(error)
 
-    try:
-        resolved = _resolve_loc(loc, data, model, options)
-    except Exception:
-        # A loc that doesn't match the data / model must not escape, the same
-        # contract as tests/repair/test_malformed_loc.py for the repair engine
-        resolved = NODEFAULT
+    # No blanket handler here: a loc that does not match the data / model is
+    # answered with NODEFAULT at every step of the walk, and anything else that
+    # escapes is a bug of ours. Swallowing it would hide that bug from the
+    # tests instead of reporting it.
+    resolved = _resolve_loc(loc, data, model, options)
 
     if resolved is NODEFAULT:
         return _unresolved_detail(error)

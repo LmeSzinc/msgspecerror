@@ -881,6 +881,67 @@ class TestArrayLikeOutOfRange:
         assert all(isinstance(e, ErrorInfo) for e in errors)
 
 
+class MemoryErrorBoom(Struct):
+    """A user `__post_init__` that runs out of memory while a loc is walked."""
+    a: int = 0
+
+    def __post_init__(self):
+        raise MemoryError('boom')
+
+
+class Custom:
+    """A type that needs a `dec_hook`, so the hook runs inside the walk."""
+
+
+class TestMemoryError:
+    """Running out of memory is not a location mismatch.
+
+    `_resolve_loc()` validates every dict value with `convert`, so a user
+    `__post_init__` runs inside the `except Exception` that turns a mismatched
+    location into an unlocated detail. `MemoryError` is an `Exception`, so it was
+    swallowed and the caller was handed a normal-looking "not located" answer
+    while the process was still out of memory. It has to reach the caller, the
+    same way `KeyboardInterrupt` and `SystemExit` do.
+    """
+
+    def test_resolve_error_raises(self):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('...',))
+
+        with pytest.raises(MemoryError):
+            resolve_error(error, {'k': {'a': 1}}, Dict[str, MemoryErrorBoom])
+
+    def test_a_dec_hook_raises_too(self):
+        """A user hook is the other place the walk runs caller code."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('...',))
+
+        def hook(type_, value):
+            raise MemoryError('boom')
+
+        with pytest.raises(MemoryError):
+            resolve_error(error, {'k': 1}, Dict[str, Custom], dec_hook=hook)
+
+    def test_a_mismatched_location_is_still_swallowed(self):
+        """The control case: the `except Exception` below it must still work."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(0,))
+
+        detail = resolve_error(error, ['x'], Dict[str, int])
+
+        assert detail.loc == (0,)
+        assert detail.error_value is UNSET
+
+    def test_a_broken_parser_is_still_swallowed(self):
+        """A loc object that explodes while being iterated is not a memory failure."""
+        class Exploding:
+            def __len__(self):
+                raise RuntimeError('boom')
+
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=Exploding())
+
+        detail = resolve_error(error, {'a': 'bad'}, Repairable)
+
+        assert detail.loc == ()
+
+
 class RawHolder(Struct):
     """A raw field plus a field that can fail."""
     payload: msgspec.Raw
