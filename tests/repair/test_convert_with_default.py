@@ -41,6 +41,27 @@ class Pair(Struct):
     values: Tuple[int, str] = (0, '')
 
 
+class Cell(Struct):
+    v: int = 0
+
+
+class StrictModel(Struct, forbid_unknown_fields=True):
+    """A stray key can not be repaired, the repair gives up after the fixes before it."""
+    cells: Dict[str, Cell] = {}
+
+
+class StrictDict(Struct, forbid_unknown_fields=True):
+    values: Dict[str, int] = {}
+
+
+class StrictList(Struct, forbid_unknown_fields=True):
+    values: List[int] = []
+
+
+class StrictInventory(Struct, forbid_unknown_fields=True):
+    items: Dict[str, Item] = {}
+
+
 # `(model, data)` pairs that fail validation. The same data goes through both
 # `convert_with_default` and `load_json_with_default`.
 FAILING_CASES = [
@@ -148,7 +169,6 @@ class TestRepairInPlace:
 
 class TestFailedRepair:
     """A repair that finds no default leaves the input alone."""
-
     def test_required_field_without_default(self):
         data = {'a': 'bad'}
         result, errors = convert_with_default(data, Req)
@@ -172,6 +192,101 @@ class TestFailedRepair:
         assert result == {}
         assert [e.loc for e in errors] == [()]
         assert data == ['x']
+
+
+class TestFailedRepairPutsTheInputBack:
+    """A repair that gives up after it has written something must undo those writes.
+
+    The repair fixes one error per round. A later error that no default can
+    settle makes it give up, and the fixes of the earlier rounds are already in
+    the caller's object. Answering with a default object while leaving the
+    caller's object half repaired is the one outcome that helps nobody.
+    """
+
+    def test_a_half_repaired_object_is_put_back(self):
+        data = {'cells': {'c': {'v': 'bad'}}, 'z': 1}
+        result, errors = convert_with_default(data, StrictModel)
+
+        assert result == StrictModel(cells={})
+        assert [e.loc for e in errors] == [('cells', 'c', 'v'), ('z',)]
+        assert data == {'cells': {'c': {'v': 'bad'}}, 'z': 1}
+
+    def test_a_nested_repaired_field_is_put_back(self):
+        inner = {'amount': 'ABC'}
+        data = {'items': {'apple': inner}, 'z': 0}
+        result, errors = convert_with_default(data, StrictInventory)
+
+        assert result == StrictInventory(items={})
+        assert data['items']['apple'] is inner
+        assert inner == {'amount': 'ABC'}
+
+    def test_a_deleted_dict_entry_keeps_its_position(self):
+        data = {'values': {'a': 1, 'bad': 'x', 'b': 2}, 'z': 0}
+        result, errors = convert_with_default(data, StrictDict)
+
+        assert result == StrictDict(values={})
+        assert data == {'values': {'a': 1, 'bad': 'x', 'b': 2}, 'z': 0}
+        assert list(data['values']) == ['a', 'bad', 'b']
+
+    def test_a_deleted_list_item_is_put_back_at_its_index(self):
+        data = {'values': [1, 'bad', 3], 'z': 0}
+        result, errors = convert_with_default(data, StrictList)
+
+        assert result == StrictList(values=[])
+        assert data == {'values': [1, 'bad', 3], 'z': 0}
+
+    def test_the_same_object_can_be_retried(self):
+        """The restored object fails the same way, so a retry is a real retry."""
+        data = {'cells': {'c': {'v': 'bad'}}, 'z': 1}
+        convert_with_default(data, StrictModel)
+        result, errors = convert_with_default(data, StrictModel)
+
+        assert result == StrictModel(cells={})
+        assert [e.loc for e in errors] == [('cells', 'c', 'v'), ('z',)]
+        assert data == {'cells': {'c': {'v': 'bad'}}, 'z': 1}
+
+
+class TestUndoJournal:
+    """The journal behind `TestFailedRepairPutsTheInputBack`."""
+
+    def test_a_container_is_copied_once(self):
+        from msgspecerror.repair import _Undo
+
+        data = {'a': 1}
+        undo = _Undo()
+        undo.touch(data)
+        data['a'] = 2
+        undo.touch(data)
+        data['b'] = 3
+
+        undo.restore()
+
+        assert data == {'a': 1}
+
+    def test_a_list_is_restored_in_place(self):
+        from msgspecerror.repair import _Undo
+
+        data = [1, 2, 3]
+        undo = _Undo()
+        undo.touch(data)
+        del data[1]
+
+        undo.restore()
+
+        assert data == [1, 2, 3]
+
+    def test_restore_does_not_keep_the_snapshot(self):
+        from msgspecerror.repair import _Undo
+
+        data = {'a': 1}
+        undo = _Undo()
+        undo.touch(data)
+        data['a'] = 2
+        undo.restore()
+        data['a'] = 3
+        undo.restore()
+
+        assert data == {'a': 3}
 
 
 class TestMatchesLoadJsonWithDefault:

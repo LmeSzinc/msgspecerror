@@ -73,13 +73,62 @@ def _get_index_model(model_origin, model_args, index, known_struct_type=None):
     return _get_item_model(model_origin, model_args, index)
 
 
-def _pop_last_collection(last_collection_data, last_collection_key):
+class _Undo:
+    """
+    Puts back the containers a repair wrote into, when the repair gives up.
+
+    `convert_with_default()` repairs the object the caller passed in, so a
+    repair that ends up with a default result must not leave a half repaired
+    object behind. Copying the whole tree up front would cost a full pass on
+    every call that has an error, so each container is copied once, right
+    before its first write. A repair only replaces or removes an entry, it
+    never writes through an entry, so a shallow copy restores the tree.
+
+    `None` stands for "no journal": the object is freshly decoded and nobody
+    else holds it, so a give-up can simply drop it.
+    """
+
+    __slots__ = ('_saved',)
+
+    def __init__(self):
+        # Identity to (container, items), so a container is copied once. The
+        # entry holds the container, so its id can not be reused while saved.
+        self._saved = {}
+
+    def touch(self, container):
+        """
+        Copy a container unless it has been copied already.
+
+        Args:
+            container (dict | list): The container that is about to be written
+        """
+        key = id(container)
+        if key in self._saved:
+            return
+        if isinstance(container, dict):
+            self._saved[key] = (container, list(container.items()))
+        else:
+            self._saved[key] = (container, list(container))
+
+    def restore(self):
+        """Put every touched container back to its original content and order."""
+        for container, items in self._saved.values():
+            container.clear()
+            if isinstance(container, dict):
+                container.update(items)
+            else:
+                container.extend(items)
+        self._saved.clear()
+
+
+def _pop_last_collection(last_collection_data, last_collection_key, undo=None):
     """
     Pop the dict entry / list item that we have stepped into, when the value inside it can't be repaired
 
     Args:
         last_collection_data (dict | list | None): The innermost list/dict data, None if we never stepped into one
         last_collection_key (int | str): The failing key in `last_collection_data`
+        undo (_Undo | None): The journal of the caller's object, see `_Undo`
 
     Returns:
         bool: True if the entry is popped
@@ -87,6 +136,8 @@ def _pop_last_collection(last_collection_data, last_collection_key):
     if last_collection_data is None:
         # we never stepped into a list/dict, nothing to pop
         return False
+    if undo is not None:
+        undo.touch(last_collection_data)
     try:
         # the key is found in `last_collection_data` during the walk, so this should not fail
         last_collection_data.pop(last_collection_key)
@@ -584,7 +635,7 @@ def _walkable_error(error):
 
 
 def _repair_once(
-        raw_obj, model, error: ErrorInfo, guess_default=False, kwargs=None
+        raw_obj, model, error: ErrorInfo, guess_default=False, kwargs=None, undo=None
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
     """
     Args:
@@ -600,6 +651,8 @@ def _repair_once(
         kwargs (dict): Options of the equivalent `msgspec.convert` call, the
             same ones the failed call used, so an entry is judged with the same
             rules that rejected the input
+        undo (_Undo | None): The journal of the caller's object, None when the
+            object is freshly decoded and nobody else holds it
     Returns:
         tuple[Any, ErrorInfo | _NoDefault]: (obj, error) the repaired object and fixed error.
             If repair failed, obj will be NODEFAULT.
@@ -639,7 +692,7 @@ def _repair_once(
             member = _resolve_union_member(model_args, part, obj)
             if member is NODEFAULT:
                 # The path segment doesn't match any member of the union
-                if not _pop_last_collection(last_collection_data, last_collection_key):
+                if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                     return NODEFAULT, error
                 return raw_obj, error
             model, model_kind = member
@@ -664,19 +717,19 @@ def _repair_once(
             except TypeError:
                 # model_args is None: the model isn't a parameterized dict,
                 # so the error path doesn't match the model
-                if not _pop_last_collection(last_collection_data, last_collection_key):
+                if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                     return NODEFAULT, error
                 return raw_obj, error
             if child_model is Ellipsis:
                 # `Tuple[int, ...]` and other non-dict models don't have a value type,
                 # so the error path doesn't match the model
-                if not _pop_last_collection(last_collection_data, last_collection_key):
+                if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                     return NODEFAULT, error
                 return raw_obj, error
             failing_key = _find_failing_dict_value(obj, child_model, kwargs)
             if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
-                if not _pop_last_collection(last_collection_data, last_collection_key):
+                if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                     return NODEFAULT, error
                 return raw_obj, error
             key = failing_key
@@ -689,9 +742,13 @@ def _repair_once(
                 if guess_default:
                     value = get_default(child_model, guess_default=True)
                     if value is not NODEFAULT:
+                        if undo is not None:
+                            undo.touch(obj)
                         obj[key] = value
                         return raw_obj, error
                 # minimal repair, delete the invalid key-value pair
+                if undo is not None:
+                    undo.touch(obj)
                 try:
                     del obj[key]
                 except KeyError:
@@ -726,13 +783,13 @@ def _repair_once(
             except TypeError:
                 # Msgpack data with integer keys validated against a struct.
                 # model_args is None
-                if not _pop_last_collection(last_collection_data, last_collection_key):
+                if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                     return NODEFAULT, error
                 return raw_obj, error
             failing_key = _find_failing_dict_key(obj, key_model, kwargs)
             if failing_key is NODEFAULT:
                 # Could not identify the failing key. Unrecoverable.
-                if not _pop_last_collection(last_collection_data, last_collection_key):
+                if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                     return NODEFAULT, error
                 return raw_obj, error
             key = failing_key
@@ -763,6 +820,8 @@ def _repair_once(
                 else:
                     # set validated key to object
                     for temp_key in temp_dict:
+                        if undo is not None:
+                            undo.touch(obj)
                         obj[temp_key] = value
                         # we don't consider this an error, it's not a user input error
                         return raw_obj, NODEFAULT
@@ -784,7 +843,7 @@ def _repair_once(
             if part < 0:
                 # msgspec reports a position, never a negative index: treating
                 # it as Python's last item would repair the wrong entry
-                if not _pop_last_collection(last_collection_data, last_collection_key):
+                if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                     return NODEFAULT, error
                 return raw_obj, error
             if type(obj) is not list:
@@ -803,6 +862,8 @@ def _repair_once(
                     except AttributeError:
                         value = NODEFAULT
                     if value is not NODEFAULT:
+                        if undo is not None:
+                            undo.touch(obj)
                         try:
                             obj[part] = value
                         except IndexError:
@@ -810,7 +871,7 @@ def _repair_once(
                             # does not match the array, nothing can be written
                             return NODEFAULT, error
                         return raw_obj, error
-                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                    if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                         return NODEFAULT, error
                     return raw_obj, error
 
@@ -829,7 +890,7 @@ def _repair_once(
                         # this should happen, unless raw_obj and error.loc don't match
                         item_model = NODEFAULT
                 if item_model is NODEFAULT:
-                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                    if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                         return NODEFAULT, error
                     return raw_obj, error
                 model = item_model
@@ -840,6 +901,8 @@ def _repair_once(
                 if guess_default and item_model is not NODEFAULT:
                     value = get_default(item_model, guess_default=True)
                     if value is not NODEFAULT:
+                        if undo is not None:
+                            undo.touch(obj)
                         try:
                             obj[part] = value
                         except IndexError:
@@ -847,6 +910,8 @@ def _repair_once(
                             return NODEFAULT, error
                         return raw_obj, error
                 # minimal repair, delete the invalid item
+                if undo is not None:
+                    undo.touch(obj)
                 try:
                     obj.pop(part)
                 except IndexError:
@@ -857,7 +922,7 @@ def _repair_once(
                 # go deeper
                 if item_model is NODEFAULT:
                     # The item type is unknown, we don't know how to repair the deeper path
-                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                    if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                         return NODEFAULT, error
                     return raw_obj, error
                 last_collection_data = obj
@@ -877,7 +942,7 @@ def _repair_once(
                 # array, so a name addresses no field of them: writing one would
                 # build a document the model can not read back. Branch 3 above
                 # has already handled the position form.
-                if not _pop_last_collection(last_collection_data, last_collection_key):
+                if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                     return NODEFAULT, error
                 return raw_obj, error
             # The data tells how the model is decoded: an object model is
@@ -896,7 +961,7 @@ def _repair_once(
                     value = get_field_default(model, part, known_struct_type=model_kind)
                 except AttributeError:
                     # this shouldn't happen, unless raw_obj and error.loc don't match
-                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                    if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                         return NODEFAULT, error
                     return raw_obj, error
                 if value is not NODEFAULT:
@@ -906,13 +971,17 @@ def _repair_once(
                     # default itself when the field is absent.
                     if default_is_accepted(
                             get_field_typehint(model, part, known_struct_type=model_kind), value):
+                        if undo is not None:
+                            undo.touch(obj)
                         obj[part] = value
                         return raw_obj, error
+                    if undo is not None:
+                        undo.touch(obj)
                     try:
                         del obj[part]
                     except KeyError:
                         # this shouldn't happen, unless raw_obj and error.loc don't match
-                        if not _pop_last_collection(last_collection_data, last_collection_key):
+                        if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                             return NODEFAULT, error
                         return raw_obj, error
                     return raw_obj, error
@@ -923,9 +992,11 @@ def _repair_once(
                 value = get_default(child_model, guess_default=guess_default)
                 # still no default, delete the entry we have stepped into
                 if value is NODEFAULT:
-                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                    if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                         return NODEFAULT, error
                     return raw_obj, error
+                if undo is not None:
+                    undo.touch(obj)
                 obj[part] = value
                 return raw_obj, error
             else:
@@ -939,7 +1010,7 @@ def _repair_once(
                     model = get_field_typehint(model, part, known_struct_type=model_kind)
                 except AttributeError:
                     # this shouldn't happen, unless raw_obj and error.loc don't match
-                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                    if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                         return NODEFAULT, error
                     return raw_obj, error
                 continue
@@ -985,9 +1056,30 @@ def _rebuild(raw_obj, model, codec, decoder, kwargs):
     return DECODERS[codec](packed, type=model, **options)
 
 
+def _give_up(model, guess_default, errors, undo):
+    """
+    Answer with a default object, after putting back what a repair has written.
+
+    Args:
+        model (type): The target type to decode into.
+        guess_default (bool): Defaults to False, see `_repair_once`
+        errors (list[ErrorInfo]): The errors collected so far
+        undo (_Undo | None): The journal of the caller's object, None when the
+            object is freshly decoded and nobody else holds it
+
+    Returns:
+        tuple[Any, list[ErrorInfo]]: The default object, or NODEFAULT, and the errors
+    """
+    if undo is not None:
+        # Half repaired input is worse than the input the caller passed: a
+        # retry would start from a different object than the first call did.
+        undo.restore()
+    return get_default(model, guess_default=guess_default, return_obj=True), errors
+
+
 def _handle_obj_repair(
         raw_obj, model, error: ValidationError, guess_default=False, kwargs=None, codec=None, decoder=None,
-        raw_spans=None
+        raw_spans=None, undo=None
 ) -> "tuple[Any, list[ErrorInfo]]":
     """
     Args:
@@ -1009,6 +1101,9 @@ def _handle_obj_repair(
         raw_spans (dict | None): Map of repaired item bytes to the original
             ones, from the unicode repair of the payload. Defaults to None,
             nothing is restored.
+        undo (_Undo | None): The journal of the object the caller passed in, so
+            a repair that gives up leaves that object as it was. Defaults to
+            None, the object belongs to the library and is discarded anyway.
 
     Returns:
         tuple[any, list[ErrorInfo]]:
@@ -1064,20 +1159,20 @@ def _handle_obj_repair(
                 # can not carry, so the field can not be restored
                 if codec is None:
                     rejected = ErrorInfo(const.MSG_RAW_FROM_MEMORY, type=ErrorType.INPUT_REJECTED, loc=())
-                    return get_default(model, guess_default=guess_default, return_obj=True), [rejected]
+                    return _give_up(model, guess_default, [rejected], undo)
                 collected_errors.append(error)
-                return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
+                return _give_up(model, guess_default, collected_errors, undo)
             raw_obj = filled
         else:
             # repair once
             raw_obj, error = _repair_once(
-                raw_obj, model, error, guess_default=guess_default, kwargs=kwargs)
+                raw_obj, model, error, guess_default=guess_default, kwargs=kwargs, undo=undo)
             if error is not NODEFAULT:
                 collected_errors.append(error)
 
             # repair failed
             if raw_obj is NODEFAULT:
-                return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
+                return _give_up(model, guess_default, collected_errors, undo)
 
         # try if all repaired
         try:
@@ -1095,11 +1190,11 @@ def _handle_obj_repair(
                     'Input rejected: validation failed on struct defaults',
                     type=ErrorType.INPUT_REJECTED, loc=())
                 collected_errors.append(rejected)
-                return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
+                return _give_up(model, guess_default, collected_errors, undo)
 
     rejected = ErrorInfo(rejected_msg, type=ErrorType.INPUT_REJECTED, loc=())
     collected_errors.append(rejected)
-    return get_default(model, guess_default=guess_default, return_obj=True), collected_errors
+    return _give_up(model, guess_default, collected_errors, undo)
 
 
 def _handle_root_error(
@@ -1562,6 +1657,12 @@ def convert_with_default(data, model_or_decoder, *, guess_default=False, **kwarg
     load_json_with_default() repairs the object it just decoded.
     A caller that still needs the original value must copy it first.
 
+    A repair that gives up does not leave a half repaired object behind: every
+    container it has written into is put back as it was, so a caller can retry
+    the same call on the same object. The containers are copied one at a time,
+    right before the first write, so a call that validates on the first try
+    pays nothing for this.
+
     A `msgspec.Raw` field can not be built from an in-memory object: it needs
     bytes, and there is no payload to take them from. The value at that field is
     encoded as msgpack and filled in, so the model is built and the field holds
@@ -1586,4 +1687,4 @@ def convert_with_default(data, model_or_decoder, *, guess_default=False, **kwarg
         return convert(data, type=model, **options), []
     except ValidationError as e:
         return _handle_obj_repair(
-            data, model, e, guess_default=guess_default, kwargs=options)
+            data, model, e, guess_default=guess_default, kwargs=options, undo=_Undo())
