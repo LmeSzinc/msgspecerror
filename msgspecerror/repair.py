@@ -771,9 +771,30 @@ def _repair_once(
                             # does not match the array, nothing can be written
                             return NODEFAULT, error
                         return raw_obj, error
-                if not _pop_last_collection(last_collection_data, last_collection_key):
-                    return NODEFAULT, error
-                return raw_obj, error
+                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                        return NODEFAULT, error
+                    return raw_obj, error
+
+                # The error is inside the field at this position, so the walk
+                # descends into the value the index addresses. The field type is
+                # looked up by the same position. `last_collection_*` is left
+                # alone on purpose: the array itself can not lose an item, so a
+                # value that can not be repaired inside it drops the object that
+                # holds the array, not one of its fields.
+                item_model = _get_index_model(
+                    model_origin, model_args, part, known_struct_type=model_kind)
+                if item_model is not NODEFAULT:
+                    try:
+                        obj = obj[part]
+                    except IndexError:
+                        # this should happen, unless raw_obj and error.loc don't match
+                        item_model = NODEFAULT
+                if item_model is NODEFAULT:
+                    if not _pop_last_collection(last_collection_data, last_collection_key):
+                        return NODEFAULT, error
+                    return raw_obj, error
+                model = item_model
+                continue
             item_model = _get_item_model(model_origin, model_args, part)
             if is_last:
                 # fix obj

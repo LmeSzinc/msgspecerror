@@ -1,4 +1,4 @@
-"""Repair inside every model kind msgspec decodes into, not only ``msgspec.Struct``.
+﻿"""Repair inside every model kind msgspec decodes into, not only ``msgspec.Struct``.
 
 An error path names a field for a model decoded from an object (dataclass,
 TypedDict, attrs) and gives a position for one decoded from an array
@@ -14,7 +14,7 @@ import attrs
 import msgspec.json
 import msgspec.msgpack
 import pytest
-from msgspec import NODEFAULT, Struct
+from msgspec import NODEFAULT, Struct, field
 from typing_extensions import NotRequired, TypedDict
 
 from msgspecerror import (
@@ -63,6 +63,40 @@ class NTBox(Struct):
     """A struct holding a NamedTuple."""
     pair: Pair
     n: int
+
+
+class ArrayInner(Struct):
+    """The field an array position addresses, so the path goes one level deeper."""
+    a: int = 0
+
+
+class ArrayOuter(Struct, array_like=True):
+    """An `array_like` struct whose first field is itself a model."""
+    inner: ArrayInner = field(default_factory=ArrayInner)
+    x: int = 0
+
+
+class ArrayOuterOfOuter(Struct, array_like=True):
+    """Two array levels, so the walk has to descend through both."""
+    pair: ArrayOuter = field(default_factory=ArrayOuter)
+    y: int = 0
+
+
+class NTNested(NamedTuple):
+    """A NamedTuple whose first field is itself a model."""
+    inner: ArrayInner
+    x: int = 0
+
+
+class ArrayInnerRequired(Struct):
+    """No default, so a repair inside it has nothing to write."""
+    a: int
+
+
+class ArrayOuterRequired(Struct, array_like=True):
+    """An `array_like` struct holding a model nothing can be written into."""
+    inner: ArrayInnerRequired
+    x: int = 0
 
 
 class Choice(Struct):
@@ -217,6 +251,144 @@ class TestArrayKinds:
 
         assert detail.loc == ('pair', 1)
         assert detail.error_value == 2
+
+
+# --- An error inside the field a position addresses ---
+
+
+class TestArrayKindDeeperThanThePosition:
+    """The error is inside the field the position names, not at the position.
+
+    The position names a field of the array-decoded model, the next segment names
+    a field of *that* model. The walk has to descend into the value, the same
+    way it descends through a list item: without it the whole document fell
+    back to the root default although every field on the way has a default.
+    """
+
+    @pytest.mark.parametrize('guess_default', [False, True], ids=['no-guess', 'guess'])
+    def test_at_root(self, guess_default):
+        result, errors = load_json_with_default(
+            b'[{"a": "bad"}, 1]', ArrayOuter, guess_default=guess_default)
+
+        assert result == ArrayOuter(inner=ArrayInner(a=0), x=1)
+        assert [e.loc for e in errors] == [(0, 'a')]
+
+    @pytest.mark.parametrize('guess_default', [False, True], ids=['no-guess', 'guess'])
+    def test_in_a_dict(self, guess_default):
+        """A keyed entry is repaired in place, the valid sibling is kept."""
+        data = b'{"k": [{"a": "bad"}, 1], "ok": [{"a": 2}, 3]}'
+
+        result, errors = load_json_with_default(data, Dict[str, ArrayOuter], guess_default=guess_default)
+
+        assert result == {
+            'k': ArrayOuter(inner=ArrayInner(a=0), x=1),
+            'ok': ArrayOuter(inner=ArrayInner(a=2), x=3),
+        }
+        assert [e.loc for e in errors] == [('k', 0, 'a')]
+
+    @pytest.mark.parametrize('guess_default', [False, True], ids=['no-guess', 'guess'])
+    def test_in_a_list(self, guess_default):
+        """An item that can be repaired is not dropped, its sibling stays."""
+        data = b'[[{"a": "bad"}, 1], [{"a": 2}, 3]]'
+
+        result, errors = load_json_with_default(data, List[ArrayOuter], guess_default=guess_default)
+
+        assert result == [
+            ArrayOuter(inner=ArrayInner(a=0), x=1),
+            ArrayOuter(inner=ArrayInner(a=2), x=3),
+        ]
+        assert [e.loc for e in errors] == [(0, 0, 'a')]
+
+    @pytest.mark.parametrize('guess_default', [False, True], ids=['no-guess', 'guess'])
+    def test_a_namedtuple(self, guess_default):
+        """A NamedTuple is addressed by position too, so it descends the same way."""
+        result, errors = load_json_with_default(
+            b'[{"a": "bad"}, 1]', NTNested, guess_default=guess_default)
+
+        assert result == NTNested(inner=ArrayInner(a=0), x=1)
+        assert [e.loc for e in errors] == [(0, 'a')]
+
+    def test_two_array_levels(self):
+        """Each position descends into the next model."""
+        result, errors = load_json_with_default(b'[[{"a": "bad"}, 1], 2]', ArrayOuterOfOuter)
+
+        assert result == ArrayOuterOfOuter(pair=ArrayOuter(inner=ArrayInner(a=0), x=1), y=2)
+        assert [e.loc for e in errors] == [(0, 0, 'a')]
+
+    def test_the_location_matches_the_detail(self):
+        """The repair and the detail family agree on where the error is."""
+        data = b'[[{"a": "bad"}, 1], [{"a": 2}, 3]]'
+        obj, detail = load_json_with_error_detail(data, List[ArrayOuter])
+        result, errors = load_json_with_default(data, List[ArrayOuter])
+
+        assert obj is NODEFAULT
+        assert detail.loc == errors[0].loc == (0, 0, 'a')
+        assert detail.error_value == 'bad'
+        assert detail.loc_resolved is True
+        assert result == [
+            ArrayOuter(inner=ArrayInner(a=0), x=1),
+            ArrayOuter(inner=ArrayInner(a=2), x=3),
+        ]
+
+    def test_an_entry_with_nothing_to_write_is_dropped(self):
+        """The inner field has no default, so the entry that holds the array goes.
+
+        Only that entry: dropping the position itself would shift every later
+        field of the array into the wrong place.
+        """
+        data = b'[[{"a": "bad"}, 1], [{"a": 2}, 3]]'
+
+        result, errors = load_json_with_default(data, List[ArrayOuterRequired])
+
+        assert result == [ArrayOuterRequired(inner=ArrayInnerRequired(a=2), x=3)]
+        assert [e.loc for e in errors] == [(0, 0, 'a')]
+
+    def test_the_root_gives_up_when_nothing_can_be_written(self):
+        """A root object has no container to drop it from."""
+        result, errors = load_json_with_default(b'[{"a": "bad"}, 1]', ArrayOuterRequired)
+
+        assert result is NODEFAULT
+        assert [e.loc for e in errors] == [(0, 'a')]
+
+    def test_a_guessed_value_fixes_an_entry_that_has_no_default(self):
+        """`guess_default` supplies the field, so nothing has to be dropped."""
+        data = b'[[{"a": "bad"}, 1], [{"a": 2}, 3]]'
+
+        result, errors = load_json_with_default(data, List[ArrayOuterRequired], guess_default=True)
+
+        assert result == [
+            ArrayOuterRequired(inner=ArrayInnerRequired(a=0), x=1),
+            ArrayOuterRequired(inner=ArrayInnerRequired(a=2), x=3),
+        ]
+        assert [e.loc for e in errors] == [(0, 0, 'a')]
+
+    def test_msgpack(self):
+        """The msgpack family walks the same object the json family does."""
+        payload = msgspec.msgpack.encode([[{'a': 'bad'}, 1], [{'a': 2}, 3]])
+
+        result, errors = load_msgpack_with_default(payload, List[ArrayOuter])
+
+        assert result == [
+            ArrayOuter(inner=ArrayInner(a=0), x=1),
+            ArrayOuter(inner=ArrayInner(a=2), x=3),
+        ]
+        assert [e.loc for e in errors] == [(0, 0, 'a')]
+
+    def test_convert(self):
+        """An in-memory object walks the same way, and is written in place."""
+        data = [{'a': 'bad'}, 1]
+
+        result, errors = convert_with_default(data, ArrayOuter)
+
+        assert result == ArrayOuter(inner=ArrayInner(a=0), x=1)
+        assert [e.loc for e in errors] == [(0, 'a')]
+        assert data == [{'a': 0}, 1]
+
+    def test_a_valid_array_is_untouched(self):
+        result, errors = load_json_with_default(b'[[{"a": 1}, 2]]', List[ArrayOuter])
+
+        assert result == [ArrayOuter(inner=ArrayInner(a=1), x=2)]
+        assert errors == []
 
 
 # --- Union member: the path is relative to the member, not the union ---
