@@ -22,6 +22,19 @@ def _msgpack(obj) -> bytes:
     return msgspec.msgpack.encode(obj)
 
 
+def _walk_fixes_one_item(ba):
+    """
+    Walk one item and check the cursor ended exactly at its boundary.
+
+    The walker no longer reports its end offset, so the item is put in a two
+    element array followed by a bad string: that string is only repaired when
+    the item before it was skipped by exactly its own length.
+    """
+    ba = bytearray(b'\x92' + bytes(ba) + b'\xa1' + _BAD_BYTE)
+    list(_walk_fix(ba, 0, 'replace'))
+    return bytes(ba).endswith(b'\xa3' + _REPLACEMENT_UTF8)
+
+
 # ── slow walker: single items ──────────────────────────────────────────
 
 class TestWalkFix:
@@ -29,63 +42,63 @@ class TestWalkFix:
 
     def test_positive_fixint(self):
         ba = bytearray(b'\x7f')
-        assert _walk_fix(ba, 0, 'replace') == 1
+        assert _walk_fixes_one_item(ba)
 
     def test_negative_fixint(self):
         ba = bytearray(b'\xe0')
-        assert _walk_fix(ba, 0, 'replace') == 1
+        assert _walk_fixes_one_item(ba)
 
     def test_nil(self):
         ba = bytearray(b'\xc0')
-        assert _walk_fix(ba, 0, 'replace') == 1
+        assert _walk_fixes_one_item(ba)
 
     def test_bool(self):
         ba = bytearray(b'\xc3')  # true
-        assert _walk_fix(ba, 0, 'replace') == 1
+        assert _walk_fixes_one_item(ba)
 
     def test_uint8(self):
         ba = bytearray(b'\xcc\xff')
-        assert _walk_fix(ba, 0, 'replace') == 2
+        assert _walk_fixes_one_item(ba)
 
     def test_int64(self):
         ba = bytearray(b'\xd3' + b'\x00' * 8)
-        assert _walk_fix(ba, 0, 'replace') == 9
+        assert _walk_fixes_one_item(ba)
 
     def test_float32(self):
         ba = bytearray(b'\xca' + struct.pack('>f', 1.5))
-        assert _walk_fix(ba, 0, 'replace') == 5
+        assert _walk_fixes_one_item(ba)
 
     def test_float64(self):
         ba = bytearray(b'\xcb' + struct.pack('>d', 1.5))
-        assert _walk_fix(ba, 0, 'replace') == 9
+        assert _walk_fixes_one_item(ba)
 
     def test_bin8(self):
         ba = bytearray(b'\xc4\x05hello')
-        assert _walk_fix(ba, 0, 'replace') == 7
+        assert _walk_fixes_one_item(ba)
 
     def test_bin16(self):
         ba = bytearray(b'\xc5\x00\x05hello')
-        assert _walk_fix(ba, 0, 'replace') == 8
+        assert _walk_fixes_one_item(ba)
 
     def test_bin32(self):
         ba = bytearray(b'\xc6\x00\x00\x00\x05hello')
-        assert _walk_fix(ba, 0, 'replace') == 10
+        assert _walk_fixes_one_item(ba)
 
     def test_fixext1(self):
         ba = bytearray(b'\xd4\x01\xff')
-        assert _walk_fix(ba, 0, 'replace') == 3
+        assert _walk_fixes_one_item(ba)
 
     def test_fixext16(self):
         ba = bytearray(b'\xd8\x01' + b'\x00' * 16)
-        assert _walk_fix(ba, 0, 'replace') == 18
+        assert _walk_fixes_one_item(ba)
 
     def test_ext8(self):
         ba = bytearray(b'\xc7\x05\x01' + b'hello')
-        assert _walk_fix(ba, 0, 'replace') == 8
+        assert _walk_fixes_one_item(ba)
 
     def test_ext32(self):
         ba = bytearray(b'\xc9\x00\x00\x00\x05\x01' + b'hello')
-        assert _walk_fix(ba, 0, 'replace') == 11
+        assert _walk_fixes_one_item(ba)
 
 
 # ── slow walker: strings ───────────────────────────────────────────────
@@ -93,12 +106,12 @@ class TestWalkFix:
 class TestWalkFixStrings:
     def test_fixstr_valid(self):
         ba = bytearray(b'\xa5hello')
-        _walk_fix(ba, 0, 'replace')
+        list(_walk_fix(ba, 0, 'replace'))
         assert bytes(ba) == b'\xa5hello'
 
     def test_fixstr_bad(self):
         ba = bytearray(b'\xa1' + _BAD_BYTE)
-        _walk_fix(ba, 0, 'replace')
+        list(_walk_fix(ba, 0, 'replace'))
         fixed = bytes(ba)
         assert fixed[0] == 0xa3  # fixstr length 3
         assert fixed[1:] == _REPLACEMENT_UTF8
@@ -106,27 +119,27 @@ class TestWalkFixStrings:
     def test_str8_bad(self):
         payload = _BAD_BYTE + b'A'
         ba = bytearray(bytes([0xd9, len(payload)]) + payload)
-        _walk_fix(ba, 0, 'replace')
+        list(_walk_fix(ba, 0, 'replace'))
         assert b'\xef\xbf\xbd' in ba  # replacement char present
         assert b'A' in ba
 
     def test_str16_bad(self):
         payload = _BAD_BYTE * 3 + b'valid'
         ba = bytearray(bytes([0xda]) + struct.pack('>H', len(payload)) + payload)
-        _walk_fix(ba, 0, 'replace')
+        list(_walk_fix(ba, 0, 'replace'))
         assert msgspec.msgpack.decode(bytes(ba)) == '\ufffd\ufffd\ufffdvalid'
 
     def test_str32_bad(self):
         payload = _BAD_BYTE * 4 + b'tail'
         ba = bytearray(bytes([0xdb]) + struct.pack('>I', len(payload)) + payload)
-        _walk_fix(ba, 0, 'replace')
+        list(_walk_fix(ba, 0, 'replace'))
         assert msgspec.msgpack.decode(bytes(ba)) == '\ufffd\ufffd\ufffd\ufffdtail'
 
     def test_utf8_error_ignore(self):
         """With ``utf8_error='ignore'`` bad bytes are removed."""
         payload = _BAD_BYTE + b'good' + _BAD_BYTE
         ba = bytearray(bytes([0xd9, len(payload)]) + payload)
-        _walk_fix(ba, 0, 'ignore')
+        list(_walk_fix(ba, 0, 'ignore'))
         assert msgspec.msgpack.decode(bytes(ba)) == 'good'
 
 

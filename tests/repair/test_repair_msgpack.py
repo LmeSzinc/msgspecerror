@@ -10,6 +10,7 @@ import pytest
 from msgspec import NODEFAULT, Struct, field
 from typing_extensions import Annotated
 
+from msgspecerror import repair
 from msgspecerror.const import MSGSPEC_0_19_PLUS
 from msgspecerror.repair import load_msgpack_with_default
 
@@ -873,3 +874,47 @@ class TestRawFieldModel:
 
         assert result.items['one'].n == 0
         assert msgspec.msgpack.decode(bytes(result.items['one'].payload)) == {'a': 1, 'b': [1, 2]}
+
+
+class TestDecodeCount:
+    """The decode that failed is not repeated, each attempt decodes once."""
+
+    @staticmethod
+    def _count_decodes(monkeypatch):
+        calls = []
+        original = repair.decode_msgpack
+
+        def counting(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(repair, 'decode_msgpack', counting)
+        return calls
+
+    def test_clean_payload(self, monkeypatch):
+        """Nothing is decoded twice on the way to a successful result."""
+        calls = self._count_decodes(monkeypatch)
+        result, errors = load_msgpack_with_default(msgspec.msgpack.encode({'a': 1, 'b': 'x'}), Simple)
+
+        assert result == Simple(1, 'x')
+        assert errors == []
+        assert len(calls) == 1
+
+    def test_unicode_repair(self, monkeypatch):
+        """The payload is decoded again only after the bytes were repaired."""
+        calls = self._count_decodes(monkeypatch)
+        result, errors = load_msgpack_with_default(b'\x82\xa1a\x01\xa1b\xa3x\xffy', Simple)
+
+        assert result == Simple(1, 'x\ufffdy')
+        assert len(errors) == 1
+        assert len(calls) == 2
+
+    def test_validation_repair(self, monkeypatch):
+        """A readable payload is decoded once typed and once without a model."""
+        calls = self._count_decodes(monkeypatch)
+        result, errors = load_msgpack_with_default(
+            msgspec.msgpack.encode({'a': 'oops', 'b': 'x'}), Simple, guess_default=True)
+
+        assert result == Simple(0, 'x')
+        assert len(errors) == 1
+        assert len(calls) == 2

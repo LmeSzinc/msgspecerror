@@ -25,6 +25,7 @@ from msgspecerror import (
 )
 from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
 from msgspecerror.parse_error import parse_msgspec_error
+from msgspecerror.repair import _restore_rewrites
 
 # msgspec before 0.19.0 refuses a `Raw` instance in `convert`, so a pinned entry
 # can not be judged and the failing key is never found. The table documents that
@@ -70,6 +71,11 @@ class NTRecord(NamedTuple):
     """A raw field in a NamedTuple, its decoded form is an array."""
     payload: Raw
     n: int
+
+
+def _restored(value, spans):
+    """Restore the rewrites of one pinned leaf."""
+    return _restore_rewrites(value, spans)
 
 
 class TestLoadRawRequired:
@@ -452,16 +458,12 @@ class TestMsgpackInvalidUtf8InRaw:
 
 @needs_convert_raw
 class TestMsgpackByteRewrite:
-    """Known defect: `_with_default` rewrites raw bytes that were never in error.
+    """The unicode repair must not rewrite a raw field that was not in error.
 
-    The invalid byte lives inside the raw field of a *good* entry. It has to be
-    repaired before an untyped decode can locate the real failure, and the
-    repaired bytes are what the rebuild re-encodes, so that entry's raw payload
-    silently becomes `a\\ufffdb` instead of the original `a\\xffb`.
-
-    This violates "repair only the failing location". It may not be fixable
-    with the msgspec API: a `Raw` span that is not valid utf-8 can not survive a
-    decode / re-encode round trip.
+    Every string has to be valid utf-8 before the payload can be decoded without
+    a target type. A `msgspec.Raw` field is not read by that decode, so a rewrite
+    inside it is collateral. The repair records every item it replaced, and the
+    items of a raw field are walked so the original bytes go back, at any depth.
     """
 
     PAYLOAD = (
@@ -469,11 +471,11 @@ class TestMsgpackByteRewrite:
         b'\xa3bad\x82\xa7payload\xa1x\xa1n\xa3bad'
     )
 
-    @pytest.mark.xfail(reason='the untyped decode repair rewrites every invalid byte, Raw ones included', strict=True)
     def test_the_good_entry_keeps_its_bytes(self):
         result, errors = load_msgpack_with_default(self.PAYLOAD, Dict[str, RawReq], guess_default=True)
 
         assert bytes(result['good'].payload) == b'\xa3a\xffb'
+        assert [e.loc for e in errors] == [('bad', 'n')]
 
     def test_the_defect_is_confined_to_the_rewritten_span(self):
         """Everything else is still repaired correctly, and the error is located."""
@@ -481,9 +483,83 @@ class TestMsgpackByteRewrite:
 
         assert [e.loc for e in errors] == [('bad', 'n')]
         assert result['bad'].n == 0
+        # A value that was never rewritten is handed back as it was
         assert bytes(result['bad'].payload) == b'\xa1x'
-        # The good entry's value is not the original one, it is the repaired one
-        assert bytes(result['good'].payload) == b'\xa5a\xef\xbf\xbdb'
+        assert bytes(result['good'].payload) == b'\xa3a\xffb'
+
+    def test_a_raw_field_holding_a_sub_document_keeps_its_bytes(self):
+        """The usual shape: the raw field holds a whole sub-document."""
+        nested = b'\x82\xa7content\xa3a\xffb\xa1n\x01'
+        result = self._load_with_good_payload(nested)
+
+        assert bytes(result['good'].payload) == nested
+
+    def test_a_raw_field_holding_deeply_nested_documents(self):
+        nested = b'\x81\xa5items\x92\x81\xa2id\x01\x81\xa7content\xa3a\xffb'
+        result = self._load_with_good_payload(nested)
+
+        assert bytes(result['good'].payload) == nested
+
+    @pytest.mark.xfail(
+        reason='two different invalid strings need more than the two repair attempts',
+        strict=True,
+    )
+    def test_two_different_rewrites_in_one_raw_field(self):
+        nested = b'\x82\xa1a\xa3x\xffy\xa1b\xa5p\xf0\x28\x8c\xbc'
+        result = self._load_with_good_payload(nested)
+
+        assert bytes(result['good'].payload) == nested
+
+    def test_the_ignore_handler_is_restored_as_well(self):
+        nested = b'\x81\xa7content\xa3a\xffb'
+        payload = (
+            b'\x82\xa4good\x82\xa7payload' + nested + b'\xa1n\x01'
+            b'\xa3bad\x82\xa7payload\xa1x\xa1n\xa3bad'
+        )
+
+        result, errors = load_msgpack_with_default(payload, Dict[str, RawReq], utf8_error='ignore')
+
+        assert bytes(result['good'].payload) == nested
+        assert [e.loc for e in errors if e.loc] == [('bad', 'n')]
+
+    def test_two_identical_items_are_not_restored(self):
+        """One rewritten and one genuine copy can not be told apart by their bytes."""
+        value = ['a\ufffdb', 'a\ufffdb']
+
+        # Which of the two came from the repair is unknown, so neither is touched
+        assert _restored(value, {'a\ufffdb': b'a\xffb'}) == value
+
+    def test_a_copy_inside_a_binary_blob_is_not_restored(self):
+        """A bin payload is not a string, even when header-like bytes precede it."""
+        # A decoded blob is `bytes`, never the repaired text
+        value = {'blob': b'\x00a\xef\xbf\xbdb\x00'}
+
+        assert _restored(value, {'a\ufffdb': b'a\xffb'}) == value
+
+    def test_the_string_beside_a_binary_copy_is_restored(self):
+        value = {'content': 'a\ufffdb', 'blob': b'\x00a\xef\xbf\xbdb\x00'}
+
+        # The string becomes the bytes the payload had, the blob is left alone
+        assert _restored(value, {'a\ufffdb': b'a\xffb'}) == {
+            'content': msgspec.Raw(b'a\xffb'),
+            'blob': b'\x00a\xef\xbf\xbdb\x00',
+        }
+
+    def test_one_rewritten_item_is_restored(self):
+        value = {'content': 'a\ufffdb', 'n': 1}
+
+        assert _restored(value, {'a\ufffdb': b'a\xffb'}) == {
+            'content': msgspec.Raw(b'a\xffb'), 'n': 1}
+
+    def _load_with_good_payload(self, nested):
+        payload = (
+            b'\x82\xa4good\x82\xa7payload' + nested + b'\xa1n\x01'
+            b'\xa3bad\x82\xa7payload\xa1x\xa1n\xa3bad'
+        )
+        result, errors = load_msgpack_with_default(payload, Dict[str, RawReq], guess_default=True)
+
+        assert [e.loc for e in errors] == [('bad', 'n')]
+        return result
 
 
 class TestMultipleErrorsBehindRaw:

@@ -9,7 +9,7 @@ from . import const
 from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
 from .parse_decoder import get_decoder_model
 from .parse_error import ErrorInfo, parse_msgspec_error
-from .parse_msgpack import fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
+from .parse_msgpack import AMBIGUOUS_SPAN, MISSING, fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 from .parse_struct import (
     _default_is_accepted, _unwrap_struct_model, get_arraylike_field_typehint, get_field_default, get_field_name,
     get_field_typehint, is_struct_arraylike
@@ -176,7 +176,98 @@ def _resolve_union_member(model_args, part, obj):
 _MAXIMUM_RAW_PATCH = 8
 
 
-def _pin_raw(value, loc, model, encoder=None):
+def _rebuild_value(node, raw_spans, counts, slots, fixed):
+    """
+    Copy a value, putting the payload bytes back where a string was rewritten
+
+    One traversal: a rewritten string becomes a `msgspec.Raw` right away and the
+    place it landed is remembered, so the decision can be finished afterwards
+    without walking the value again.
+
+    Args:
+        node (Any): The value to copy
+        raw_spans (dict): Map of repaired text to the original item bytes
+        counts (dict): Hits per text, updated in place
+        slots (list): `(container, key, text)` of every hit, appended in place
+        fixed (bool): True inside a tuple, which can not be patched afterwards
+
+    Returns:
+        tuple[Any, str | None]: The copy, and the text when `node` itself was a
+            rewrite
+    """
+    node_type = type(node)
+    if node_type is str:
+        if fixed or raw_spans.get(node, MISSING) is MISSING:
+            return node, None
+        original = raw_spans[node]
+        if original is AMBIGUOUS_SPAN:
+            # Two different originals repaired to this text, selecting one would
+            # be a guess
+            return node, None
+        counts[node] = counts.get(node, 0) + 1
+        return Raw(original), node
+    if node_type is dict:
+        out = {}
+        for key, item in node.items():
+            child, text = _rebuild_value(item, raw_spans, counts, slots, fixed)
+            out[key] = child
+            if text is not None:
+                slots.append((out, key, text, child))
+        return out, None
+    if node_type is list:
+        out = []
+        for item in node:
+            child, text = _rebuild_value(item, raw_spans, counts, slots, fixed)
+            out.append(child)
+            if text is not None:
+                slots.append((out, len(out) - 1, text, child))
+        return out, None
+    if node_type is tuple:
+        # A tuple can not be patched in place, so its items are left as decoded
+        return tuple(_rebuild_value(item, raw_spans, counts, slots, True)[0] for item in node), None
+    return node, None
+
+
+def _restore_rewrites(value, raw_spans):
+    """
+    Give a raw field the bytes the payload had, not the repaired ones
+
+    The untyped decode needs every string to be valid utf-8, so the payload is
+    rewritten before it can be read. A `msgspec.Raw` field is not read by that
+    decode at all, so a rewrite inside it is collateral: the field is filled from
+    the repaired object, and every rewritten text still in it is swapped back for
+    the bytes it replaced.
+
+    The walk is over the decoded value, not over msgpack bytes: a `str` and a
+    `bytes` are already told apart there, so a binary blob that happens to hold
+    the same text is never touched.
+
+    A text that occurs more than once is left alone, since which occurrence came
+    from the repair is unknown. That decision needs the whole value, so the walk
+    replaces optimistically and the places it replaced are put back afterwards,
+    which keeps the value walked exactly once.
+
+    Args:
+        value (Any): The value the raw field is filled from
+        raw_spans (dict | None): Map of repaired text to the original payload
+
+    Returns:
+        Any: `value` with every unambiguous rewrite restored
+    """
+    if not raw_spans:
+        return value
+    counts = {}
+    slots = []
+    restored, _ = _rebuild_value(value, raw_spans, counts, slots, False)
+    for container, key, text, child in slots:
+        if counts[text] != 1:
+            # The same text is in the value somewhere else as well, which one
+            # was rewritten is unknown
+            container[key] = text
+    return restored
+
+
+def _pin_raw(value, loc, model, encoder=None, raw_spans=None):
     """
     Put a `msgspec.Raw` where an error location points, on a copy of the path.
 
@@ -198,6 +289,10 @@ def _pin_raw(value, loc, model, encoder=None):
             is enough to probe an entry but is not the payload. The repair
             families pass the codec encoder, so the filled field is the real
             content and the model can be built from it.
+        raw_spans (dict | None): Map of repaired text to the original payload,
+            from the unicode repair of the payload bytes. A string the repair
+            touched goes back to what the payload held, wherever it sits in a
+            sub-document. Defaults to None, nothing is restored.
 
     Returns:
         Any | NODEFAULT: The pinned copy, or NODEFAULT if `loc` can't be walked
@@ -206,7 +301,7 @@ def _pin_raw(value, loc, model, encoder=None):
         if encoder is None:
             return Raw(b'')
         try:
-            return Raw(encoder(value))
+            return Raw(encoder(_restore_rewrites(value, raw_spans)))
         except (EncodeError, TypeError):
             # The value can not be encoded by this codec
             return NODEFAULT
@@ -223,7 +318,7 @@ def _pin_raw(value, loc, model, encoder=None):
         child_model = args[1] if args else NODEFAULT
         pinned = dict(value)
         for key, item in value.items():
-            patched = _pin_raw(item, rest, child_model, encoder)
+            patched = _pin_raw(item, rest, child_model, encoder, raw_spans)
             if patched is NODEFAULT:
                 if encoder is None:
                     return NODEFAULT
@@ -243,14 +338,14 @@ def _pin_raw(value, loc, model, encoder=None):
             # Every item shares one typehint, pin the whole container at once
             pinned = list(value)
             for index, item in enumerate(value):
-                patched = _pin_raw(item, rest, item_model, encoder)
+                patched = _pin_raw(item, rest, item_model, encoder, raw_spans)
                 if patched is NODEFAULT:
                     if encoder is None:
                         return NODEFAULT
                     continue
                 pinned[index] = patched
             return pinned
-        item = _pin_raw(value[part], rest, item_model, encoder)
+        item = _pin_raw(value[part], rest, item_model, encoder, raw_spans)
         if item is NODEFAULT:
             return NODEFAULT
         pinned = list(value)
@@ -271,7 +366,7 @@ def _pin_raw(value, loc, model, encoder=None):
         child_model = get_field_typehint(model, part)
     except AttributeError:
         child_model = NODEFAULT
-    item = _pin_raw(child, rest, child_model, encoder)
+    item = _pin_raw(child, rest, child_model, encoder, raw_spans)
     if item is NODEFAULT:
         return NODEFAULT
     pinned = dict(value)
@@ -778,7 +873,8 @@ def _rebuild(raw_obj, model, codec, decoder, kwargs):
 
 
 def _handle_obj_repair(
-        raw_obj, model, error: ValidationError, guess_default=False, kwargs=None, codec=None, decoder=None
+        raw_obj, model, error: ValidationError, guess_default=False, kwargs=None, codec=None, decoder=None,
+        raw_spans=None
 ) -> "tuple[Any, list[ErrorInfo]]":
     """
     Args:
@@ -797,6 +893,9 @@ def _handle_obj_repair(
             every type a decoded payload can hold.
         decoder (Decoder): The caller's decoder, used to keep its options when
             the object has to be decoded again. Defaults to None.
+        raw_spans (dict | None): Map of repaired item bytes to the original
+            ones, from the unicode repair of the payload. Defaults to None,
+            nothing is restored.
 
     Returns:
         tuple[any, list[ErrorInfo]]:
@@ -842,7 +941,7 @@ def _handle_obj_repair(
             # spot, so the model can be built from this object instead of a
             # re-decode. This is not a data error: the field is restored, so
             # nothing is collected.
-            filled = _pin_raw(raw_obj, error.loc, model, encoder)
+            filled = _pin_raw(raw_obj, error.loc, model, encoder, raw_spans)
             if filled is NODEFAULT:
                 # The path can not be walked, or the value there is one msgpack
                 # can not carry, so the field can not be restored
@@ -1170,45 +1269,72 @@ def load_msgpack_with_default(
     decoder, model, options = get_decoder_model(
         model_or_decoder, MsgpackDecoder, None, 'load_msgpack_with_default')
 
+    try:
+        if decoder is None:
+            return decode_msgpack(data, type=model), []
+        return decoder.decode(data), []
+    except (ValidationError, DecodeError, UnicodeDecodeError) as failure:
+        # Handed to the repair below, which works from this failure: a payload
+        # that decodes as it is never allocates any of it, and the bytes are not
+        # decoded once more just to raise the same error again
+        error = failure
+
     unicode_errors: List[ErrorInfo] = []
+    # The bytes every unicode rewrite replaced, so a `msgspec.Raw` field can be
+    # filled with what the payload really had instead of the repaired string
+    raw_spans = {}
 
     for attempt in range(2):
-        try:
-            # happy path, return directly
-            if decoder is None:
-                return decode_msgpack(data, type=model), unicode_errors
-            else:
-                return decoder.decode(data), unicode_errors
-        except ValidationError as e:
-            try:
-                raw_obj = decode_msgpack(data)
-            except UnicodeDecodeError as error:
-                if utf8_error in ('replace', 'ignore'):
-                    data = _repair_msgpack_unicode(data, error, attempt, utf8_error=utf8_error)
-                    unicode_errors.append(parse_msgspec_error(error))
-                    continue
+        if isinstance(error, UnicodeDecodeError):
+            # The payload holds bytes that are not utf-8
+            if utf8_error not in ('replace', 'ignore'):
                 # strict or unknown → root error
                 result, errors = _handle_root_error(model, error, guess_default=guess_default)
                 errors.extend(unicode_errors)
                 return result, errors
-            except DecodeError as error:
-                result, errors = _handle_root_error(model, error, guess_default=guess_default)
+            data = _repair_msgpack_unicode(
+                data, error, attempt, utf8_error=utf8_error, spans=raw_spans)
+            unicode_errors.append(parse_msgspec_error(error))
+        elif isinstance(error, ValidationError):
+            try:
+                raw_obj = decode_msgpack(data)
+            except UnicodeDecodeError as nested:
+                if utf8_error not in ('replace', 'ignore'):
+                    # strict or unknown → root error
+                    result, errors = _handle_root_error(model, nested, guess_default=guess_default)
+                    errors.extend(unicode_errors)
+                    return result, errors
+                data = _repair_msgpack_unicode(
+                    data, nested, attempt, utf8_error=utf8_error, spans=raw_spans)
+                unicode_errors.append(parse_msgspec_error(nested))
+            except DecodeError as nested:
+                result, errors = _handle_root_error(model, nested, guess_default=guess_default)
                 errors.extend(unicode_errors)
                 return result, errors
-            # Most errors will enter here
-            return _handle_obj_repair(
-                raw_obj, model, e, guess_default=guess_default, kwargs=options, codec='msgpack', decoder=decoder)
-        except DecodeError as error:
+            else:
+                # Most errors enter here: the payload reads as it is, the object
+                # is repaired in place
+                return _handle_obj_repair(
+                    raw_obj, model, error, guess_default=guess_default, kwargs=options,
+                    codec='msgpack', decoder=decoder, raw_spans=raw_spans)
+        else:
+            # Malformed msgpack, there is no value to repair
             result, errors = _handle_root_error(model, error, guess_default=guess_default)
             errors.extend(unicode_errors)
             return result, errors
-        except UnicodeDecodeError as error:
-            if utf8_error in ('replace', 'ignore'):
-                data = _repair_msgpack_unicode(data, error, attempt, utf8_error=utf8_error)
-                unicode_errors.append(parse_msgspec_error(error))
-                continue
-            # strict or unknown → root error
-            result, errors = _handle_root_error(model, error, guess_default=guess_default)
+
+        # The bytes changed, decode them again; a repair that did not work is
+        # handled by the next attempt
+        try:
+            if decoder is None:
+                return decode_msgpack(data, type=model), unicode_errors
+            return decoder.decode(data), unicode_errors
+        except ValidationError as e:
+            error = e
+        except UnicodeDecodeError as e:
+            error = e
+        except DecodeError as e:
+            result, errors = _handle_root_error(model, e, guess_default=guess_default)
             errors.extend(unicode_errors)
             return result, errors
 
@@ -1225,6 +1351,7 @@ def _repair_msgpack_unicode(
         error: UnicodeDecodeError,
         attempt: int,
         utf8_error: T_utf8_error = 'replace',
+        spans=None,
 ) -> bytes:
     """
     Repair msgpack bytes with invalid UTF-8.
@@ -1236,12 +1363,23 @@ def _repair_msgpack_unicode(
     *Attempt 1*: use ``fixup_msgpack_unicode_slow`` directly – this
     guarantees a single O(N) pass regardless of how many strings need
     repair, preventing attackers from causing O(N*M) re-decode cycles.
+
+    Args:
+        data (bytes): The payload to repair
+        error (UnicodeDecodeError): The failure that stopped the untyped decode
+        attempt (int): 0 for the fast fix, anything else for the slow walk
+        utf8_error (str): Error handler for the invalid bytes
+        spans (dict | None): Map of repaired item bytes to the original ones,
+            filled in for every rewrite. Defaults to None.
+
+    Returns:
+        bytes: The repaired payload
     """
     if attempt == 0:
-        fixed = fixup_msgpack_unicode_fast(data, error, utf8_error=utf8_error)
+        fixed = fixup_msgpack_unicode_fast(data, error, utf8_error=utf8_error, spans=spans)
         if fixed is not None:
             return fixed
-    return fixup_msgpack_unicode_slow(data, utf8_error=utf8_error)
+    return fixup_msgpack_unicode_slow(data, utf8_error=utf8_error, spans=spans)
 
 
 @overload

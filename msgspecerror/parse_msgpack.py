@@ -17,6 +17,44 @@ from .const import T_utf8_error
 _U16BE = struct.Struct('>H')
 _U32BE = struct.Struct('>I')
 
+# Marks a repaired span whose original bytes can not be told apart from another
+# one: two different items repaired to the same bytes, so restoring either of
+# them would be a guess.
+AMBIGUOUS_SPAN = object()
+MISSING = object()
+
+
+def _record_span(spans, original, repaired):
+    """
+    Remember which string a rewrite replaced.
+
+    Every string has to be valid utf-8 before the payload can be decoded without
+    a target type, but a `msgspec.Raw` field is only rewritten because of that
+    step: the typed decoder never reads it. The repaired text is the key, so a
+    raw field filled from the repaired payload can be traced back to the bytes
+    the payload really had.
+
+    The key is the decoded text, not the bytes: the value is looked up in a
+    decoded object (`_restore_rewrites()`), where a `str` and a `bytes` are
+    already told apart, so a binary blob can never be mistaken for a string.
+
+    Args:
+        spans (dict | None): Map of repaired text to the original item bytes,
+            updated in place. None when the caller does not need it.
+        original (bytes): The whole item (header and payload) before the
+            rewrite, it is written back as a `msgspec.Raw` verbatim
+        repaired (str): The text it became
+    """
+    if spans is None:
+        return
+    previous = spans.get(repaired, MISSING)
+    if previous is MISSING:
+        spans[repaired] = original
+    elif previous != original:
+        # Two strings repair to the same text and came from different bytes, so
+        # neither original can be restored without guessing
+        spans[repaired] = AMBIGUOUS_SPAN
+
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -122,7 +160,8 @@ def _try_fix_string(ba, header_len, str_len, item_start, utf8_error):
             ``.encode()`` (e.g. ``'replace'``, ``'ignore'``).
 
     Returns:
-        int: The byte position immediately after this item.
+        tuple[int, tuple | None]: The byte position immediately after this item,
+            and ``(payload before, text after)`` when it was rewritten
     """
     payload_start = item_start + header_len
     payload = bytes(ba[payload_start:payload_start + str_len])
@@ -135,9 +174,10 @@ def _try_fix_string(ba, header_len, str_len, item_start, utf8_error):
         new_header = _make_str_header(new_strlen)
         old_total = header_len + str_len
         new_total = new_header_len + new_strlen
+        original = bytes(ba[item_start:item_start + old_total])
         ba[item_start:item_start + old_total] = new_header + fixed
-        return item_start + new_total
-    return item_start + header_len + str_len
+        return item_start + new_total, (original, fixed.decode('utf-8'))
+    return item_start + header_len + str_len, None
 
 
 # ── iterative walker ────────────────────────────────────────────────────
@@ -156,8 +196,8 @@ def _walk_fix(ba, start, utf8_error):
         start (int): Offset to begin processing.
         utf8_error (str): Error handler for bytes decode/encode.
 
-    Returns:
-        int: The byte position immediately after the processed item.
+    Yields:
+        tuple[bytes, str]: The item before a rewrite, and the text it became.
     """
     pos = start
     # Stack of remaining-item counts for enclosing containers.
@@ -171,7 +211,7 @@ def _walk_fix(ba, start, utf8_error):
 
     while True:
         if pos >= total:
-            return pos
+            return
 
         op = ba[pos]
 
@@ -197,8 +237,10 @@ def _walk_fix(ba, start, utf8_error):
             pos += 1
         # ── fixstr 0xa0 .. 0xbf ──
         elif 0xa0 <= op <= 0xbf:
-            pos = _try_fix_string(ba, 1, op - 0xa0, pos, utf8_error)
+            pos, span = _try_fix_string(ba, 1, op - 0xa0, pos, utf8_error)
             total = len(ba)
+            if span is not None:
+                yield span
         # ── nil 0xc0 ──
         elif op == 0xc0:
             pos += 1
@@ -278,18 +320,24 @@ def _walk_fix(ba, start, utf8_error):
             pos += 18
         # ── str8 0xd9 ──
         elif op == 0xd9:
-            pos = _try_fix_string(ba, 2, ba[pos + 1], pos, utf8_error)
+            pos, span = _try_fix_string(ba, 2, ba[pos + 1], pos, utf8_error)
             total = len(ba)
+            if span is not None:
+                yield span
         # ── str16 0xda ──
         elif op == 0xda:
             slen = _U16BE.unpack_from(ba, pos + 1)[0]
-            pos = _try_fix_string(ba, 3, slen, pos, utf8_error)
+            pos, span = _try_fix_string(ba, 3, slen, pos, utf8_error)
             total = len(ba)
+            if span is not None:
+                yield span
         # ── str32 0xdb ──
         elif op == 0xdb:
             slen = _U32BE.unpack_from(ba, pos + 1)[0]
-            pos = _try_fix_string(ba, 5, slen, pos, utf8_error)
+            pos, span = _try_fix_string(ba, 5, slen, pos, utf8_error)
             total = len(ba)
+            if span is not None:
+                yield span
 
         # ── array16 / array32 / map16 / map32 ──
         elif op == 0xdc:
@@ -343,7 +391,7 @@ def _walk_fix(ba, start, utf8_error):
         while stack:
             stack.pop()
             if not stack:
-                return pos
+                return
             # Decrement the parent container
             remain = stack[-1] - 1
             if remain > 0:
@@ -352,7 +400,7 @@ def _walk_fix(ba, start, utf8_error):
             # Parent also empty, loop to pop it
 
         if not stack:
-            return pos
+            return
 
 
 # ── fast method ─────────────────────────────────────────────────────────
@@ -361,6 +409,7 @@ def fixup_msgpack_unicode_fast(
         data,
         error: UnicodeDecodeError,
         utf8_error: T_utf8_error = 'replace',
+        spans=None,
 ):
     """
     Locate the exact msgpack string that caused *error* and fix it.
@@ -419,6 +468,7 @@ def fixup_msgpack_unicode_fast(
     # joining bytes is faster than converting to bytearray then convert back to bytes
     start = payload_start - header_len
     end = start + old_total
+    _record_span(spans, data[start:end], fixed_payload.decode('utf-8'))
     return b''.join((data[:start], new_header, fixed_payload, data[end:]))
 
 
@@ -427,6 +477,7 @@ def fixup_msgpack_unicode_fast(
 def fixup_msgpack_unicode_slow(
         data,
         utf8_error: T_utf8_error = 'replace',
+        spans=None,
 ):
     """
     Walk the entire msgpack structure and fix every string with invalid UTF-8.
@@ -442,11 +493,14 @@ def fixup_msgpack_unicode_slow(
             UTF-8.  ``'replace'`` (default) substitutes U+FFFD,
             ``'ignore'`` drops invalid bytes.
             ``'strict'`` would re-raise and is not useful here.
+        spans (dict | None): Map of repaired item bytes to the original ones,
+            filled in for every rewrite. Defaults to None.
 
     Returns:
         bytes: The fully repaired msgpack bytes.
     """
     ba = bytearray(data)
     if ba:
-        _walk_fix(ba, 0, utf8_error)
+        for original, repaired in _walk_fix(ba, 0, utf8_error):
+            _record_span(spans, original, repaired)
     return bytes(ba)
