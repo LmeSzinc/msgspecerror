@@ -36,7 +36,8 @@ def get_arraylike_field_typehint(model, index, unwrap=True):
 
     Args:
         model: An `array_like=True` struct class, or a parametrized generic alias of one
-        index (int): Position of the field in the encoded array
+        index (int): Position in the encoded array. A tagged struct encodes its
+            tag at position 0, so the first field holds position 1
         unwrap (bool): True by default, a parametrized generic alias is unwrapped
             to its origin class. Pass False when `model` is already unwrapped
 
@@ -44,9 +45,39 @@ def get_arraylike_field_typehint(model, index, unwrap=True):
         Any: typehint of the field at `index`
 
     Raises:
-        AttributeError: if `index` is out of range, or `model` is not a struct
+        AttributeError: if `index` is out of range, addresses the tag, or
+            `model` is not a struct
     """
     return get_struct_field_typehint(model, index, unwrap=unwrap)
+
+
+def _resolve_array_index(struct_model, index):
+    """
+    Resolve a position of the decoded array to the index of a field
+
+    An `array_like` struct with a tag is encoded as `[tag, field0, field1, ...]`,
+    so the position an error reports is one past the field it names. An untagged
+    struct starts at the first field, and a bare negative index keeps Python's
+    indexing, which is what it meant before.
+
+    Args:
+        struct_model (type): A `msgspec.Struct` class, already unwrapped
+        index (int): Position in the decoded array
+
+    Returns:
+        int: Index of the field
+
+    Raises:
+        AttributeError: if the position addresses the tag, which is no field
+    """
+    config = getattr(struct_model, '__struct_config__', None)
+    if config is None or not config.array_like or config.tag is None:
+        # Nothing to shift: only a tagged array carries the tag in the array
+        return index
+    if index > 0:
+        return index - 1
+    raise AttributeError(
+        f'Type {struct_model} has no field at index {index}, the array starts with the tag')
 
 
 def get_struct_field_name(model, name, unwrap=True):
@@ -102,8 +133,9 @@ def get_struct_field_typehint(model, name_or_index, unwrap=True):
     Args:
         model: Subclass of msgspec.Struct, or a parametrized generic alias of one (e.g. `Box[int]`)
         name_or_index (str | int): Field name (Python attribute), encode name
-            (serialization name), or the position of the field in an
-            `array_like=True` struct, which is how an error reports it
+            (serialization name), or the position in the decoded array of an
+            `array_like=True` struct, which is how an error reports it: the tag
+            of a tagged struct holds position 0, so a field is one past it
         unwrap (bool): True by default, a parametrized generic alias is unwrapped
             to its origin class. Pass False when `model` is already unwrapped
 
@@ -114,14 +146,14 @@ def get_struct_field_typehint(model, name_or_index, unwrap=True):
         AttributeError: if failed
     """
     if type(name_or_index) is int:
-        # An `array_like` struct is decoded from an array, the index is the field order
+        # An `array_like` struct is decoded from an array, the index is its position
         struct_model = unwrap_model(model) if unwrap else model
         try:
             field_names = struct_model.__struct_fields__
         except AttributeError:
             raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
         try:
-            field_name = field_names[name_or_index]
+            field_name = field_names[_resolve_array_index(struct_model, name_or_index)]
         except IndexError:
             raise AttributeError(f'Type {model} has no field at index {name_or_index}')
         return field_typehint(model, field_name, Struct, unwrap=unwrap)
@@ -137,8 +169,9 @@ def get_struct_field_default(model, name_or_index, validate=False, guess_default
     Args:
         model: Subclass of msgspec.Struct, or a parametrized generic alias of one (e.g. `Box[int]`)
         name_or_index (str | int): Field name (Python attribute), encode name
-            (serialization name), or the position of the field in an
-            `array_like=True` struct, which is how an error reports it
+            (serialization name), or the position in the decoded array of an
+            `array_like=True` struct, which is how an error reports it: the tag
+            of a tagged struct holds position 0, so a field is one past it
         validate (bool): False by default. If True, the default value is checked
             against the field typehint with `msgspec.convert`. msgspec does not
             validate struct defaults, a default may be rejected when it is
@@ -173,7 +206,7 @@ def get_struct_field_default(model, name_or_index, validate=False, guess_default
     # array, so only it is addressed by position.
     if type(name_or_index) is int:
         try:
-            field_name = field_names[name_or_index]
+            field_name = field_names[_resolve_array_index(struct_model, name_or_index)]
         except IndexError:
             raise AttributeError(f'Type {model} has no field at index {name_or_index}')
     else:

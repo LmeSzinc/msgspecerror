@@ -1,4 +1,4 @@
-﻿"""Repair inside every model kind msgspec decodes into, not only ``msgspec.Struct``.
+"""Repair inside every model kind msgspec decodes into, not only ``msgspec.Struct``.
 
 An error path names a field for a model decoded from an object (dataclass,
 TypedDict, attrs) and gives a position for one decoded from an array
@@ -8,7 +8,7 @@ that failed instead of the whole document.
 """
 import copy
 import dataclasses
-from typing import Dict, List, NamedTuple, Union
+from typing import Dict, List, NamedTuple, Optional, Union
 
 import attrs
 import msgspec.json
@@ -97,6 +97,39 @@ class ArrayOuterRequired(Struct, array_like=True):
     """An `array_like` struct holding a model nothing can be written into."""
     inner: ArrayInnerRequired
     x: int = 0
+
+
+class TaggedArrayOuter(Struct, tag=True, array_like=True):
+    """The tag holds position 0, so a field is one position past it."""
+    inner: ArrayInner = field(default_factory=ArrayInner)
+    x: int = 0
+
+
+class ArrayInnerFive(Struct):
+    """A field with a default nothing else has, so a wrong slot is visible."""
+    a: int = 5
+
+
+class TaggedBase(Struct, tag=True, array_like=True):
+    """A tagged array model to inherit from."""
+    base: ArrayInner = field(default_factory=ArrayInner)
+
+
+class TaggedChild(TaggedBase):
+    """Inherited fields keep their order, the tag stays at position 0."""
+    extra: ArrayInnerFive = field(default_factory=ArrayInnerFive)
+
+
+class TaggedOfUntagged(Struct, tag=True, array_like=True):
+    """A tagged array holding an untagged one: only the outer has an offset."""
+    untagged: ArrayOuter = field(default_factory=ArrayOuter)
+    y: int = 0
+
+
+class UntaggedOfTagged(Struct, array_like=True):
+    """An untagged array holding a tagged one: only the inner has an offset."""
+    tagged: TaggedArrayOuter = field(default_factory=TaggedArrayOuter)
+    y: int = 0
 
 
 class Choice(Struct):
@@ -389,6 +422,148 @@ class TestArrayKindDeeperThanThePosition:
 
         assert result == [ArrayOuter(inner=ArrayInner(a=1), x=2)]
         assert errors == []
+
+
+class TestTaggedArrayKind:
+    """A tagged `array_like` struct encodes the tag first, the fields after it.
+
+    `msgspec` reports the position in that array, so `$[1]` names the first
+    field. Reading position 1 as the second field wrote the wrong default into
+    the slot: `inner` was filled with `x`'s value.
+    """
+
+    PAYLOAD = b'["TaggedArrayOuter", {"a": "bad"}, 1]'
+
+    def test_a_field_one_level_deeper(self):
+        result, errors = load_json_with_default(self.PAYLOAD, TaggedArrayOuter)
+
+        assert result == TaggedArrayOuter(inner=ArrayInner(a=0), x=1)
+        assert [e.loc for e in errors] == [(1, 'a')]
+
+    def test_the_detail_agrees(self):
+        obj, detail = load_json_with_error_detail(self.PAYLOAD, TaggedArrayOuter)
+
+        assert obj is NODEFAULT
+        assert detail.loc == (1, 'a')
+        assert detail.error_value == 'bad'
+        assert detail.error_value_resolved is True
+
+    def test_the_whole_field(self):
+        """Position 1 is the first field, so its own default fills the slot."""
+        payload = b'["TaggedArrayOuter", "bad", 1]'
+
+        result, errors = load_json_with_default(payload, TaggedArrayOuter)
+
+        assert result == TaggedArrayOuter(inner=ArrayInner(a=0), x=1)
+        assert [e.loc for e in errors] == [(1,)]
+
+    def test_the_last_field_is_not_offset(self):
+        """The position of the second field is 2, not 1."""
+        payload = b'["TaggedArrayOuter", {"a": 1}, "bad"]'
+
+        result, errors = load_json_with_default(payload, TaggedArrayOuter)
+
+        assert result == TaggedArrayOuter(inner=ArrayInner(a=1), x=0)
+        assert [e.loc for e in errors] == [(2,)]
+
+    def test_the_tag_itself_is_not_a_field(self):
+        """A wrong tag names no field, so it is not repaired as one."""
+        payload = b'[1, {"a": 1}, 2]'
+
+        result, errors = load_json_with_default(payload, TaggedArrayOuter)
+
+        assert result is NODEFAULT
+        assert [e.loc for e in errors] == [(0,)]
+
+    def test_an_untagged_array_kind_is_untouched(self):
+        """The offset belongs to the tag, not to every array position."""
+        result, errors = load_json_with_default(b'[{"a": "bad"}, 1]', ArrayOuter)
+
+        assert result == ArrayOuter(inner=ArrayInner(a=0), x=1)
+        assert [e.loc for e in errors] == [(0, 'a')]
+
+    def test_in_a_list(self):
+        """The offset is applied inside a container too."""
+        payload = b'[["TaggedArrayOuter", {"a": "bad"}, 1]]'
+
+        result, errors = load_json_with_default(payload, List[TaggedArrayOuter])
+
+        assert result == [TaggedArrayOuter(inner=ArrayInner(a=0), x=1)]
+        assert [e.loc for e in errors] == [(0, 1, 'a')]
+
+    def test_in_a_dict(self):
+        payload = b'{"k": ["TaggedArrayOuter", {"a": 1}, "bad"]}'
+
+        result, errors = load_json_with_default(payload, Dict[str, TaggedArrayOuter])
+
+        assert result == {'k': TaggedArrayOuter(inner=ArrayInner(a=1), x=0)}
+        assert [e.loc for e in errors] == [('k', 2)]
+
+    @pytest.mark.parametrize('model', [Optional[TaggedArrayOuter], Union[TaggedArrayOuter, int]],
+                             ids=['optional', 'union'])
+    def test_through_a_union(self, model):
+        """The path is relative to the member, its positions still include the tag."""
+        payload = b'["TaggedArrayOuter", {"a": "bad"}, 1]'
+
+        result, errors = load_json_with_default(payload, model)
+
+        assert result == TaggedArrayOuter(inner=ArrayInner(a=0), x=1)
+        assert [e.loc for e in errors] == [(1, 'a')]
+
+    def test_an_inherited_field(self):
+        """Inherited fields come first, the tag still holds position 0."""
+        payload = b'["TaggedChild", {"a": "bad"}, {"a": 2}]'
+
+        result, errors = load_json_with_default(payload, TaggedChild)
+
+        assert result == TaggedChild(base=ArrayInner(a=0), extra=ArrayInnerFive(a=2))
+        assert [e.loc for e in errors] == [(1, 'a')]
+
+    def test_a_field_the_child_adds(self):
+        """Position 2 is the second field, its default is its own."""
+        payload = b'["TaggedChild", {"a": 1}, "bad"]'
+
+        result, errors = load_json_with_default(payload, TaggedChild)
+
+        assert result == TaggedChild(base=ArrayInner(a=1), extra=ArrayInnerFive(a=5))
+        assert [e.loc for e in errors] == [(2,)]
+
+    def test_an_untagged_field_inside_a_tagged_one(self):
+        """Only the outer array carries a tag, the inner one starts at its first field."""
+        payload = b'["TaggedOfUntagged", [{"a": "bad"}, 1], 2]'
+
+        result, errors = load_json_with_default(payload, TaggedOfUntagged)
+
+        assert result == TaggedOfUntagged(untagged=ArrayOuter(inner=ArrayInner(a=0), x=1), y=2)
+        assert [e.loc for e in errors] == [(1, 0, 'a')]
+
+    def test_a_tagged_field_inside_an_untagged_one(self):
+        """The inner array is the one with the tag, so its first field is position 1."""
+        payload = b'[["TaggedArrayOuter", {"a": "bad"}, 1], 2]'
+
+        result, errors = load_json_with_default(payload, UntaggedOfTagged)
+
+        assert result == UntaggedOfTagged(tagged=TaggedArrayOuter(inner=ArrayInner(a=0), x=1), y=2)
+        assert [e.loc for e in errors] == [(0, 1, 'a')]
+
+    def test_msgpack(self):
+        payload = msgspec.msgpack.encode(['TaggedArrayOuter', {'a': 1}, 'bad'])
+
+        result, errors = load_msgpack_with_default(payload, TaggedArrayOuter)
+
+        assert result == TaggedArrayOuter(inner=ArrayInner(a=1), x=0)
+        assert [e.loc for e in errors] == [(2,)]
+
+    def test_the_detail_reads_the_same_positions(self):
+        """Both families agree on which field a position names."""
+        payload = b'["TaggedArrayOuter", {"a": 1}, "bad"]'
+        obj, detail = load_json_with_error_detail(payload, TaggedArrayOuter)
+        result, errors = load_json_with_default(payload, TaggedArrayOuter)
+
+        assert obj is NODEFAULT
+        assert detail.loc == errors[0].loc == (2,)
+        assert detail.error_value == 'bad'
+        assert detail.error_value_resolved is True
 
 
 # --- Union member: the path is relative to the member, not the union ---

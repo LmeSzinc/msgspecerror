@@ -643,6 +643,48 @@ class TestGetArraylikeFieldTypehint:
             get_arraylike_field_typehint(model, 0)
 
 
+class TaggedArrayLike(Struct, tag=True, array_like=True):
+    """A tagged array starts with the tag, so a field is one position past it."""
+    first: str = 'a'
+    second: int = 1
+
+
+class TestTaggedArrayLikePosition:
+    """An error reports the position in the encoded array, the tag included.
+
+    `msgspec` encodes a tagged `array_like` struct as `[tag, field0, ...]`, so
+    `$[1]` names the first field. Reading position 1 as `field_names[1]` picked
+    the second field and wrote its default into the first one's slot.
+    """
+
+    @pytest.mark.parametrize('index, expected', [(1, str), (2, int)])
+    def test_the_typehint_at_a_position(self, index, expected):
+        assert get_arraylike_field_typehint(TaggedArrayLike, index) is expected
+
+    @pytest.mark.parametrize('index, expected', [(1, 'a'), (2, 1)])
+    def test_the_default_at_a_position(self, index, expected):
+        assert get_struct_field_default(TaggedArrayLike, index) == expected
+
+    def test_the_tag_position_is_no_field(self):
+        """Position 0 holds the tag, it addresses nothing."""
+        with pytest.raises(AttributeError, match='the array starts with the tag'):
+            get_arraylike_field_typehint(TaggedArrayLike, 0)
+        with pytest.raises(AttributeError, match='the array starts with the tag'):
+            get_struct_field_default(TaggedArrayLike, 0)
+
+    def test_a_position_past_the_end(self):
+        with pytest.raises(AttributeError, match='has no field at index 3'):
+            get_arraylike_field_typehint(TaggedArrayLike, 3)
+
+    def test_a_name_still_works(self):
+        assert get_struct_field_default(TaggedArrayLike, 'second') == 1
+
+    def test_an_untagged_struct_keeps_python_indexing(self):
+        """The offset belongs to the tag, not to every array position."""
+        assert get_arraylike_field_typehint(ArrayLikeFilled, 0) is str
+        assert get_arraylike_field_typehint(ArrayLikeFilled, -1) is List[int]
+
+
 # =================================================================
 # Models of the plain kinds msgspec can decode into
 # =================================================================
