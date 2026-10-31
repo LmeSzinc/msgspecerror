@@ -46,16 +46,7 @@ def get_arraylike_field_typehint(model, index, unwrap=True):
     Raises:
         AttributeError: if `index` is out of range, or `model` is not a struct
     """
-    struct_model = unwrap_model(model) if unwrap else model
-    try:
-        field_names = struct_model.__struct_fields__
-    except AttributeError:
-        raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
-    try:
-        field_name = field_names[index]
-    except IndexError:
-        raise AttributeError(f'Type {model} has no field at index {index}')
-    return get_struct_field_typehint(model, field_name, unwrap=unwrap)
+    return get_struct_field_typehint(model, index, unwrap=unwrap)
 
 
 def get_struct_field_name(model, name, unwrap=True):
@@ -104,13 +95,15 @@ def get_struct_field_name(model, name, unwrap=True):
     raise AttributeError(f'Type {model} has no field with name="{name}"')
 
 
-def get_struct_field_typehint(model, name, unwrap=True):
+def get_struct_field_typehint(model, name_or_index, unwrap=True):
     """
     Get typehint or annotation of model.field_name
 
     Args:
         model: Subclass of msgspec.Struct, or a parametrized generic alias of one (e.g. `Box[int]`)
-        name (str): Field name (Python attribute) or encode name (serialization name)
+        name_or_index (str | int): Field name (Python attribute), encode name
+            (serialization name), or the position of the field in an
+            `array_like=True` struct, which is how an error reports it
         unwrap (bool): True by default, a parametrized generic alias is unwrapped
             to its origin class. Pass False when `model` is already unwrapped
 
@@ -120,8 +113,21 @@ def get_struct_field_typehint(model, name, unwrap=True):
     Raises:
         AttributeError: if failed
     """
+    if type(name_or_index) is int:
+        # An `array_like` struct is decoded from an array, the index is the field order
+        struct_model = unwrap_model(model) if unwrap else model
+        try:
+            field_names = struct_model.__struct_fields__
+        except AttributeError:
+            raise AttributeError(f'Type {model} is not a valid msgspec.Struct')
+        try:
+            field_name = field_names[name_or_index]
+        except IndexError:
+            raise AttributeError(f'Type {model} has no field at index {name_or_index}')
+        return field_typehint(model, field_name, Struct, unwrap=unwrap)
+
     # Resolve the name to a field name (supports both field_name and encode_name).
-    return field_typehint(model, get_struct_field_name(model, name, unwrap=unwrap), Struct, unwrap=unwrap)
+    return field_typehint(model, get_struct_field_name(model, name_or_index, unwrap=unwrap), Struct, unwrap=unwrap)
 
 
 def get_struct_field_default(model, name_or_index, validate=False, guess_default=False, unwrap=True):

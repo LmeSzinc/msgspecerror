@@ -1112,3 +1112,33 @@ class TestGetFieldTypehintDispatch:
 
     def test_unwrap_true_accepts_a_generic_alias(self):
         assert get_field_default(DCGeneric[int], 'v', known_struct_type='dataclass') is None
+
+
+# =================================================================
+# Test Class for the model kind helpers
+# =================================================================
+class TestIsArraylike:
+    """`is_arraylike` tells whether a model's fields are addressed by position."""
+
+    @pytest.mark.parametrize('model', [ArrayLikeFilled, NoDefaultStruct, NTSimple])
+    def test_an_array_model(self, model):
+        assert parse_model.is_arraylike(model) is True
+
+    @pytest.mark.parametrize('model', [SimpleStruct, DCSimple, TDRecord, ATSimple])
+    def test_an_object_model(self, model):
+        assert parse_model.is_arraylike(model) is False
+
+    @pytest.mark.parametrize('model', [int, str, List[int], Dict[str, int], None])
+    def test_neither(self, model):
+        assert parse_model.is_arraylike(model) is False
+
+    def test_known_struct_type_skips_the_lookup(self, monkeypatch):
+        def refuse(*args, **kwargs):
+            raise AssertionError('is_struct_like should not be called')
+
+        monkeypatch.setattr(parse_model, 'is_struct_like', refuse)
+        assert parse_model.is_arraylike(NTSimple, known_struct_type='namedtuple') is True
+        assert parse_model.is_arraylike(ArrayLikeFilled, known_struct_type='struct') is True
+
+    def test_a_parametrized_alias(self):
+        assert parse_model.is_arraylike(ArrayLikeBox[str]) is True

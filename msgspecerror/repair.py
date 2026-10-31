@@ -9,10 +9,9 @@ from . import const
 from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
 from .parse_decoder import _type_error, get_decoder_model
 from .parse_error import ErrorInfo, parse_msgspec_error
-from .parse_model import get_field_default, get_field_name, get_field_typehint
-from .parse_model_struct import get_arraylike_field_typehint, is_struct_arraylike
+from .parse_model import get_field_default, get_field_name, get_field_typehint, is_arraylike
 from .parse_msgpack import AMBIGUOUS_SPAN, MISSING, fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
-from .parse_type import default_is_accepted, get_default, is_struct_type, origin_args, unwrap_model, unwrap_typehint
+from .parse_type import default_is_accepted, get_default, is_struct_like, origin_args, unwrap_model, unwrap_typehint
 from .repair_unicode import _collect_unicode_replace
 
 
@@ -41,26 +40,34 @@ def _get_item_model(model_origin, model_args, index):
     return model_args[0]
 
 
-def _get_index_model(model_origin, model_args, index):
+def _get_index_model(model_origin, model_args, index, known_struct_type=None):
     """
     Get the typehint an error location addresses by position.
 
-    A sequence shares one item typehint, an `array_like` struct addresses its
-    fields by order instead. Both are looked up here, so a caller that walks an
-    index does not have to ask which kind it is holding.
+    A sequence shares one item typehint, an `array_like` struct and a NamedTuple
+    address their fields by order instead. All are looked up here, so a caller
+    that walks an index does not have to ask which kind it is holding.
 
     Args:
         model_origin (type): Origin of the typehint, e.g. list, tuple, a struct
         model_args (tuple | None): Args of the sequence typehint, None for bare typehints
         index (int): Position in the encoded value
+        known_struct_type (str): Defaults to None. The kind as `is_struct_like()`
+            names it, when the caller already knows it
 
     Returns:
         Any: The typehint at `index`, or NODEFAULT if it can't be determined
     """
-    if is_struct_arraylike(model_origin):
-        # The index is the field order
+    if model_origin in (list, set, frozenset, tuple):
+        # A sequence shares one item typehint, no kind has to be named for it
+        return _get_item_model(model_origin, model_args, index)
+    if known_struct_type is None:
+        known_struct_type = is_struct_like(model_origin, unwrap=False)
+    if is_arraylike(model_origin, known_struct_type=known_struct_type, unwrap=False):
+        # The index is the field order of an `array_like` struct or a NamedTuple
         try:
-            return get_arraylike_field_typehint(model_origin, index)
+            return get_field_typehint(
+                model_origin, index, known_struct_type=known_struct_type, unwrap=False)
         except AttributeError:
             return NODEFAULT
     return _get_item_model(model_origin, model_args, index)
@@ -100,8 +107,8 @@ def _struct_tag_matches(struct, obj):
     Returns:
         bool: True if the obj has no tag info or the tag points to the struct
     """
-    config = unwrap_model(struct).__struct_config__
-    if config.tag is None or type(obj) is not dict:
+    config = getattr(unwrap_model(struct), '__struct_config__', None)
+    if config is None or config.tag is None or type(obj) is not dict:
         # Nothing to check the struct against
         return True
     tag = obj.get(config.tag_field, NODEFAULT)
@@ -123,7 +130,10 @@ def _resolve_union_member(model_args, part, obj):
         obj (Any): The raw data at the current path level
 
     Returns:
-        Any: The matching union member, or NODEFAULT if no member matches
+        tuple[Any, str] | NODEFAULT: The matching union member and its kind, as
+            `is_struct_like()` names it, or NODEFAULT if no member matches. The
+            kind is handed back because naming it is what found the member, and
+            the caller would otherwise look it up again.
     """
     if part == '...' or part == '...key':
         # A dict value / key placeholder, msgspec allows at most one dict type in a union
@@ -132,42 +142,53 @@ def _resolve_union_member(model_args, part, obj):
                 continue
             arg_origin, arg_args = origin_args(arg)
             if arg_origin is dict and arg_args:
-                return arg
+                return arg, ''
         return NODEFAULT
 
     if type(part) is int:
-        # A list index, msgspec allows at most one array-like type in a union
+        # A list index, msgspec allows at most one array type in a union
         for arg in model_args:
             if arg is UnsetType:
                 continue
             arg_origin, _ = origin_args(arg)
-            if arg_origin in (list, tuple, set, frozenset):
-                return arg
+            arg_kind = is_struct_like(arg_origin, unwrap=False)
+            if arg_origin in (list, tuple, set, frozenset) \
+                    or is_arraylike(arg_origin, known_struct_type=arg_kind, unwrap=False):
+                return arg, arg_kind
         return NODEFAULT
 
-    # A struct field name, a tagged union may have several struct members
-    structs = []
+    # A field name, a tagged union may have several object members
+    models = []
     for arg in model_args:
         if arg is UnsetType:
             continue
         arg_origin, _ = origin_args(arg)
-        if not is_struct_type(arg_origin):
+        arg_kind = is_struct_like(arg_origin, unwrap=False)
+        if arg_kind == 'struct':
+            # Only the field name matters here, and the name check does not have
+            # to resolve the annotation the way a typehint read does
+            try:
+                get_field_name(arg, part, known_struct_type=arg_kind)
+            except AttributeError:
+                continue
+        elif arg_kind:
+            try:
+                get_field_typehint(arg, part, known_struct_type=arg_kind)
+            except AttributeError:
+                continue
+        else:
             continue
-        try:
-            get_field_name(arg, part)
-        except AttributeError:
-            continue
-        structs.append(arg)
+        models.append((arg, arg_kind))
 
-    if not structs:
+    if not models:
         return NODEFAULT
-    if len(structs) == 1:
+    if len(models) == 1:
         # The only member having this field, but the tag still has to agree
-        return structs[0] if _struct_tag_matches(structs[0], obj) else NODEFAULT
-    for struct in structs:
+        return models[0] if _struct_tag_matches(models[0][0], obj) else NODEFAULT
+    for model, arg_kind in models:
         # Several members have the field, the tag tells which one failed
-        if _struct_tag_matches(struct, obj):
-            return struct
+        if _struct_tag_matches(model, obj):
+            return model, arg_kind
     return NODEFAULT
 
 
@@ -574,15 +595,19 @@ def _repair_once(
 
         model_origin, model_args = origin_args(model)
         if model_origin is Union:
-            # The error path points into one member of the union
-            model = _resolve_union_member(model_args, part, obj)
-            if model is NODEFAULT:
+            # The error path points into one member of the union, the kind comes
+            # back with it: naming it is what found the member
+            member = _resolve_union_member(model_args, part, obj)
+            if member is NODEFAULT:
                 # The path segment doesn't match any member of the union
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error
                 return raw_obj, error
+            model, model_kind = member
             model = unwrap_typehint(model)
             model_origin, model_args = origin_args(model)
+        else:
+            model_kind = None
 
         # 1. Invalid dict value
         # msgspec does not tell which key is invalid, just giving placeholder '...', we need to find the exact key
@@ -709,21 +734,27 @@ def _repair_once(
                 # since json/msgpack key can't be objects.
                 return NODEFAULT, error
 
+        # The placeholders above leave the loop on their own, so only a segment
+        # that names a field or a position reaches this point: it is the one
+        # that needs the kind, and it is named once for the branches below
+        if model_kind is None:
+            model_kind = is_struct_like(model_origin, unwrap=False)
+
         # 3. Invalid item in list
         if type(part) is int:
             if type(obj) is not list:
                 # Error path like `0` implies a list, but obj doesn't match.
                 return NODEFAULT, error
-            if is_struct_arraylike(model_origin):
-                # An `array_like` struct is decoded from an array, the index is
-                # the field order. An item can not be deleted here: every later
-                # field would shift into the wrong place. A default keeps the
-                # shape, and without one the object that holds it is dropped.
+            if is_arraylike(model_origin, known_struct_type=model_kind, unwrap=False):
+                # An `array_like` struct and a NamedTuple are decoded from an
+                # array, the index is the field order. An item can not be deleted
+                # here: every later field would shift into the wrong place. A
+                # default keeps the shape, and without one the object that holds
+                # it is dropped.
                 if is_last:
                     try:
                         value = get_field_default(
-                            model_origin, part, validate=True, guess_default=guess_default,
-                            known_struct_type='struct')
+                            model, part, validate=True, guess_default=guess_default, known_struct_type=model_kind)
                     except AttributeError:
                         value = NODEFAULT
                     if value is not NODEFAULT:
@@ -768,10 +799,13 @@ def _repair_once(
                 model = item_model
                 continue
 
-        # 4. Invalid object field
-        if is_struct_type(model):
+        # 4. Invalid field of a model
+        if model_kind:
+            # The data tells how the model is decoded: an object model is
+            # addressed by field name, an array model by position, which branch
+            # 3 above has already handled
             if type(obj) is not dict:
-                # Error path like `0` implies a list, but obj doesn't match.
+                # A field name implies an object model, but obj doesn't match.
                 return NODEFAULT, error
             if is_last:
                 # fix obj
@@ -780,7 +814,7 @@ def _repair_once(
                 # needed anyway to tell an unusable default from no default at all,
                 # so the field is looked up only once.
                 try:
-                    value = get_field_default(model, part, known_struct_type='struct')
+                    value = get_field_default(model, part, known_struct_type=model_kind)
                 except AttributeError:
                     # this shouldn't happen, unless raw_obj and error.loc don't match
                     if not _pop_last_collection(last_collection_data, last_collection_key):
@@ -791,7 +825,8 @@ def _repair_once(
                     # msgspec rejects as an explicit value must not be written into
                     # the input. The entry is deleted instead, msgspec applies the
                     # default itself when the field is absent.
-                    if default_is_accepted(get_field_typehint(model, part), value):
+                    if default_is_accepted(
+                            get_field_typehint(model, part, known_struct_type=model_kind), value):
                         obj[part] = value
                         return raw_obj, error
                     try:
@@ -803,7 +838,7 @@ def _repair_once(
                         return raw_obj, error
                     return raw_obj, error
                 # if field doesn't have a default, try to get from type
-                child_model = get_field_typehint(model, part)
+                child_model = get_field_typehint(model, part, known_struct_type=model_kind)
                 # get_default returns NODEFAULT instead of a value that
                 # doesn't pass validation, a useless guessed value included
                 value = get_default(child_model, guess_default=guess_default)
@@ -822,7 +857,7 @@ def _repair_once(
                     # this shouldn't happen, unless raw_obj and error.loc don't match
                     return NODEFAULT, error
                 try:
-                    model = get_field_typehint(model, part)
+                    model = get_field_typehint(model, part, known_struct_type=model_kind)
                 except AttributeError:
                     # this shouldn't happen, unless raw_obj and error.loc don't match
                     if not _pop_last_collection(last_collection_data, last_collection_key):

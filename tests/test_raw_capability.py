@@ -1113,13 +1113,12 @@ class TestDecoderSideRawError:
 @needs_convert_raw
 class TestNonStructRawFamilies:
     """
-    A raw field of a TypedDict / dataclass / NamedTuple is a known gap.
+    A raw field of a TypedDict / dataclass / NamedTuple behaves like a struct one.
 
-    The walk only knows msgspec Struct fields, so the entry at such a raw field
-    can not be judged: `_with_error_detail` stops at the placeholder and
-    `_with_default` drops the whole document. The Struct row of ?3.9.1 is the
-    contract these tests hold to, and they are `xfail(strict=True)` until the
-    walk learns the model kinds.
+    The walk reads the fields of every model kind msgspec decodes into, so the
+    entry at such a raw field is judged the same way the Struct row of ?3.9.1 is:
+    `_with_error_detail` resolves the location and hands back the failing value,
+    `_with_default` repairs only that one field.
     """
 
     DOC = b'{"one": {"payload": {"a": 1}, "n": 1}, "two": {"payload": {"b": 2}, "n": "bad"}}'
@@ -1131,7 +1130,6 @@ class TestNonStructRawFamilies:
         pytest.param(NTRecord, 'NT_DOC', ('two', 1), id='named-tuple'),
     ]
 
-    @pytest.mark.xfail(reason='the walk does not know plain model fields', strict=True)
     @pytest.mark.parametrize('model, doc_name, bad_loc', CASES)
     def test_with_error_detail_resolves_the_failing_field(self, model, doc_name, bad_loc):
         doc = getattr(self, doc_name)
@@ -1143,7 +1141,6 @@ class TestNonStructRawFamilies:
         assert detail.error_value == 'bad'
         assert detail.error_value_resolved is True
 
-    @pytest.mark.xfail(reason='the walk does not know plain model fields', strict=True)
     @pytest.mark.parametrize('model, doc_name, bad_loc', CASES)
     def test_with_default_repairs_only_the_bad_field(self, model, doc_name, bad_loc):
         doc = getattr(self, doc_name)
@@ -1153,12 +1150,14 @@ class TestNonStructRawFamilies:
         assert 'one' in result
 
     @pytest.mark.parametrize('model, doc_name, bad_loc', CASES)
-    def test_convert_with_default_never_writes_a_placeholder(self, model, doc_name, bad_loc):
-        """These models are a known gap, but a refusal never corrupts the input."""
+    def test_convert_with_default_repairs_the_model(self, model, doc_name, bad_loc):
+        """An in-memory value has no payload, so the raw field is encoded back."""
         data = msgspec.json.decode(getattr(self, doc_name))
         before = copy.deepcopy(data)
 
-        result, errors = convert_with_default(data, Dict[str, model])
+        result, errors = convert_with_default(data, Dict[str, model], guess_default=True)
 
-        assert errors
+        assert [e.loc for e in errors] == [bad_loc]
+        assert 'one' in result
+        # The caller's value is left alone: pinning a raw field copies the path
         assert data == before

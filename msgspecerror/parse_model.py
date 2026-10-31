@@ -15,13 +15,37 @@ from .parse_model_namedtuple import (
     get_namedtuple_field_default, get_namedtuple_field_typehint, get_namedtuple_model_changes
 )
 from .parse_model_struct import (
-    get_struct_field_default, get_struct_field_name, get_struct_field_typehint,
-    get_struct_model_changes
+    get_struct_field_default, get_struct_field_name, get_struct_field_typehint, get_struct_model_changes,
+    is_struct_arraylike
 )
 from .parse_model_typeddict import (
     get_typeddict_field_default, get_typeddict_field_typehint, get_typeddict_model_changes
 )
 from .parse_type import is_struct_like
+
+
+def is_arraylike(model, known_struct_type=None, unwrap=True):
+    """
+    Check whether a model is decoded from an array instead of an object
+
+    An `array_like=True` struct and a NamedTuple are encoded as arrays, so an
+    error location addresses their fields by position.
+
+    Args:
+        model: A model class, or a parametrized generic alias of one
+        known_struct_type (str): Defaults to None. The model kind as returned by
+            `is_struct_like()`, when the caller already knows it
+        unwrap (bool): True by default, a parametrized generic alias is unwrapped
+            to its origin class. Pass False when `model` is already unwrapped
+
+    Returns:
+        bool: True for an `array_like=True` struct or a NamedTuple
+    """
+    if known_struct_type is None:
+        known_struct_type = is_struct_like(model, unwrap=unwrap)
+    if known_struct_type == 'struct':
+        return is_struct_arraylike(model, unwrap=unwrap)
+    return known_struct_type == 'namedtuple'
 
 
 def get_field_name(model, name, known_struct_type=None, unwrap=True):

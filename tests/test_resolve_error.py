@@ -653,6 +653,12 @@ class TestUnresolvable:
         # field name on a model that is not a struct
         (List[int], [1], ('a',)),
         (int, 1, ('a',)),
+        # an array model on object data, and the reverse: the data type decides
+        (List[int], {'a': 1}, ('a',)),
+        (List[int], {'a': 1, 'b': 2}, ('...',)),
+        (List[int], {'0': 1}, ('...',)),
+        (Req, [1], ('a',)),
+        (Req, {'a': 1}, (0,)),
         # a corrupted loc
         (Req, {}, ('ghost',)),
         (Dict[str, Dict[str, int]], {'a': {'b': 1}}, ('...', 'ghost')),
@@ -683,6 +689,52 @@ class TestUnresolvable:
         assert detail.loc == ('a', 'b')
         assert detail.loc_resolved is True
         assert detail.error_value_resolved is False
+
+
+class TestDataTypeMismatch:
+    """The data tells how the model was decoded, a mismatch resolves nothing."""
+
+    @pytest.mark.parametrize('model, data, loc', [
+        # A dict placeholder needs a dict model with a key and a value type
+        (List[int], {'a': 1}, ('...',)),
+        (List[int], {'a': 1, 'b': 2}, ('...',)),
+        (Tuple[int, ...], {'a': 1}, ('...',)),
+        # A field name needs the data to be a dict
+        (Req, [1], ('a',)),
+        (Req, 'text', ('a',)),
+        (Req, 1, ('a',)),
+        # A position needs the data to be a list
+        (List[int], {'a': 1}, (0,)),
+        (List[int], {'0': 1}, (0,)),
+        (List[int], 'text', (0,)),
+    ])
+    def test_nothing_is_resolved(self, model, data, loc):
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=loc)
+
+        detail = resolve_error(error, data, model)
+
+        assert detail.loc == loc
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is False
+
+    @pytest.mark.parametrize('model, data, loc', [
+        (List[int], {'a': 1}, ('...',)),
+        (Tuple[int, ...], {'a': 1}, ('...',)),
+    ])
+    def test_a_kept_placeholder_is_not_a_resolved_location(self, model, data, loc):
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=loc)
+
+        detail = resolve_error(error, data, model)
+
+        assert detail.loc_resolved is False
+
+    def test_a_real_location_is_still_resolved(self):
+        """The guards reject a mismatch, they do not reject a matching walk."""
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=('a',))
+        detail = resolve_error(error, {'a': 'bad'}, Req)
+        assert detail.loc == ('a',)
+        assert detail.error_value == 'bad'
+        assert detail.error_value_resolved is True
 
 
 class TestResolveErrorOptions:

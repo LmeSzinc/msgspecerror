@@ -24,7 +24,7 @@ from .parse_decoder import _type_error, get_decoder_model
 from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msgspec_error
 from .parse_model import get_field_typehint
 from .parse_msgpack import fixup_msgpack_unicode_slow
-from .parse_type import is_struct_type, origin_args, unwrap_typehint
+from .parse_type import is_struct_like, origin_args, unwrap_typehint
 from .repair import (
     _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _resolve_union_member, _validate_entry
 )
@@ -83,16 +83,21 @@ def _resolve_loc(loc, data, model, options):
         origin, args = origin_args(model)
 
         if origin is Union:
-            # The path segment tells which member of the union msgspec followed
+            # The path segment tells which member of the union msgspec followed,
+            # the kind comes back with the member that matched
             member = _resolve_union_member(args, part, obj)
             if member is NODEFAULT:
                 return NODEFAULT
-            model = unwrap_typehint(member)
+            model, model_kind = member
+            model = unwrap_typehint(model)
             origin, args = origin_args(model)
+        else:
+            model_kind = None
 
         # 1. A dict value, msgspec reports it as `...`
         if part == '...':
-            if type(obj) is not dict or not args:
+            if type(obj) is not dict or not args or len(args) < 2:
+                # A placeholder needs a dict model with a key and a value type
                 return NODEFAULT
             child_model = args[1]
             key = _find_failing_dict_value(obj, child_model, options)
@@ -115,29 +120,43 @@ def _resolve_loc(loc, data, model, options):
             # The offending value is the key itself, not the value under it
             return keys, key
 
+        # The placeholders above return on their own, so only a segment that
+        # names a field or a position reaches this point, and that is the one
+        # that needs the kind
+        if model_kind is None:
+            model_kind = is_struct_like(origin, unwrap=False)
+
         # 3. A list / tuple item
         if type(part) is int:
+            if type(obj) is not list:
+                # msgspec decodes an array to a list, anything else means the
+                # location, the data and the model disagree
+                return NODEFAULT
             try:
                 obj = obj[part]
             except (IndexError, KeyError, TypeError):
                 return _missing_value(loc, index, keys)
             keys.append(part)
             value = obj
-            model = _get_index_model(origin, args, part)
+            model = _get_index_model(origin, args, part, known_struct_type=model_kind)
             continue
 
-        # 4. A struct field
-        if is_struct_type(origin):
+        # 4. A field of a model
+        if model_kind:
+            # An object model is read from a dict, an array model from a list:
+            # the data tells which one this path belongs to
+            if type(obj) is not dict:
+                return NODEFAULT
             try:
                 obj = obj[part]
             except (KeyError, TypeError):
-                # e.g. a field missing from the data, or a scalar on the path
+                # e.g. a field missing from the data
                 return _missing_value(loc, index, keys)
             keys.append(part)
             value = obj
             if not is_last:
                 try:
-                    model = get_field_typehint(model, part)
+                    model = get_field_typehint(model, part, known_struct_type=model_kind)
                 except AttributeError:
                     return NODEFAULT
             continue
