@@ -10,9 +10,7 @@ import struct
 import msgspec.msgpack
 import pytest
 
-from msgspecerror.parse_msgpack import (
-    _check_str_header_at, _make_str_header, _str_header_len, fixup_msgpack_unicode_fast
-)
+from msgspecerror.parse_msgpack import _check_str_header_at, _make_str_header, fixup_msgpack_unicode_fast
 
 # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -23,7 +21,7 @@ def _msgpack(obj) -> bytes:
     return msgspec.msgpack.encode(obj)
 
 
-# ── _make_str_header / _str_header_len ────────────────────────────────
+# ── _make_str_header ────────────────────────────────────────────────
 
 class TestMakeStrHeader:
     @pytest.mark.parametrize("n, expected_len", [
@@ -31,7 +29,7 @@ class TestMakeStrHeader:
         (256, 3), (65535, 3), (65536, 5), (100000, 5),
     ])
     def test_header_len(self, n, expected_len):
-        assert _str_header_len(n) == expected_len
+        assert len(_make_str_header(n)) == expected_len
 
     @pytest.mark.parametrize("n", [0, 1, 15, 31])
     def test_fixstr_header(self, n):

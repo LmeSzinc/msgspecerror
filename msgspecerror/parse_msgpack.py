@@ -58,25 +58,6 @@ def _record_span(spans, original, repaired):
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
-def _str_header_len(n):
-    """
-    Byte length of the msgpack str header for a payload of *n* bytes.
-
-    Args:
-        n (int): Payload length in bytes.
-
-    Returns:
-        int: Header length: 1 (fixstr), 2 (str8), 3 (str16), or 5 (str32).
-    """
-    if n <= 31:
-        return 1  # fixstr
-    if n < 256:
-        return 2  # str8
-    if n < 65536:
-        return 3  # str16
-    return 5  # str32
-
-
 def _make_str_header(n):
     """
     Build the msgpack str header bytes for a payload of *n* bytes.
@@ -144,15 +125,15 @@ def _check_str_header_at(data, payload_start, str_len):
 
 # ── slow-walker helpers ─────────────────────────────────────────────────
 
-def _try_fix_string(ba, header_len, str_len, item_start, utf8_error):
+def _try_fix_string(data, header_len, str_len, item_start, utf8_error):
     """
-    Try to decode the string at *item_start*.
+    Decode the string at *item_start* and report it when it needs a rewrite.
 
-    If it contains invalid UTF-8 the payload is replaced with the
-    ``utf8_error``-decoded version and the header is updated if necessary.
+    The buffer is never modified: the rewrite is reported as a span, so the
+    caller can copy the whole payload in one ``b''.join()`` at the end.
 
     Args:
-        ba (bytearray): Mutable msgpack buffer.
+        data (bytes): The msgpack buffer.
         header_len (int): Byte length of the str header.
         str_len (int): Byte length of the payload.
         item_start (int): Offset of the entire item (header + payload).
@@ -161,43 +142,41 @@ def _try_fix_string(ba, header_len, str_len, item_start, utf8_error):
 
     Returns:
         tuple[int, tuple | None]: The byte position immediately after this item,
-            and ``(payload before, text after)`` when it was rewritten
+            and ``(item_start, item_end, fixed)`` when it was rewritten
     """
     payload_start = item_start + header_len
-    payload = bytes(ba[payload_start:payload_start + str_len])
+    item_end = payload_start + str_len
+    payload = data[payload_start:item_end]
     try:
         payload.decode('utf-8')
     except UnicodeDecodeError:
         fixed = payload.decode('utf-8', utf8_error).encode('utf-8', utf8_error)
-        new_strlen = len(fixed)
-        new_header_len = _str_header_len(new_strlen)
-        new_header = _make_str_header(new_strlen)
-        old_total = header_len + str_len
-        new_total = new_header_len + new_strlen
-        original = bytes(ba[item_start:item_start + old_total])
-        ba[item_start:item_start + old_total] = new_header + fixed
-        return item_start + new_total, (original, fixed.decode('utf-8'))
-    return item_start + header_len + str_len, None
+        return item_end, (item_start, item_end, fixed)
+    return item_end, None
 
 
 # ── iterative walker ────────────────────────────────────────────────────
 
-def _walk_fix(ba, start, utf8_error):
+def _walk_fix(data, start, utf8_error):
     """
-    Walk the msgpack structure from *start*, fixing any string with invalid
-    UTF-8 encountered along the way.
+    Walk the msgpack structure from *start*, reporting every string with
+    invalid UTF-8 encountered along the way.
 
     Uses an explicit :class:`collections.deque` as a stack instead of
     recursion to avoid hitting Python's recursion limit on deeply nested
     inputs.
 
+    The buffer is read, never written: a rewritten string would change the
+    length, so the walk yields its span and the caller copies the payload once.
+
     Args:
-        ba (bytearray): Mutable msgpack buffer.
+        data (bytes): The msgpack buffer, which is not modified.
         start (int): Offset to begin processing.
         utf8_error (str): Error handler for bytes decode/encode.
 
     Yields:
-        tuple[bytes, str]: The item before a rewrite, and the text it became.
+        tuple[int, int, bytes]: The start and end offset of an item that has to
+            be rewritten, and the text that replaces its payload
     """
     pos = start
     # Stack of remaining-item counts for enclosing containers.
@@ -207,13 +186,13 @@ def _walk_fix(ba, start, utf8_error):
     # Cached count of remaining items in the current (top) container.
     # 0 means no container context (stack is empty or all finished).
     remain = 0
-    total = len(ba)
+    total = len(data)
 
     while True:
         if pos >= total:
             return
 
-        op = ba[pos]
+        op = data[pos]
 
         # ── container headers (with children) — push + continue onsite ──
         if 0x80 <= op <= 0x8f:  # fixmap
@@ -237,8 +216,7 @@ def _walk_fix(ba, start, utf8_error):
             pos += 1
         # ── fixstr 0xa0 .. 0xbf ──
         elif 0xa0 <= op <= 0xbf:
-            pos, span = _try_fix_string(ba, 1, op - 0xa0, pos, utf8_error)
-            total = len(ba)
+            pos, span = _try_fix_string(data, 1, op - 0xa0, pos, utf8_error)
             if span is not None:
                 yield span
         # ── nil 0xc0 ──
@@ -252,26 +230,26 @@ def _walk_fix(ba, start, utf8_error):
             pos += 1
         # ── bin8 0xc4 ──
         elif op == 0xc4:
-            pos += 2 + ba[pos + 1]
+            pos += 2 + data[pos + 1]
         # ── bin16 0xc5 ──
         elif op == 0xc5:
-            blen = _U16BE.unpack_from(ba, pos + 1)[0]
+            blen = _U16BE.unpack_from(data, pos + 1)[0]
             pos += 3 + blen
         # ── bin32 0xc6 ──
         elif op == 0xc6:
-            blen = _U32BE.unpack_from(ba, pos + 1)[0]
+            blen = _U32BE.unpack_from(data, pos + 1)[0]
             pos += 5 + blen
         # ── ext8 0xc7 ──
         elif op == 0xc7:
-            elen = ba[pos + 1]
+            elen = data[pos + 1]
             pos += 3 + elen
         # ── ext16 0xc8 ──
         elif op == 0xc8:
-            elen = _U16BE.unpack_from(ba, pos + 1)[0]
+            elen = _U16BE.unpack_from(data, pos + 1)[0]
             pos += 4 + elen
         # ── ext32 0xc9 ──
         elif op == 0xc9:
-            elen = _U32BE.unpack_from(ba, pos + 1)[0]
+            elen = _U32BE.unpack_from(data, pos + 1)[0]
             pos += 6 + elen
         # ── float32 0xca ──
         elif op == 0xca:
@@ -320,42 +298,39 @@ def _walk_fix(ba, start, utf8_error):
             pos += 18
         # ── str8 0xd9 ──
         elif op == 0xd9:
-            pos, span = _try_fix_string(ba, 2, ba[pos + 1], pos, utf8_error)
-            total = len(ba)
+            pos, span = _try_fix_string(data, 2, data[pos + 1], pos, utf8_error)
             if span is not None:
                 yield span
         # ── str16 0xda ──
         elif op == 0xda:
-            slen = _U16BE.unpack_from(ba, pos + 1)[0]
-            pos, span = _try_fix_string(ba, 3, slen, pos, utf8_error)
-            total = len(ba)
+            slen = _U16BE.unpack_from(data, pos + 1)[0]
+            pos, span = _try_fix_string(data, 3, slen, pos, utf8_error)
             if span is not None:
                 yield span
         # ── str32 0xdb ──
         elif op == 0xdb:
-            slen = _U32BE.unpack_from(ba, pos + 1)[0]
-            pos, span = _try_fix_string(ba, 5, slen, pos, utf8_error)
-            total = len(ba)
+            slen = _U32BE.unpack_from(data, pos + 1)[0]
+            pos, span = _try_fix_string(data, 5, slen, pos, utf8_error)
             if span is not None:
                 yield span
 
         # ── array16 / array32 / map16 / map32 ──
         elif op == 0xdc:
-            n = _U16BE.unpack_from(ba, pos + 1)[0]
+            n = _U16BE.unpack_from(data, pos + 1)[0]
             if n:
                 stack.append(n)
                 remain = n
             pos += 3
             continue
         elif op == 0xdd:
-            n = _U32BE.unpack_from(ba, pos + 1)[0]
+            n = _U32BE.unpack_from(data, pos + 1)[0]
             if n:
                 stack.append(n)
                 remain = n
             pos += 5
             continue
         elif op == 0xde:
-            n = _U16BE.unpack_from(ba, pos + 1)[0]
+            n = _U16BE.unpack_from(data, pos + 1)[0]
             if n:
                 n *= 2
                 stack.append(n)
@@ -363,7 +338,7 @@ def _walk_fix(ba, start, utf8_error):
             pos += 3
             continue
         elif op == 0xdf:
-            n = _U32BE.unpack_from(ba, pos + 1)[0]
+            n = _U32BE.unpack_from(data, pos + 1)[0]
             if n:
                 n *= 2
                 stack.append(n)
@@ -486,6 +461,10 @@ def fixup_msgpack_unicode_slow(
     regardless of how many strings are repaired.  Binary segments (``bin``,
     ``ext``) are skipped, so opaque payloads are never touched.
 
+    The repaired payload is copied once at the end: the walk only reports the
+    spans to replace, so a buffer with many bad strings costs one join instead
+    of one relocation per string.
+
     Args:
         data (bytes): The msgpack buffer to repair.
         utf8_error (str): Error handling scheme passed to
@@ -499,8 +478,15 @@ def fixup_msgpack_unicode_slow(
     Returns:
         bytes: The fully repaired msgpack bytes.
     """
-    ba = bytearray(data)
-    if ba:
-        for original, repaired in _walk_fix(ba, 0, utf8_error):
-            _record_span(spans, original, repaired)
-    return bytes(ba)
+    parts = []
+    end = 0
+    for start, item_end, fixed in _walk_fix(data, 0, utf8_error):
+        parts.append(data[end:start])
+        parts.append(_make_str_header(len(fixed)))
+        parts.append(fixed)
+        end = item_end
+        _record_span(spans, data[start:item_end], fixed.decode('utf-8'))
+    if not parts:
+        return data
+    parts.append(data[end:])
+    return b''.join(parts)

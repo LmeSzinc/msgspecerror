@@ -22,17 +22,16 @@ def _msgpack(obj) -> bytes:
     return msgspec.msgpack.encode(obj)
 
 
-def _walk_fixes_one_item(ba):
+def _walk_fixes_one_item(item):
     """
     Walk one item and check the cursor ended exactly at its boundary.
 
-    The walker no longer reports its end offset, so the item is put in a two
-    element array followed by a bad string: that string is only repaired when
-    the item before it was skipped by exactly its own length.
+    The item is put in a two element array followed by a bad string: that
+    string is only repaired when the item before it was skipped by exactly its
+    own length.
     """
-    ba = bytearray(b'\x92' + bytes(ba) + b'\xa1' + _BAD_BYTE)
-    list(_walk_fix(ba, 0, 'replace'))
-    return bytes(ba).endswith(b'\xa3' + _REPLACEMENT_UTF8)
+    data = b'\x92' + bytes(item) + b'\xa1' + _BAD_BYTE
+    return fixup_msgpack_unicode_slow(data).endswith(b'\xa3' + _REPLACEMENT_UTF8)
 
 
 # ── slow walker: single items ──────────────────────────────────────────
@@ -105,42 +104,54 @@ class TestWalkFix:
 
 class TestWalkFixStrings:
     def test_fixstr_valid(self):
-        ba = bytearray(b'\xa5hello')
-        list(_walk_fix(ba, 0, 'replace'))
-        assert bytes(ba) == b'\xa5hello'
+        data = b'\xa5hello'
+        assert fixup_msgpack_unicode_slow(data) == data
 
     def test_fixstr_bad(self):
-        ba = bytearray(b'\xa1' + _BAD_BYTE)
-        list(_walk_fix(ba, 0, 'replace'))
-        fixed = bytes(ba)
+        fixed = fixup_msgpack_unicode_slow(b'\xa1' + _BAD_BYTE)
         assert fixed[0] == 0xa3  # fixstr length 3
         assert fixed[1:] == _REPLACEMENT_UTF8
 
     def test_str8_bad(self):
         payload = _BAD_BYTE + b'A'
-        ba = bytearray(bytes([0xd9, len(payload)]) + payload)
-        list(_walk_fix(ba, 0, 'replace'))
-        assert b'\xef\xbf\xbd' in ba  # replacement char present
-        assert b'A' in ba
+        fixed = fixup_msgpack_unicode_slow(bytes([0xd9, len(payload)]) + payload)
+        assert b'\xef\xbf\xbd' in fixed  # replacement char present
+        assert b'A' in fixed
 
     def test_str16_bad(self):
         payload = _BAD_BYTE * 3 + b'valid'
-        ba = bytearray(bytes([0xda]) + struct.pack('>H', len(payload)) + payload)
-        list(_walk_fix(ba, 0, 'replace'))
-        assert msgspec.msgpack.decode(bytes(ba)) == '\ufffd\ufffd\ufffdvalid'
+        fixed = fixup_msgpack_unicode_slow(bytes([0xda]) + struct.pack('>H', len(payload)) + payload)
+        assert msgspec.msgpack.decode(fixed) == '\ufffd\ufffd\ufffdvalid'
 
     def test_str32_bad(self):
         payload = _BAD_BYTE * 4 + b'tail'
-        ba = bytearray(bytes([0xdb]) + struct.pack('>I', len(payload)) + payload)
-        list(_walk_fix(ba, 0, 'replace'))
-        assert msgspec.msgpack.decode(bytes(ba)) == '\ufffd\ufffd\ufffd\ufffdtail'
+        fixed = fixup_msgpack_unicode_slow(bytes([0xdb]) + struct.pack('>I', len(payload)) + payload)
+        assert msgspec.msgpack.decode(fixed) == '\ufffd\ufffd\ufffd\ufffdtail'
 
     def test_utf8_error_ignore(self):
         """With ``utf8_error='ignore'`` bad bytes are removed."""
         payload = _BAD_BYTE + b'good' + _BAD_BYTE
-        ba = bytearray(bytes([0xd9, len(payload)]) + payload)
-        list(_walk_fix(ba, 0, 'ignore'))
-        assert msgspec.msgpack.decode(bytes(ba)) == 'good'
+        fixed = fixup_msgpack_unicode_slow(bytes([0xd9, len(payload)]) + payload, utf8_error='ignore')
+        assert msgspec.msgpack.decode(fixed) == 'good'
+
+
+class TestWalkFixSpans:
+    """The walk reports the spans to replace instead of writing the buffer."""
+
+    def test_reports_each_rewrite(self):
+        data = b'\x92\xa1' + _BAD_BYTE + b'\xa2ok'
+        spans = list(_walk_fix(data, 0, 'replace'))
+
+        assert spans == [(1, 3, _REPLACEMENT_UTF8)]
+
+    def test_leaves_the_buffer_alone(self):
+        data = b'\x92\xa1' + _BAD_BYTE + b'\xa2ok'
+        list(_walk_fix(data, 0, 'replace'))
+
+        assert data == b'\x92\xa1' + _BAD_BYTE + b'\xa2ok'
+
+    def test_reports_nothing_when_valid(self):
+        assert list(_walk_fix(_msgpack({'a': [1, 2]}), 0, 'replace')) == []
 
 
 # ── slow walker: containers ───────────────────────────────────────────
