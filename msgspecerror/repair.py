@@ -7,7 +7,7 @@ from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack,
 
 from . import const
 from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
-from .parse_decoder import get_decoder_model
+from .parse_decoder import _type_error, get_decoder_model
 from .parse_error import ErrorInfo, parse_msgspec_error
 from .parse_msgpack import AMBIGUOUS_SPAN, MISSING, fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 from .parse_struct import (
@@ -1099,9 +1099,8 @@ def load_json_with_default(
 
     Args:
         data (bytes | str): The input bytes to decode.
-        model_or_decoder: The target type to decode into, or a ``msgspec.json.Decoder`` instance.
-            When a decoder is passed, the model is extracted from ``decoder.type``.
-            A ``msgspec.msgpack.Decoder`` is rejected with TypeError.
+        model_or_decoder: The target type to decode into, or a ``msgspec.json.Decoder`` instance,
+            which decodes the payload as it is. A ``msgspec.msgpack.Decoder`` is rejected with TypeError.
         utf8_error: The error handling scheme to use for the handling of decoding errors.
             - "strict", any UnicodeDecodeError will be treated as root level error and generate a root level default.
                 You may lose tons of useful data because of one unicode error.
@@ -1140,11 +1139,20 @@ def load_json_with_default(
         # [ErrorInfo(msg='Expected `int`, got `str` - at `$.s.a`',
         # type=<ErrorType.TYPE_MISMATCH>, loc=('s', 'a'), ctx=ErrorCtx())]
     """
-    # The repair has to judge an entry with the same rules the decoding used,
-    # or a value the decoder accepted (`strict=False`, a `dec_hook`) looks
-    # invalid to `convert`
-    decoder, model, options = get_decoder_model(
-        model_or_decoder, JsonDecoder, {'str_keys': True}, 'load_json_with_default')
+    # The class check only picks the decoder and the model: a payload that
+    # decodes is never repaired, so the `convert` options are resolved in the
+    # one branch that reads them. The repair does have to judge an entry with
+    # the rules the decoding used, or a value the decoder accepted
+    # (`strict=False`, a `dec_hook`) looks invalid to `convert`.
+    cls = type(model_or_decoder)
+    if cls is JsonDecoder:
+        decoder = model_or_decoder
+        model = decoder.type
+    elif cls is MsgpackDecoder:
+        raise TypeError(_type_error('load_json_with_default', 'json', 'msgpack'))
+    else:
+        decoder = None
+        model = model_or_decoder
 
     collected_errors = []
     for _ in range(2):
@@ -1155,6 +1163,9 @@ def load_json_with_default(
             else:
                 return decoder.decode(data), collected_errors
         except ValidationError as e:
+            # The repaired object is judged with the rules the decode used
+            _, _, options = get_decoder_model(
+                model_or_decoder, JsonDecoder, {'str_keys': True}, 'load_json_with_default')
             try:
                 raw_obj = decode_json(data)
             except DecodeError as error:
@@ -1244,9 +1255,8 @@ def load_msgpack_with_default(
 
     Args:
         data (bytes): The input bytes to decode.
-        model_or_decoder: The target type to decode into, or a ``msgspec.msgpack.Decoder`` instance.
-            When a decoder is passed, the model is extracted from ``decoder.type``.
-            A ``msgspec.json.Decoder`` is rejected with TypeError.
+        model_or_decoder: The target type to decode into, or a ``msgspec.msgpack.Decoder`` instance,
+            which decodes the payload as it is. A ``msgspec.json.Decoder`` is rejected with TypeError.
         utf8_error: The error handling scheme for invalid UTF-8 in string payloads.
             - ``"strict"`` — any ``UnicodeDecodeError`` is treated as a root-level
               error and produces a root-level default.
@@ -1265,9 +1275,19 @@ def load_msgpack_with_default(
 
     See load_json_with_default for more info.
     """
-    # Msgpack keys are not restricted to strings, so `str_keys` stays off
-    decoder, model, options = get_decoder_model(
-        model_or_decoder, MsgpackDecoder, None, 'load_msgpack_with_default')
+    # The class check only picks the decoder: a payload that decodes is never
+    # repaired, and the repair below works from the failure it gets. `model` is
+    # bound for both kinds of argument, a decoder decodes the payload itself and
+    # only a typehint reaches the `type=` call.
+    cls = type(model_or_decoder)
+    if cls is MsgpackDecoder:
+        decoder = model_or_decoder
+        model = decoder.type
+    elif cls is JsonDecoder:
+        raise TypeError(_type_error('load_msgpack_with_default', 'msgpack', 'json'))
+    else:
+        decoder = None
+        model = model_or_decoder
 
     try:
         if decoder is None:
@@ -1278,6 +1298,13 @@ def load_msgpack_with_default(
         # that decodes as it is never allocates any of it, and the bytes are not
         # decoded once more just to raise the same error again
         error = failure
+
+    # The repair has to judge an entry with the same rules the decoding used,
+    # or a value the decoder accepted (`strict=False`, a `dec_hook`) looks
+    # invalid to `convert`. Msgpack keys are not restricted to strings, so
+    # `str_keys` stays off
+    _, model, options = get_decoder_model(
+        model_or_decoder, MsgpackDecoder, None, 'load_msgpack_with_default')
 
     unicode_errors: List[ErrorInfo] = []
     # The bytes every unicode rewrite replaced, so a `msgspec.Raw` field can be

@@ -6,6 +6,11 @@ carries the rules it validates with, and those rules have to be reused so a
 value the caller's decode accepted is not repaired away by a stricter
 `convert`. The format of the decoder also decides `str_keys`: json keys are
 always strings, msgpack keys are not.
+
+A decode that succeeds never reads those rules, so the load families do the
+class check inline and call `get_decoder_model()` only once their decode has
+failed. `_type_error()` stays the one builder of the wrong-format message, for
+both the inline check and this module.
 """
 
 from msgspec.json import Decoder as JsonDecoder

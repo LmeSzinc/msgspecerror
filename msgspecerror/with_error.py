@@ -20,7 +20,7 @@ from msgspec.json import Decoder as JsonDecoder, decode as decode_json
 from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 
 from .const import DECODE_ERRORS, MSG_RAW_FROM_MEMORY, T_NODEFAULT, ErrorType, T_json_data, T_msgpack_data
-from .parse_decoder import get_decoder_model
+from .parse_decoder import _type_error, get_decoder_model
 from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msgspec_error
 from .parse_msgpack import fixup_msgpack_unicode_slow
 from .parse_struct import get_field_typehint
@@ -214,6 +214,22 @@ def resolve_error(error, data, model_or_decoder, **kwargs):
         error = parse_msgspec_error(error)
 
     _, model, options = get_decoder_model(model_or_decoder, options=kwargs)
+    return _resolve_error_with(error, data, model, options)
+
+
+def _resolve_error_with(error, data, model, options):
+    """
+    Walk a location against a model whose rules are already resolved.
+
+    Args:
+        error (ErrorInfo): The parsed error, its `loc` is walked
+        data (Any): The data that was being validated
+        model (Any): The target type, a decoder is already resolved to `.type`
+        options (dict): Options of the equivalent `msgspec.convert` call
+
+    Returns:
+        ErrorInfoDetail: The same result `resolve_error()` reports
+    """
     try:
         resolved = _resolve_loc(error.loc, data, model, options)
     except Exception:
@@ -310,14 +326,28 @@ def load_json_with_error(data, model_or_decoder):
     Args:
         data (bytes | bytearray | memoryview | str): Json payload
         model_or_decoder: The target type to decode into, or a
-            msgspec.json.Decoder whose `type` is used. A msgpack decoder
-            raises TypeError.
+            msgspec.json.Decoder, which decodes the payload as it is. A msgpack
+            decoder raises TypeError.
 
     Returns:
         tuple[Any, ErrorInfo | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, error) on failure
     """
-    decoder, model, _ = get_decoder_model(model_or_decoder, JsonDecoder, caller='load_json_with_error')
+    # `model` is bound for both kinds of argument, so the `type=` call site
+    # below never reads an unbound name. A decoder decodes the payload itself,
+    # only a typehint reaches that call. The `convert` options are not resolved
+    # here, nothing on this path reads them. The class check is the same exact
+    # type comparison get_decoder_model() does, and the message comes from the
+    # same builder.
+    cls = type(model_or_decoder)
+    if cls is JsonDecoder:
+        decoder = model_or_decoder
+        model = decoder.type
+    elif cls is MsgpackDecoder:
+        raise TypeError(_type_error('load_json_with_error', 'json', 'msgpack'))
+    else:
+        decoder = None
+        model = model_or_decoder
 
     try:
         if decoder is None:
@@ -356,14 +386,28 @@ def load_msgpack_with_error(data, model_or_decoder):
     Args:
         data (bytes | bytearray | memoryview): Msgpack payload
         model_or_decoder: The target type to decode into, or a
-            msgspec.msgpack.Decoder whose `type` is used. A json decoder
-            raises TypeError.
+            msgspec.msgpack.Decoder, which decodes the payload as it is. A json
+            decoder raises TypeError.
 
     Returns:
         tuple[Any, ErrorInfo | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, error) on failure
     """
-    decoder, model, _ = get_decoder_model(model_or_decoder, MsgpackDecoder, caller='load_msgpack_with_error')
+    # `model` is bound for both kinds of argument, so the `type=` call site
+    # below never reads an unbound name. A decoder decodes the payload itself,
+    # only a typehint reaches that call. The `convert` options are not resolved
+    # here, nothing on this path reads them. The class check is the same exact
+    # type comparison get_decoder_model() does, and the message comes from the
+    # same builder.
+    cls = type(model_or_decoder)
+    if cls is MsgpackDecoder:
+        decoder = model_or_decoder
+        model = decoder.type
+    elif cls is JsonDecoder:
+        raise TypeError(_type_error('load_msgpack_with_error', 'msgpack', 'json'))
+    else:
+        decoder = None
+        model = model_or_decoder
 
     try:
         if decoder is None:
@@ -471,16 +515,26 @@ def load_json_with_error_detail(data, model_or_decoder):
     Args:
         data (bytes | bytearray | memoryview | str): Json payload
         model_or_decoder: The target type to decode into, or a
-            msgspec.json.Decoder whose `type` is used. A msgpack decoder
-            raises TypeError.
+            msgspec.json.Decoder, which decodes the payload as it is. A msgpack
+            decoder raises TypeError.
 
     Returns:
         tuple[Any, ErrorInfoDetail | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, detail) on failure
     """
-    # The key search must validate with the rules the payload was decoded with
-    decoder, model, options = get_decoder_model(
-        model_or_decoder, JsonDecoder, {'str_keys': True}, 'load_json_with_error_detail')
+    # The class check is the same exact type comparison get_decoder_model()
+    # does, and the message comes from the same builder. `model` is bound for
+    # both kinds of argument, a decoder decodes the payload itself and only a
+    # typehint reaches the `type=` call.
+    cls = type(model_or_decoder)
+    if cls is JsonDecoder:
+        decoder = model_or_decoder
+        model = decoder.type
+    elif cls is MsgpackDecoder:
+        raise TypeError(_type_error('load_json_with_error_detail', 'json', 'msgpack'))
+    else:
+        decoder = None
+        model = model_or_decoder
 
     try:
         if decoder is None:
@@ -488,6 +542,12 @@ def load_json_with_error_detail(data, model_or_decoder):
         return decoder.decode(data), NODEFAULT
     except DECODE_ERRORS as e:
         error = parse_msgspec_error(e)
+
+    # The key search must validate with the rules the payload was decoded with,
+    # and nothing but that search reads them: the happy path above is a plain
+    # decode, so the `convert` options are only resolved here
+    _, model, options = get_decoder_model(
+        model_or_decoder, JsonDecoder, {'str_keys': True}, 'load_json_with_error_detail')
 
     # The typed decode stops at the first value error, so a later malformed
     # byte is never reached: the second decode is allowed to fail
@@ -513,7 +573,7 @@ def load_json_with_error_detail(data, model_or_decoder):
             msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
             loc_resolved=not _has_placeholder(error.loc),
         )
-    detail = resolve_error(error, raw, model, **options)
+    detail = _resolve_error_with(error, raw, model, options)
     if repaired and _contains_replacement(detail.error_value):
         # The located value holds a character the repair wrote, it is not the
         # real one. The location is still useful, the value is not handed back.
@@ -609,17 +669,26 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
     Args:
         data (bytes | bytearray | memoryview): Msgpack payload
         model_or_decoder: The target type to decode into, or a
-            msgspec.msgpack.Decoder whose `type` is used. A json decoder
-            raises TypeError.
+            msgspec.msgpack.Decoder, which decodes the payload as it is. A json
+            decoder raises TypeError.
 
     Returns:
         tuple[Any, ErrorInfoDetail | NODEFAULT]: (obj, NODEFAULT) on success,
             (NODEFAULT, detail) on failure
     """
-    # The key search must validate with the rules the payload was decoded with,
-    # msgpack keys are not restricted to strings, so `str_keys` stays off
-    decoder, model, options = get_decoder_model(
-        model_or_decoder, MsgpackDecoder, None, 'load_msgpack_with_error_detail')
+    # The class check is the same exact type comparison get_decoder_model()
+    # does, and the message comes from the same builder. `model` is bound for
+    # both kinds of argument, a decoder decodes the payload itself and only a
+    # typehint reaches the `type=` call.
+    cls = type(model_or_decoder)
+    if cls is MsgpackDecoder:
+        decoder = model_or_decoder
+        model = decoder.type
+    elif cls is JsonDecoder:
+        raise TypeError(_type_error('load_msgpack_with_error_detail', 'msgpack', 'json'))
+    else:
+        decoder = None
+        model = model_or_decoder
 
     try:
         if decoder is None:
@@ -627,6 +696,12 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
         return decoder.decode(data), NODEFAULT
     except DECODE_ERRORS as e:
         error = parse_msgspec_error(e)
+
+    # The key search must validate with the rules the payload was decoded with,
+    # and nothing but that search reads them: the happy path above is a plain
+    # decode. Msgpack keys are not restricted to strings, so `str_keys` stays off
+    _, model, options = get_decoder_model(
+        model_or_decoder, MsgpackDecoder, None, 'load_msgpack_with_error_detail')
 
     # The typed decode stops at the first value error, so a later malformed
     # byte is never reached: the second decode is allowed to fail
@@ -652,7 +727,7 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
             msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
             loc_resolved=not _has_placeholder(error.loc),
         )
-    detail = resolve_error(error, raw, model, **options)
+    detail = _resolve_error_with(error, raw, model, options)
     if repaired and _contains_replacement(detail.error_value):
         # The located value holds a character the repair wrote, it is not the
         # real one. The location is still useful, the value is not handed back.
