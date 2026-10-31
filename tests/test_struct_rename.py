@@ -1,6 +1,6 @@
 from msgspec import Struct
 
-from msgspecerror.parse_struct import get_field_name
+from msgspecerror.parse_model import get_field_name
 
 
 # Structs for testing rename strategies.

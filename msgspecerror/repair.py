@@ -9,12 +9,10 @@ from . import const
 from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
 from .parse_decoder import _type_error, get_decoder_model
 from .parse_error import ErrorInfo, parse_msgspec_error
+from .parse_model import get_field_default, get_field_name, get_field_typehint
+from .parse_model_struct import get_arraylike_field_typehint, is_struct_arraylike
 from .parse_msgpack import AMBIGUOUS_SPAN, MISSING, fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
-from .parse_struct import (
-    _default_is_accepted, _unwrap_struct_model, get_arraylike_field_typehint, get_field_default, get_field_name,
-    get_field_typehint, is_struct_arraylike
-)
-from .parse_type import get_default, is_struct_type, origin_args, unwrap_typehint
+from .parse_type import default_is_accepted, get_default, is_struct_type, origin_args, unwrap_model, unwrap_typehint
 from .repair_unicode import _collect_unicode_replace
 
 
@@ -102,7 +100,7 @@ def _struct_tag_matches(struct, obj):
     Returns:
         bool: True if the obj has no tag info or the tag points to the struct
     """
-    config = _unwrap_struct_model(struct).__struct_config__
+    config = unwrap_model(struct).__struct_config__
     if config.tag is None or type(obj) is not dict:
         # Nothing to check the struct against
         return True
@@ -724,7 +722,8 @@ def _repair_once(
                 if is_last:
                     try:
                         value = get_field_default(
-                            model_origin, part, validate=True, guess_default=guess_default)
+                            model_origin, part, validate=True, guess_default=guess_default,
+                            known_struct_type='struct')
                     except AttributeError:
                         value = NODEFAULT
                     if value is not NODEFAULT:
@@ -781,7 +780,7 @@ def _repair_once(
                 # needed anyway to tell an unusable default from no default at all,
                 # so the field is looked up only once.
                 try:
-                    value = get_field_default(model, part)
+                    value = get_field_default(model, part, known_struct_type='struct')
                 except AttributeError:
                     # this shouldn't happen, unless raw_obj and error.loc don't match
                     if not _pop_last_collection(last_collection_data, last_collection_key):
@@ -792,7 +791,7 @@ def _repair_once(
                     # msgspec rejects as an explicit value must not be written into
                     # the input. The entry is deleted instead, msgspec applies the
                     # default itself when the field is absent.
-                    if _default_is_accepted(model, part, value):
+                    if default_is_accepted(get_field_typehint(model, part), value):
                         obj[part] = value
                         return raw_obj, error
                     try:

@@ -22,8 +22,8 @@ from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 from .const import DECODE_ERRORS, MSG_RAW_FROM_MEMORY, T_NODEFAULT, ErrorType, T_json_data, T_msgpack_data
 from .parse_decoder import _type_error, get_decoder_model
 from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msgspec_error
+from .parse_model import get_field_typehint
 from .parse_msgpack import fixup_msgpack_unicode_slow
-from .parse_struct import get_field_typehint
 from .parse_type import is_struct_type, origin_args, unwrap_typehint
 from .repair import (
     _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _resolve_union_member, _validate_entry

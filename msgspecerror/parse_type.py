@@ -3,13 +3,19 @@ import decimal
 import sys
 import typing
 import uuid
-from typing import Any, TypeVar, Union
+from typing import Any, ForwardRef, Generic, TypeVar, Union
+
+try:
+    from types import GenericAlias as _types_GenericAlias
+except ImportError:
+    # Python 3.8, builtin generics like `list[int]` are not supported there
+    _types_GenericAlias = None
 
 import msgspec
 from msgspec import NODEFAULT, UnsetType, ValidationError, convert
-from msgspec._utils import _CONCRETE_TYPES
+from msgspec._utils import _CONCRETE_TYPES, _apply_params, _get_class_mro_and_typevar_mappings
 from msgspec.inspect import _is_enum
-from typing_extensions import Literal
+from typing_extensions import Literal, NotRequired, Required
 
 # Backport typing alias in msgspec._utils, so we can keep supporting py3.8
 # <-- Start of the copied code -->
@@ -185,8 +191,31 @@ def is_struct_type(t):
     return origin is not None and _msgspec_is_struct_type(origin)
 
 
-def is_struct_like(t):
+def unwrap_model(model):
     """
+    Unwrap a parametrized generic alias to its origin class
+
+    Args:
+        model: A model class, or a parametrized generic alias of one (e.g. `Box[int]`)
+
+    Returns:
+        type: The origin class of `model`, `model` itself when it is already a class
+    """
+    # A class is the common case, `isinstance()` is much cheaper than a missing
+    # `__origin__` attribute lookup. A PEP 585 generic alias (`list[int]`) also
+    # passes the `isinstance()` check on CPython, so its `__origin__` is still read.
+    if isinstance(model, type) and type(model) is not _types_GenericAlias:
+        return model
+    origin = getattr(model, '__origin__', None)
+    if origin is not None and isinstance(origin, type):
+        return origin
+    return model
+
+
+def is_struct_like(t, unwrap=True):
+    """
+    Name the model kind of a typehint, the kinds `msgspec.inspect` tells apart
+
     Equivalent to the followings, functions are from msgspec.inspect
 
     _is_struct(t)
@@ -194,26 +223,40 @@ def is_struct_like(t):
     or _is_dataclass(t)
     or _is_attrs(t)
     or _is_namedtuple(t)
+
+    Args:
+        t: Any typehint
+        unwrap (bool): True by default, a parametrized generic alias is unwrapped
+            to its origin class. Pass False when `t` is already unwrapped
+
+    Returns:
+        str: 'struct', 'dataclass', 'typeddict', 'namedtuple' or 'attrs', and ''
+            when `t` is none of them
     """
     # _is_struct()
     if is_struct_type(t):
-        return True
+        return 'struct'
+    if unwrap:
+        # A parametrized generic alias does not forward the class attributes the
+        # checks below read (`Box[int].__dataclass_fields__` is missing), so the
+        # origin class is what is actually judged
+        t = unwrap_model(t)
     # _is_dataclass()
     if hasattr(t, "__dataclass_fields__"):
-        return True
+        return 'dataclass'
     try:
         # _is_typeddict()
         if issubclass(t, dict) and hasattr(t, "__total__"):
-            return True
+            return 'typeddict'
         # _is_namedtuple(t)
         if issubclass(t, tuple) and hasattr(t, "_fields"):
-            return True
+            return 'namedtuple'
     except TypeError:
-        return False
+        return ''
     # _is_attrs()
     if hasattr(t, "__attrs_attrs__"):
-        return True
-    return False
+        return 'attrs'
+    return ''
 
 
 def get_default(t, guess_default=False, return_obj=False):
@@ -279,7 +322,7 @@ def get_default(t, guess_default=False, return_obj=False):
 
     # All struct-like types default to an empty object (`{}`), representing a
     # valid but empty structure, which is useful for error correction.
-    elif is_struct_like(origin):
+    elif is_struct_like(origin, unwrap=False):
         try:
             # The object itself is what `return_obj` asks for, constructing it also
             # tells whether the object can be default constructed at all
@@ -407,3 +450,186 @@ def get_default(t, guess_default=False, return_obj=False):
         # nor decode such a model, we keep the value as the best we have
         pass
     return value
+
+
+# Python 3.14 computes the annotations lazily (PEP 649),
+# see `field_typehint`
+IS_PY314_PLUS = sys.version_info >= (3, 14)
+
+
+# ?? annotations of a model field ?????????????????????????????????????????
+
+def _scan_annotation(tp):
+    """
+    Scan a type annotation for forward references and TypeVars
+
+    The scan tells whether the annotation needs to be evaluated by `_eval_type`
+    (forward references) and whether its TypeVars need to be substituted.
+
+    Args:
+        tp: Any typehint
+
+    Returns:
+        tuple[bool, bool]: (contains a forward reference, contains a TypeVar)
+    """
+    tp_type = type(tp)
+    if tp_type is str:
+        # a str annotation is a quoted type, i.e. a forward reference;
+        # `type()` is used instead of `isinstance()` for speed, annotations are
+        # exact `str`, never a str subclass
+        return True, False
+    if isinstance(tp, ForwardRef):
+        return True, False
+    if isinstance(tp, TypeVar):
+        return False, True
+    args = getattr(tp, '__args__', None)
+    if not args:
+        return False, False
+    if getattr(tp, '__origin__', None) is Literal:
+        # the args of `Literal` are values, a str arg is not a forward reference
+        return False, False
+    # `Annotated[T, metadata...]`, only the first arg is a type hint. The identity
+    # check is much faster than `hasattr(tp, '__metadata__')`, which falls through
+    # `_GenericAlias.__getattr__`
+    if tp_type is _AnnotatedAlias or (_AnnotatedAlias is None and hasattr(tp, '__metadata__')):
+        args = args[:1]
+
+    has_ref = False
+    has_typevar = False
+    for arg in args:
+        arg_has_ref, arg_has_typevar = _scan_annotation(arg)
+        has_ref |= arg_has_ref
+        has_typevar |= arg_has_typevar
+        if has_ref and has_typevar:
+            break
+    return has_ref, has_typevar
+
+
+def _contains_typevar(tp):
+    """
+    Recursively check if a type annotation contains a TypeVar.
+    """
+    if isinstance(tp, TypeVar):
+        return True
+    args = getattr(tp, '__args__', None)
+    if args:
+        for arg in args:
+            if _contains_typevar(arg):
+                return True
+    return False
+
+
+def field_typehint(model, field_name, stop_at, unwrap=True):
+    """
+    Get the annotation a model declares for a field
+
+    The annotation is resolved the same way msgspec resolves it for the decoder:
+    a forward reference (including the ones nested in other type hints) is
+    evaluated against the namespace of the class that declares the field, and a
+    TypeVar is substituted for the parametrized class. Annotations that contain
+    neither are returned as-is, without touching the rest of the class.
+
+    Args:
+        model: A model class, or a parametrized generic alias of one
+        field_name (str): Field name (Python attribute)
+        stop_at: Class that ends the MRO walk, `msgspec.Struct` for a struct and
+            `object` for the other model kinds
+        unwrap (bool): True by default, a parametrized generic alias is unwrapped
+            to its origin class. Pass False when `model` is already unwrapped
+
+    Returns:
+        Any: typehint of model.field_name
+
+    Raises:
+        AttributeError: if failed
+    """
+    # The alias itself is kept for the TypeVar mapping below, only the MRO walk
+    # reads the origin class
+    model_class = unwrap_model(model) if unwrap else model
+    for cls in model_class.__mro__:
+        if cls is stop_at:
+            break
+        if cls in (Generic, object):
+            continue
+
+        if IS_PY314_PLUS:
+            # Python 3.14 (PEP 649) computes the annotations on first access,
+            # they never land in the class dict
+            annotations = cls.__annotations__
+        else:
+            # The class dict holds the annotations of the class itself, the
+            # attribute can not be used: before Python 3.10 it falls back to a
+            # base class and returns another class's annotations
+            annotations = cls.__dict__.get('__annotations__')
+            if annotations is None:
+                # the class has no annotation of its own, check its bases
+                continue
+        anno = annotations.get(field_name, NODEFAULT)
+        if anno is NODEFAULT:
+            continue
+        if getattr(anno, '__origin__', None) in (Required, NotRequired):
+            # a TypedDict marker, it tells whether the key is required and is
+            # not part of the type msgspec decodes the value as
+            try:
+                anno = anno.__args__[0]
+            except (AttributeError, IndexError):
+                # a hand-made object that only looks like the wrapper, the
+                # annotation is used as it is
+                pass
+
+        has_ref, has_typevar = _scan_annotation(anno)
+        if has_ref:
+            # convert forward ref, module globals and the class body are the
+            # namespaces the decoder resolves the annotation against
+            cls_locals = dict(vars(cls))
+            cls_globals = getattr(sys.modules.get(cls.__module__, None), '__dict__', {})
+            if type(anno) is str:
+                anno = _forward_ref(anno)
+            anno = _eval_type(anno, cls_globals, cls_locals)
+            # a TypeVar may only become visible after the refs are evaluated
+            if not has_typevar:
+                has_typevar = _contains_typevar(anno)
+
+        if anno is None:
+            # msgspec treats an annotation of `None` as `NoneType`
+            anno = type(None)
+
+        # return directly if it doesn't contain TypeVar
+        if not has_typevar:
+            return anno
+
+        # convert TypeVar, msgspec substitutes it per parametrized class
+        _, typevar_mappings = _get_class_mro_and_typevar_mappings(model)
+        mapping = typevar_mappings.get(cls)
+        if mapping:
+            anno = _apply_params(anno, mapping)
+        return anno
+
+    # this shouldn't happen, `field_name` comes from the model field list
+    raise AttributeError(f'Type {model} has no field with name="{field_name}"')
+
+
+def default_is_accepted(typehint, value):
+    """
+    Check whether a model default is accepted when it is written into the input
+
+    msgspec does not validate model defaults, a default may be rejected when it is
+    explicitly present in the input (e.g. `v: Annotated[int, Meta(ge=18)] = 0`),
+    while msgspec still applies it when the field is absent.
+
+    Args:
+        typehint: Typehint of the field
+        value (Any): The default value
+
+    Returns:
+        bool: True if the value is accepted
+    """
+    try:
+        convert(value, type=typehint)
+    except ValidationError:
+        return False
+    except TypeError:
+        # the field typehint is not a type msgspec can convert to, we can't
+        # judge the value and keep it as the best we have
+        return True
+    return True

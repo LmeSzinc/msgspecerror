@@ -6,7 +6,7 @@ import uuid
 from collections import namedtuple
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Final, List, Literal, NewType, TypedDict
+from typing import Dict, Final, Generic, List, Literal, NewType, Tuple, TypedDict, TypeVar
 
 import attrs
 import msgspec
@@ -452,3 +452,62 @@ class TestGetDefaultValidation:
         assert len(calls) == 1
         assert get_default(Annotated[int, msgspec.Meta(ge=18)], guess_default=True) is NODEFAULT
         assert len(calls) == 2
+
+
+class TestIsStructLike:
+    """`is_struct_like` names the model kind, and an empty str for anything else."""
+
+    @pytest.mark.parametrize("typehint, expected", [
+        (MyStruct, 'struct'),
+        (MyDefaultConstructibleStruct, 'struct'),
+        (MyDataClass, 'dataclass'),
+        (MyTypedDict, 'typeddict'),
+        (MyNamedTuple, 'namedtuple'),
+        (MyAttrsClass, 'attrs'),
+    ])
+    def test_a_model_kind(self, typehint, expected):
+        assert parse_type.is_struct_like(typehint) == expected
+
+    @pytest.mark.parametrize("typehint", [
+        int, str, float, bytes, bool, type(None), None,
+        list, dict, tuple, set,
+        List[int], Dict[str, int], Tuple[int, str],
+        MyEnum, MyEnum.A,
+    ])
+    def test_another_typehint(self, typehint):
+        assert parse_type.is_struct_like(typehint) == ''
+
+    def test_a_plain_class(self):
+        """A class is only a model when it carries one of the model metadata sets."""
+
+        class Plain:
+            x: int
+
+        assert parse_type.is_struct_like(Plain) == ''
+
+    def test_a_parametrized_struct(self):
+        T = TypeVar('T')
+
+        class Box(msgspec.Struct, Generic[T]):
+            v: T
+
+        assert parse_type.is_struct_like(Box[int]) == 'struct'
+
+    def test_a_parametrized_dataclass(self):
+        """A generic alias does not forward the class attributes, its origin is judged."""
+        T = TypeVar('T')
+
+        @dataclass
+        class BoxDC(Generic[T]):
+            v: T
+
+        assert parse_type.is_struct_like(BoxDC[int]) == 'dataclass'
+
+    def test_a_parametrized_attrs_class(self):
+        T = TypeVar('T')
+
+        @attrs.define
+        class BoxAttrs(Generic[T]):
+            v: T
+
+        assert parse_type.is_struct_like(BoxAttrs[int]) == 'attrs'

@@ -4,8 +4,7 @@ from .parse_anno import (
 )
 from .parse_ctx import ErrorCtx
 from .parse_error import ErrorInfo, ErrorInfoDetail, parse_msgspec_error
-from .parse_model import get_model_changes
-from .parse_struct import get_field_default, get_field_name, get_field_typehint
+from .parse_model import get_field_default, get_field_name, get_field_typehint, get_model_changes
 from .parse_type import get_default
 from .repair import convert_with_default, load_json_with_default, load_msgpack_with_default
 from .with_error import (

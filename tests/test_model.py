@@ -1,7 +1,10 @@
-from typing import Optional, Union
+import dataclasses
+from typing import ClassVar, NamedTuple, Optional, Union
 
+import attrs
 import pytest
 from msgspec import UNSET, Struct, UnsetType
+from typing_extensions import NotRequired, TypedDict
 
 from msgspecerror.parse_model import get_model_changes
 
@@ -139,9 +142,9 @@ class TestGetModelChanges:
             NotAStruct(),
         ],
     )
-    def test_first_arg_not_struct_raises_type_error(self, bad_old):
-        """When ``old`` is not a Struct, TypeError is raised."""
-        with pytest.raises(TypeError, match="Both arguments must be msgspec.Struct instances"):
+    def test_first_arg_not_a_model_raises_type_error(self, bad_old):
+        """When ``old`` is not an instance of a model kind, TypeError is raised."""
+        with pytest.raises(TypeError, match="Both arguments must be instances of a struct-like model"):
             get_model_changes(bad_old, SimpleStruct(x=1, y="x", z=1.0))
 
     def test_nested_struct_changes(self):
@@ -249,3 +252,72 @@ class TestGetModelChanges:
         new2 = Extended(a=99, b="world", c=3.14)
         # Fields differ → only old's fields are compared
         assert get_model_changes(old2, new2) == {"a": 99, "b": "world"}
+
+
+# =================================================================
+# Test Class for `get_model_changes` over the plain model kinds
+# =================================================================
+class TestGetModelChangesDispatch:
+    """`get_model_changes` reads the field list of whichever kind it is given."""
+
+    def test_dataclass(self):
+        @dataclasses.dataclass
+        class Point:
+            x: int
+            y: int
+
+        assert get_model_changes(Point(1, 2), Point(1, 3)) == {'y': 3}
+        assert get_model_changes(Point(1, 2), Point(1, 2)) == {}
+
+    def test_dataclass_skips_the_pseudo_fields(self):
+        @dataclasses.dataclass
+        class WithConstant:
+            x: int
+            constant: ClassVar[int] = 5
+
+        assert get_model_changes(WithConstant(1), WithConstant(2)) == {'x': 2}
+
+    def test_typeddict(self):
+        class Record(TypedDict):
+            a: int
+            b: NotRequired[str]
+
+        assert get_model_changes({'a': 1, 'b': 'x'}, {'a': 2, 'b': 'x'}) == {'a': 2}
+
+    def test_a_typeddict_key_only_new_holds(self):
+        """A key `old` does not hold is a difference, not a value of `None`."""
+        assert get_model_changes({'a': 1}, {'a': 1, 'b': 'x'}) == {'b': 'x'}
+
+    def test_a_typeddict_key_only_old_holds(self):
+        """A dropped key has no new value, so there is nothing to report."""
+        assert get_model_changes({'a': 1, 'b': 'x'}, {'a': 1}) == {}
+
+    def test_a_typeddict_key_holding_none_is_kept_apart_from_a_missing_one(self):
+        assert get_model_changes({'a': None}, {'a': 1}) == {'a': 1}
+        assert get_model_changes({'a': 1}, {'a': None}) == {'a': None}
+
+    def test_namedtuple(self):
+        class Pair(NamedTuple):
+            x: int
+            y: int
+
+        assert get_model_changes(Pair(1, 2), Pair(1, 3)) == {'y': 3}
+
+    def test_attrs(self):
+        @attrs.define
+        class Point:
+            x: int
+            y: int
+
+        assert get_model_changes(Point(1, 2), Point(1, 3)) == {'y': 3}
+
+    def test_a_type_that_is_not_a_model(self):
+        with pytest.raises(TypeError, match='must be instances of a struct-like model'):
+            get_model_changes([1], [2])
+
+    def test_known_struct_type_skips_the_lookup(self):
+        class Pair(NamedTuple):
+            x: int
+            y: int
+
+        assert get_model_changes(Pair(1, 2), Pair(1, 3), known_struct_type='namedtuple') == {'y': 3}
