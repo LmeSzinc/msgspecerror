@@ -22,7 +22,7 @@ from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack
 from .const import DECODE_ERRORS, MSG_RAW_FROM_MEMORY, T_NODEFAULT, ErrorType, T_json_data, T_msgpack_data
 from .parse_decoder import _type_error, get_decoder_model
 from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msgspec_error
-from .parse_model import get_field_typehint
+from .parse_model import get_field_typehint, is_arraylike
 from .parse_msgpack import fixup_msgpack_unicode_slow
 from .parse_type import is_struct_like, origin_args, unwrap_typehint
 from .repair import (
@@ -35,6 +35,11 @@ T = TypeVar('T')
 # object is the model instance on success and the error is set on failure
 T_error_result = Tuple[Union[T, T_NODEFAULT], Union[ErrorInfo, T_NODEFAULT]]
 T_detail_result = Tuple[Union[T, T_NODEFAULT], Union[ErrorInfoDetail, T_NODEFAULT]]
+
+# Model origins that are decoded from an array, an int path segment addresses
+# their items by position. `origin_args()` resolves the abstract sequence
+# aliases (`Sequence`, `Collection`, ...) to these concrete types.
+_ARRAY_ORIGINS = frozenset({list, tuple, set, frozenset})
 
 
 def _missing_value(loc, index, keys):
@@ -128,9 +133,20 @@ def _resolve_loc(loc, data, model, options):
 
         # 3. A list / tuple item
         if type(part) is int:
-            if type(obj) is not list:
+            if part < 0:
+                # msgspec reports a position, never a negative index: a
+                # negative segment would silently address the last item
+                return NODEFAULT
+            if not isinstance(obj, (list, tuple)):
                 # msgspec decodes an array to a list, anything else means the
-                # location, the data and the model disagree
+                # location, the data and the model disagree. A dict and a str
+                # can be indexed too, and would silently give a wrong item.
+                return NODEFAULT
+            if origin not in _ARRAY_ORIGINS \
+                    and not is_arraylike(origin, known_struct_type=model_kind, unwrap=False):
+                # An index only addresses a sequence or an array-decoded model.
+                # The data alone is not enough: a dict model with list data
+                # would hand back an item the model never looked at.
                 return NODEFAULT
             try:
                 obj = obj[part]
@@ -143,15 +159,21 @@ def _resolve_loc(loc, data, model, options):
 
         # 4. A field of a model
         if model_kind:
-            # An object model is read from a dict, an array model from a list:
-            # the data tells which one this path belongs to
-            if type(obj) is not dict:
+            # An object model is read from a dict, or from the attributes of a
+            # source object when the failed call used `from_attributes=True`
+            if type(obj) is dict:
+                try:
+                    obj = obj[part]
+                except (KeyError, TypeError):
+                    # e.g. a field missing from the data
+                    return _missing_value(loc, index, keys)
+            elif options.get('from_attributes'):
+                try:
+                    obj = getattr(obj, part)
+                except (AttributeError, TypeError):
+                    return _missing_value(loc, index, keys)
+            else:
                 return NODEFAULT
-            try:
-                obj = obj[part]
-            except (KeyError, TypeError):
-                # e.g. a field missing from the data
-                return _missing_value(loc, index, keys)
             keys.append(part)
             value = obj
             if not is_last:

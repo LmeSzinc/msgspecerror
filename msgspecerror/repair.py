@@ -742,6 +742,12 @@ def _repair_once(
 
         # 3. Invalid item in list
         if type(part) is int:
+            if part < 0:
+                # msgspec reports a position, never a negative index: treating
+                # it as Python's last item would repair the wrong entry
+                if not _pop_last_collection(last_collection_data, last_collection_key):
+                    return NODEFAULT, error
+                return raw_obj, error
             if type(obj) is not list:
                 # Error path like `0` implies a list, but obj doesn't match.
                 return NODEFAULT, error
@@ -758,7 +764,12 @@ def _repair_once(
                     except AttributeError:
                         value = NODEFAULT
                     if value is not NODEFAULT:
-                        obj[part] = value
+                        try:
+                            obj[part] = value
+                        except IndexError:
+                            # The index is past the end of the data: the loc
+                            # does not match the array, nothing can be written
+                            return NODEFAULT, error
                         return raw_obj, error
                 if not _pop_last_collection(last_collection_data, last_collection_key):
                     return NODEFAULT, error

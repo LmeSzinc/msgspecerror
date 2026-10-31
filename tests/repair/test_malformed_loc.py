@@ -6,22 +6,24 @@ A bug in msgspec (a wrong message) or in our path parser can however produce a
 ``loc`` that has nothing to do with either the input data or the validation
 model.
 
-These tests feed such corrupted combinations into the repair engine and the
-public repair API. The contract under test is:
+These tests feed such corrupted combinations into the repair engine, the public
+repair API and the `*_with_error_detail` family. The contract under test is:
 
-1. repair never raises, whatever the combination is;
+1. no public function raises, whatever the combination is;
 2. repair still does its best: the loop terminates and the result is either
-   ``NODEFAULT`` or a valid instance of the model.
+   ``NODEFAULT`` or a valid instance of the model;
+3. a walk that can not be completed reports no value instead of a wrong one.
 """
 import copy
-from typing import Dict, List, Tuple
+from typing import Dict, List, NamedTuple, Set, Tuple
 
 import msgspec.msgpack
 import pytest
-from msgspec import NODEFAULT, Struct, ValidationError, convert
+from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
 
 import msgspecerror.const
 import msgspecerror.repair as repair_mod
+from msgspecerror import convert_with_error_detail, resolve_error
 from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
 from msgspecerror.parse_error import ErrorInfo
 from msgspecerror.repair import (
@@ -61,6 +63,39 @@ class TupleField(Struct):
 class DictOfTuple(Struct):
     """A dict of variable-length tuples, for nested `...` placeholder paths."""
     d: Dict[str, Tuple[int, ...]] = {}
+
+
+class ArrayLike(Struct, array_like=True):
+    """Decoded from an array, a position addresses its fields by order."""
+    a: int = 0
+    b: str = ''
+
+
+class Pair(NamedTuple):
+    """Always decoded from an array, like an `array_like` struct."""
+    a: int
+    b: str
+
+
+class ListSubclass(list):
+    """A list subclass is still an array to `convert`.
+
+    Empty on purpose: the point is the type, not the behaviour.
+    """
+
+
+class SourceObject:
+    """The source of `convert(..., from_attributes=True)`."""
+
+    def __init__(self, a='bad'):
+        self.a = a
+
+
+class EmptyObject:
+    """A source object missing the field the error names.
+
+    Empty on purpose: every lookup raises `AttributeError`.
+    """
 
 
 # --- Adversarial (model, raw data, loc) triples ---
@@ -363,6 +398,203 @@ class TestFallbackValidity:
 
         assert result == ()
         assert len(errors) == 1
+
+
+class TestIndexSegmentAgainstModel:
+    """An index only addresses a sequence or an array-decoded model.
+
+    The data alone is not enough: msgspec never reports `$[0]` for a dict or a
+    scalar model, so such a triple is a mismatch. Walking it anyway reads the
+    model's args as if they were the item type and hands back an item the model
+    never looked at.
+    """
+
+    @pytest.mark.parametrize('model', [Dict[str, int], Dict[str, List[int]], int, str],
+                             ids=['dict', 'dict-of-list', 'int', 'str'])
+    def test_a_non_sequence_model_has_no_item(self, model):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(0,))
+
+        detail = resolve_error(error, ['x'], model)
+
+        assert detail.loc == (0,)
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is False
+
+    @pytest.mark.parametrize('model,data', [
+        (List[int], ['x']),
+        (Tuple[int, int], ['x']),
+        (Set[int], ['x']),
+        (frozenset, ['x']),
+    ], ids=['list', 'tuple', 'set', 'frozenset'])
+    def test_a_sequence_model_has_one(self, model, data):
+        """msgspec accepts a list as the input of every sequence model."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(0,))
+
+        detail = resolve_error(error, data, model)
+
+        assert detail.error_value == 'x'
+        assert detail.error_value_resolved is True
+
+    def test_an_array_like_struct_has_one(self):
+        """An `array_like` struct is decoded from an array, the index is its field order."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(0,))
+
+        detail = resolve_error(error, ['x', 1], ArrayLike)
+
+        assert detail.error_value == 'x'
+        assert detail.error_value_resolved is True
+
+    def test_a_namedtuple_has_one(self):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(1,))
+
+        detail = resolve_error(error, [1, 2], Pair)
+
+        assert detail.error_value == 2
+        assert detail.error_value_resolved is True
+
+
+class TestSequenceData:
+    """`convert` takes any sequence as an array, the walk reads the same ones.
+
+    A tuple, a NamedTuple and a list subclass all validate as `List[int]`, so a
+    `$[1]` path against any of them names a real item.
+    """
+
+    @pytest.mark.parametrize('data', [
+        (1, 'x'),
+        Pair(1, 'x'),
+        ListSubclass([1, 'x']),
+    ], ids=['tuple', 'namedtuple', 'list-subclass'])
+    def test_the_item_is_reached(self, data):
+        obj, detail = convert_with_error_detail(data, List[int])
+
+        assert obj is NODEFAULT
+        assert detail.loc == (1,)
+        assert detail.error_value == 'x'
+        assert detail.error_value_resolved is True
+
+    def test_a_plain_list_still_works(self):
+        """The control case, so a broken walk can not pass the rows above."""
+        obj, detail = convert_with_error_detail([1, 'x'], List[int])
+
+        assert obj is NODEFAULT
+        assert detail.loc == (1,)
+        assert detail.error_value == 'x'
+
+
+class TestFromAttributes:
+    """`convert(..., from_attributes=True)` reads attributes, the walk too."""
+
+    def test_the_value_is_read_from_the_attribute(self):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('a',))
+
+        detail = resolve_error(error, SourceObject(), Repairable, from_attributes=True)
+
+        assert detail.loc == ('a',)
+        assert detail.error_value == 'bad'
+        assert detail.error_value_resolved is True
+
+    def test_without_the_option_the_object_is_not_walked(self):
+        """`convert` reads a dict and nothing else unless asked, so the walk does too."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('a',))
+
+        detail = resolve_error(error, SourceObject(), Repairable)
+
+        assert detail.loc == ('a',)
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is False
+
+    def test_a_missing_attribute_keeps_the_path(self):
+        """A field the object does not have is a missing value, not a crash."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('a',))
+
+        detail = resolve_error(error, EmptyObject(), Repairable, from_attributes=True)
+
+        assert detail.loc == ('a',)
+        assert detail.error_value is UNSET
+
+
+class TestNegativeIndex:
+    """msgspec reports a position, never Python's `-1` last item.
+
+    `data[-1]` is a real item, but it is not the item the path names: a
+    negative segment is always a mismatch.
+    """
+
+    def test_the_last_item_is_not_reported_as_the_offending_one(self):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(-1,))
+
+        detail = resolve_error(error, [1, 2], List[int])
+
+        assert detail.loc == (-1,)
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is False
+
+    def test_a_deeper_negative_segment_does_not_resolve_either(self):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(-1, 0))
+
+        detail = resolve_error(error, [[1]], List[List[int]])
+
+        assert detail.error_value is UNSET
+
+    def test_the_repair_does_not_pop_the_last_item(self):
+        """`obj.pop(-1)` would delete an item the error never named."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(-1,))
+
+        result, result_error = _repair_once([1, 2], List[int], error)
+
+        assert result is NODEFAULT
+        assert result_error.loc == (-1,)
+
+    def test_a_positive_index_is_still_repaired(self):
+        """The control case: only a negative segment is rejected."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(0,))
+
+        result, result_error = _repair_once(['bad', 2], List[int], error)
+
+        assert result == [2]
+
+
+class TestArrayLikeOutOfRange:
+    """A position past the end of an `array_like` model can not be written.
+
+    msgspec reports a root-level `Expected array of length N` for an array that
+    is too short, so an in-range-looking index is only reachable from a
+    corrupted loc.
+    """
+
+    def test_repair_once_gives_up(self):
+        """The field default exists, but there is no slot to write it into."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(1,))
+
+        result, result_error = _repair_once([1], ArrayLike, error)
+
+        assert result is NODEFAULT
+        assert result_error.loc == (1,)
+
+    def test_an_in_range_index_is_still_repaired(self):
+        """The control case: a position the data has is written as usual."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(1,))
+
+        result, result_error = _repair_once([1, 2], ArrayLike, error)
+
+        assert result == [1, '']
+
+    def test_the_public_api_survives_a_loc_past_the_end(self, monkeypatch):
+        """A corrupted loc must not turn the repair pipeline into a raise."""
+        real_parse = repair_mod.parse_msgspec_error
+
+        def corrupted_parse(error):
+            info = real_parse(error)
+            info.loc = (1,)
+            return info
+
+        monkeypatch.setattr(repair_mod, 'parse_msgspec_error', corrupted_parse)
+
+        result, errors = load_json_with_default(b'[1]', ArrayLike)
+
+        assert isinstance(result, ArrayLike)
+        assert all(isinstance(e, ErrorInfo) for e in errors)
 
 
 class RawHolder(Struct):
