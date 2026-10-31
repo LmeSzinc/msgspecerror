@@ -549,6 +549,40 @@ def _find_failing_dict_key(obj, key_model, kwargs=None):
     return NODEFAULT
 
 
+def _walkable_error(error):
+    """
+    Return an error whose location the repair walk can read.
+
+    A location is a tuple of segments and the walk reads every one of them as a
+    key. A `str`, a `dict` or a scalar can not be walked at all, and a `bool`
+    would be read as the index `1`: a hand-built `ErrorInfo` or a corrupted
+    parser can hand one over, and the error is then reported as the root one
+    instead of raising mid-repair. Only the failure path calls this, and the
+    caller's error is never rewritten: a fresh copy is returned when the
+    location has to change.
+
+    Args:
+        error (ErrorInfo): The error to judge
+
+    Returns:
+        ErrorInfo: `error` itself when its location is walkable, a copy with an
+            empty location otherwise
+    """
+    loc = error.loc
+    loc_type = type(loc)
+    if loc_type is list:
+        # A list is the same path, only the type does not promise a tuple
+        return ErrorInfo(msg=error.msg, type=error.type, loc=tuple(loc), ctx=error.ctx)
+    if loc_type is not tuple:
+        return ErrorInfo(msg=error.msg, type=error.type, ctx=error.ctx)
+    for part in loc:
+        part_type = type(part)
+        # `part_type is int` is False for bool, which is not an index
+        if part_type is not int and part_type is not str:
+            return ErrorInfo(msg=error.msg, type=error.type, ctx=error.ctx)
+    return error
+
+
 def _repair_once(
         raw_obj, model, error: ErrorInfo, guess_default=False, kwargs=None
 ) -> "tuple[Any, ErrorInfo | Type[NODEFAULT]]":
@@ -571,6 +605,11 @@ def _repair_once(
             If repair failed, obj will be NODEFAULT.
             If this error is not consider as an error, error will be NODEFAULT and won't be collected.
     """
+    # A location is a tuple of segments, and the walk below reads every one of
+    # them as a key: one that is not is reported as the root error instead of
+    # raising mid-repair
+    error = _walkable_error(error)
+
     # handle root error
     if not error.loc:
         value = get_default(model, guess_default=guess_default)
@@ -975,6 +1014,9 @@ def _handle_obj_repair(
         tuple[any, list[ErrorInfo]]:
     """
     error = parse_msgspec_error(error)
+    # `_pin_raw()` below indexes the segments and `_repair_once()` iterates them,
+    # so only a walkable location may go further
+    error = _walkable_error(error)
     # `codec is None` means the failed call was `convert`, the only direction
     # that rejects an already decoded object at a `msgspec.Raw` field. A load
     # family fails inside the typed decoder instead, which takes the payload

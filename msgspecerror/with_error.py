@@ -60,7 +60,52 @@ def _missing_value(loc, index, keys):
     tail = loc[index:]
     if _has_placeholder(tail):
         return NODEFAULT
+    # A tail that is not made of positions and names is no location either:
+    # handing it back would describe a path that never existed
+    for part in tail:
+        part_type = type(part)
+        if part_type is not int and part_type is not str:
+            return NODEFAULT
     return keys + list(tail), NODEFAULT
+
+
+def _unresolved_detail(error):
+    """
+    Build the detail of an error whose location was not walked.
+
+    Only the failure path calls this, so a call that validates pays nothing for
+    it. `ErrorInfoDetail` promises a tuple of int / str segments, and a
+    hand-built `ErrorInfo` or a bug in msgspec / in our path parser can hold
+    anything: a location that can not be delivered as one is dropped to `()`,
+    the only location that can be handed back without inventing a path. The
+    text of the original location stays readable in `msg`.
+
+    Args:
+        error (ErrorInfo): The parsed error, its `loc` is handed back
+
+    Returns:
+        ErrorInfoDetail: The location without a placeholder, and `error_value`
+            unset. `loc` is `()` when it is not a usable path
+    """
+    loc = error.loc
+    loc_type = type(loc)
+    if loc_type is list:
+        # A list is the same path, but the detail promises a tuple
+        loc = tuple(loc)
+        loc_type = tuple
+    if loc_type is not tuple:
+        # A `str` would be read character by character, a scalar is no path
+        loc = ()
+    else:
+        for part in loc:
+            part_type = type(part)
+            # `part_type is int` is False for bool, which is not an index
+            if part_type is not int and part_type is not str:
+                loc = ()
+                break
+    return ErrorInfoDetail(
+        msg=error.msg, type=error.type, loc=loc, ctx=error.ctx,
+        loc_resolved=not _has_placeholder(loc))
 
 
 def _resolve_loc(loc, data, model, options):
@@ -159,6 +204,10 @@ def _resolve_loc(loc, data, model, options):
 
         # 4. A field of a model
         if model_kind:
+            if type(part) is not str:
+                # A field is addressed by its name. A bool would even find the
+                # key `1` of a dict, every other type is not a name at all
+                return NODEFAULT
             if is_arraylike(origin, known_struct_type=model_kind, unwrap=False):
                 # An `array_like` struct and a NamedTuple are decoded from an
                 # array, msgspec reports a position for them and never a name.
@@ -277,18 +326,27 @@ def _resolve_error_with(error, data, model, options):
     Returns:
         ErrorInfoDetail: The same result `resolve_error()` reports
     """
+    loc = error.loc
+    loc_type = type(loc)
+    if loc_type is list:
+        loc = tuple(loc)
+        loc_type = tuple
+    if loc_type is not tuple:
+        # A location is a tuple of segments. Anything else (a str, a dict, a
+        # scalar) would be read as characters or items and walked as a path
+        # that never existed, so it is rejected before the walkers see it.
+        # One type check, and only on the path that has already failed.
+        return _unresolved_detail(error)
+
     try:
-        resolved = _resolve_loc(error.loc, data, model, options)
+        resolved = _resolve_loc(loc, data, model, options)
     except Exception:
         # A loc that doesn't match the data / model must not escape, the same
         # contract as tests/repair/test_malformed_loc.py for the repair engine
         resolved = NODEFAULT
 
     if resolved is NODEFAULT:
-        return ErrorInfoDetail(
-            msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
-            loc_resolved=not _has_placeholder(error.loc),
-        )
+        return _unresolved_detail(error)
 
     keys, value = resolved
     return ErrorInfoDetail(
@@ -618,10 +676,7 @@ def load_json_with_error_detail(data, model_or_decoder):
         raw = NODEFAULT
     if raw is NODEFAULT:
         # No raw data to walk, the location keeps msgspec's placeholders
-        return NODEFAULT, ErrorInfoDetail(
-            msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
-            loc_resolved=not _has_placeholder(error.loc),
-        )
+        return NODEFAULT, _unresolved_detail(error)
     detail = _resolve_error_with(error, raw, model, options)
     if repaired and _contains_replacement(detail.error_value):
         # The located value holds a character the repair wrote, it is not the
@@ -772,10 +827,7 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
         raw = NODEFAULT
     if raw is NODEFAULT:
         # No raw data to walk, the location keeps msgspec's placeholders
-        return NODEFAULT, ErrorInfoDetail(
-            msg=error.msg, type=error.type, loc=error.loc, ctx=error.ctx,
-            loc_resolved=not _has_placeholder(error.loc),
-        )
+        return NODEFAULT, _unresolved_detail(error)
     detail = _resolve_error_with(error, raw, model, options)
     if repaired and _contains_replacement(detail.error_value):
         # The located value holds a character the repair wrote, it is not the

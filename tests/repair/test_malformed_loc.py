@@ -23,13 +23,62 @@ from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
 
 import msgspecerror.const
 import msgspecerror.repair as repair_mod
-from msgspecerror import convert_with_error_detail, resolve_error
+import msgspecerror.with_error as we
+from msgspecerror import convert_with_default, convert_with_error_detail, resolve_error
 from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
 from msgspecerror.parse_error import ErrorInfo
 from msgspecerror.repair import (
     _handle_obj_repair, _pin_raw, _repair_once, _validate_by_decode, _validate_entry, load_json_with_default,
     load_msgpack_with_default
 )
+
+
+def corrupt_loc(real_parse, loc):
+    """
+    A `parse_msgspec_error` that reports `loc` whatever msgspec said.
+
+    Args:
+        real_parse (callable): The parser being wrapped
+        loc (Any): Location to report instead of the parsed one
+
+    Returns:
+        callable: The replacement parser
+    """
+
+    def parse(error):
+        info = real_parse(error)
+        info.loc = loc
+        return info
+
+    return parse
+
+
+# `ErrorInfo.loc` is typed as a tuple of int / str and `ErrorInfo` does not check
+# its fields at runtime, so any of these can be constructed. None of them is a
+# path: a `str` is read character by character, a list / dict by its items.
+NON_TUPLE_LOCS = [
+    ('int', 123),
+    ('none', None),
+    ('float', 1.5),
+    ('bool', True),
+    ('object', object()),
+    ('bytes', b'abc'),
+    ('str', 'abc'),
+    ('dict', {'a': 1}),
+]
+
+# A tuple is a location, but one of its segments is neither a position nor a name
+BAD_SEGMENT_LOCS = [
+    ('tail-with-none', ('ghost', None)),
+    ('tuple-none', ('a', None)),
+    ('tuple-bool', (True,)),
+    ('tuple-list', (['x'],)),
+    ('tuple-slice', (slice(1),)),
+    ('tuple-bytes', ('a', b'k')),
+    ('tuple-float', (0.0,)),
+]
+
+UNUSABLE_LOCS = NON_TUPLE_LOCS + BAD_SEGMENT_LOCS
 
 # --- Test Models ---
 
@@ -353,6 +402,184 @@ class TestPublicApiMalformedLoc:
 
         assert result == Repairable(a=1, b='ok')
         assert errors == []
+
+
+class TestUnusableLocation:
+    """A `loc` that is not a tuple of segments must not reach a walker.
+
+    `ErrorInfo` is a `msgspec.Struct`, so its fields are not checked at runtime
+    and a hand-built error can hold anything. A `str` would be read character by
+    character, a `list` / `dict` would be read as its items, and a scalar is not
+    iterable at all: the first two silently walk a path that never existed, the
+    rest raise `TypeError` out of a public function.
+    """
+
+    @pytest.mark.parametrize('name,loc', UNUSABLE_LOCS)
+    def test_resolve_error_does_not_raise(self, name, loc):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=loc)
+
+        detail = resolve_error(error, {'a': 'bad'}, Repairable)
+
+        assert type(detail.loc) is tuple
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is False
+
+    @pytest.mark.parametrize('name,loc', UNUSABLE_LOCS)
+    def test_the_delivered_location_is_usable(self, name, loc):
+        """A location that can not be delivered as a path is dropped."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=loc)
+
+        detail = resolve_error(error, {'a': 'bad'}, Repairable)
+
+        assert detail.loc == ()
+        assert detail.loc_resolved is True
+        for part in detail.loc:
+            assert type(part) is int or type(part) is str
+        msgspec.json.encode(detail)
+
+    @pytest.mark.parametrize('name,loc', UNUSABLE_LOCS)
+    def test_the_input_error_is_not_modified(self, name, loc):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=loc)
+
+        resolve_error(error, {'a': 'bad'}, Repairable)
+
+        assert error.loc is loc
+
+    def test_a_list_is_the_same_path(self):
+        """A list holds the same segments, only the type does not promise it."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=[0])
+
+        detail = resolve_error(error, ['x'], List[int])
+
+        assert detail.loc == (0,)
+        assert detail.error_value == 'x'
+        assert detail.error_value_resolved is True
+
+    def test_a_valid_tuple_is_still_walked(self):
+        """The control case: the guard rejects a bad location, not a real one."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('a',))
+
+        detail = resolve_error(error, {'a': 'bad'}, Repairable)
+
+        assert detail.loc == ('a',)
+        assert detail.error_value == 'bad'
+
+    def test_a_bad_segment_in_the_tail_is_not_delivered(self):
+        """A path that stops early keeps the literal tail, but not a bad one."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('ghost', None))
+
+        detail = resolve_error(error, {'a': 'bad'}, Repairable)
+
+        assert detail.loc == ()
+        assert detail.error_value is UNSET
+
+    def test_a_bool_segment_is_not_an_index_of_a_dict(self):
+        """`{True: 1}` answers `[1]`, so a bool would find a key it never named."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=(True,))
+
+        detail = resolve_error(error, {1: 'x'}, Repairable)
+
+        assert detail.loc == ()
+        assert detail.error_value is UNSET
+
+
+class TestUnusableLocationOnDetailFamily:
+    """The three detail entry points survive a corrupted parser."""
+
+    ENTRY_POINTS = [
+        ('convert', lambda: we.convert_with_error_detail({'a': 'bad'}, Repairable)),
+        ('json', lambda: we.load_json_with_error_detail(b'{"a": "bad"}', Repairable)),
+        ('msgpack', lambda: we.load_msgpack_with_error_detail(
+            msgspec.msgpack.encode({'a': 'bad'}), Repairable)),
+    ]
+
+    @pytest.mark.parametrize('name,loc', UNUSABLE_LOCS)
+    @pytest.mark.parametrize('entry,call', ENTRY_POINTS, ids=[name for name, _ in ENTRY_POINTS])
+    def test_does_not_raise_and_delivers_a_usable_location(self, monkeypatch, entry, call, name, loc):
+        monkeypatch.setattr(we, 'parse_msgspec_error', corrupt_loc(we.parse_msgspec_error, loc))
+
+        obj, detail = call()
+
+        assert obj is NODEFAULT
+        assert detail.loc == ()
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is False
+        msgspec.json.encode(detail)
+
+
+class TestUnusableLocationOnRepairFamily:
+    """The three repair entry points survive a corrupted parser."""
+
+    ENTRY_POINTS = [
+        ('convert', lambda: repair_mod.convert_with_default({'a': 'bad'}, Repairable)),
+        ('json', lambda: repair_mod.load_json_with_default(b'{"a": "bad"}', Repairable)),
+        ('msgpack', lambda: repair_mod.load_msgpack_with_default(
+            msgspec.msgpack.encode({'a': 'bad'}), Repairable)),
+    ]
+
+    @pytest.mark.parametrize('name,loc', UNUSABLE_LOCS)
+    @pytest.mark.parametrize('entry,call', ENTRY_POINTS, ids=[name for name, _ in ENTRY_POINTS])
+    def test_does_not_raise_and_reports_a_usable_location(self, monkeypatch, entry, call, name, loc):
+        monkeypatch.setattr(repair_mod, 'parse_msgspec_error', corrupt_loc(repair_mod.parse_msgspec_error, loc))
+
+        result, errors = call()
+
+        assert isinstance(result, Repairable)
+        assert errors
+        for error in errors:
+            assert type(error.loc) is tuple
+            for part in error.loc:
+                assert type(part) is int or type(part) is str
+
+    @pytest.mark.parametrize('name,loc', UNUSABLE_LOCS)
+    def test_a_required_model_still_falls_back(self, monkeypatch, name, loc):
+        """A root fallback that can not be built is NODEFAULT, never a raise."""
+        monkeypatch.setattr(repair_mod, 'parse_msgspec_error', corrupt_loc(repair_mod.parse_msgspec_error, loc))
+
+        result, errors = load_json_with_default(b'{"a": "bad"}', Required)
+
+        assert result is NODEFAULT
+        assert isinstance(errors, list)
+
+    @pytest.mark.parametrize('name,loc', UNUSABLE_LOCS)
+    def test_a_raw_field_does_not_raise(self, monkeypatch, name, loc):
+        """The raw path indexes the location before the repair walk starts.
+
+        A location that is not a path can not name the raw field either, so the
+        document falls back; what it must not do is raise from `_pin_raw()`.
+        """
+        monkeypatch.setattr(repair_mod, 'parse_msgspec_error', corrupt_loc(repair_mod.parse_msgspec_error, loc))
+
+        result, errors = convert_with_default({'payload': {'a': 1}, 'n': 1}, RawHolder)
+
+        assert result is NODEFAULT or isinstance(result, RawHolder)
+        for error in errors:
+            assert type(error.loc) is tuple
+            for part in error.loc:
+                assert type(part) is int or type(part) is str
+
+    @pytest.mark.parametrize('name,loc', UNUSABLE_LOCS)
+    def test_repair_once_does_not_raise(self, name, loc):
+        """The engine reads every segment as a key, so it has to judge the loc first."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=loc)
+
+        result, result_error = _repair_once(copy.deepcopy({'a': 'bad'}), Repairable, error)
+
+        assert type(result_error.loc) is tuple
+        for part in result_error.loc:
+            assert type(part) is int or type(part) is str
+        if result is not NODEFAULT:
+            # The root fallback is the json form of the default, which the caller
+            # converts; the point is that the model accepts it
+            convert(result, Repairable)
+
+    def test_repair_once_leaves_the_input_error_alone(self):
+        """A private copy is reported, the caller's error is not rewritten."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=123)
+
+        _repair_once({'a': 'bad'}, Repairable, error)
+
+        assert error.loc == 123
 
 
 class TestFallbackValidity:
