@@ -400,6 +400,63 @@ class TestFallbackValidity:
         assert len(errors) == 1
 
 
+class TestFieldNameOnArrayModel:
+    """A name addresses no field of a model decoded from an array.
+
+    An `array_like` struct and a NamedTuple are decoded from an array, so
+    msgspec reports a position for them and never a name. A name that happens to
+    match a key of the data used to resolve to that key's value, which is a path
+    the model can never produce.
+    """
+
+    @pytest.mark.parametrize('model', [Pair, ArrayLike], ids=['namedtuple', 'array-like'])
+    def test_the_value_is_not_handed_back(self, model):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('a',))
+
+        detail = resolve_error(error, {'a': 1, 'b': 'x'}, model)
+
+        assert detail.loc == ('a',)
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is False
+
+    @pytest.mark.parametrize('model', [Pair, ArrayLike], ids=['namedtuple', 'array-like'])
+    def test_a_deeper_name_does_not_resolve_either(self, model):
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('a', 'a'))
+
+        detail = resolve_error(error, {'a': {'a': 1}}, model)
+
+        assert detail.error_value is UNSET
+
+    @pytest.mark.parametrize('model', [Pair, ArrayLike], ids=['namedtuple', 'array-like'])
+    def test_the_repair_does_not_write_a_named_field(self, model):
+        """Writing `{"a": 0}` would build a document the model can not read."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('a',))
+        data = {'a': 1, 'b': 'x'}
+
+        result, result_error = _repair_once(copy.deepcopy(data), model, error)
+
+        assert result is NODEFAULT
+        assert result_error.loc == ('a',)
+
+    def test_the_walk_does_not_step_into_a_named_key(self):
+        """A name is not a position, so the array model's first field is untouched."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('a',))
+
+        detail = resolve_error(error, {'a': 'bad'}, Pair, from_attributes=True)
+
+        assert detail.error_value is UNSET
+
+    def test_an_object_model_still_reads_a_name(self):
+        """The control case: a name is the only way to address an object model."""
+        error = ErrorInfo(msg='fake', type=ErrorType.TYPE_MISMATCH, loc=('a',))
+
+        detail = resolve_error(error, {'a': 'bad'}, Repairable)
+
+        assert detail.loc == ('a',)
+        assert detail.error_value == 'bad'
+        assert detail.error_value_resolved is True
+
+
 class TestIndexSegmentAgainstModel:
     """An index only addresses a sequence or an array-decoded model.
 

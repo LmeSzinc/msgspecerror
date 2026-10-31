@@ -159,6 +159,12 @@ def _resolve_loc(loc, data, model, options):
 
         # 4. A field of a model
         if model_kind:
+            if is_arraylike(origin, known_struct_type=model_kind, unwrap=False):
+                # An `array_like` struct and a NamedTuple are decoded from an
+                # array, msgspec reports a position for them and never a name.
+                # A name here is a mismatch, even if the data happens to be a
+                # dict that holds that key.
+                return NODEFAULT
             # An object model is read from a dict, or from the attributes of a
             # source object when the failed call used `from_attributes=True`
             if type(obj) is dict:

@@ -833,6 +833,14 @@ def _repair_once(
 
         # 4. Invalid field of a model
         if model_kind:
+            if is_arraylike(model_origin, known_struct_type=model_kind, unwrap=False):
+                # An `array_like` struct and a NamedTuple are decoded from an
+                # array, so a name addresses no field of them: writing one would
+                # build a document the model can not read back. Branch 3 above
+                # has already handled the position form.
+                if not _pop_last_collection(last_collection_data, last_collection_key):
+                    return NODEFAULT, error
+                return raw_obj, error
             # The data tells how the model is decoded: an object model is
             # addressed by field name, an array model by position, which branch
             # 3 above has already handled
