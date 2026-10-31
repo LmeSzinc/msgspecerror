@@ -633,11 +633,34 @@ class TestJsonHugeIntegerInRaw:
         assert detail.error_value_resolved is False
 
     def test_with_default_falls_back_to_the_root_default(self):
-        """A number can not be repaired, and the whole document can not be walked."""
+        """A number can not be repaired, and the whole document can not be walked.
+
+        The error reported is the typed one: the untyped decode stops on the
+        integer inside the raw field, which the typed decode never read, so its
+        error is collateral. The key can not be resolved, hence the placeholder.
+        """
         result, errors = load_json_with_default(self.PAYLOAD, Dict[str, RawReq], guess_default=True)
 
         assert result == {}
-        assert [e.type for e in errors] == [ErrorType.INTEGER_OUT_OF_RANGE]
+        assert [e.type for e in errors] == [ErrorType.TYPE_MISMATCH]
+        assert errors[0].loc == ('...', 'n')
+
+    def test_with_default_keeps_a_resolved_loc(self):
+        """A list index needs no key, so the real error is located exactly."""
+
+        class Event(Struct):
+            kind: str
+            payload: Raw
+
+        payload = (
+            b'[{"kind": "click", "payload": {"x": 1' + b'0' * 5000 + b'}}, '
+            b'{"kind": 1, "payload": {}}]'
+        )
+        result, errors = load_json_with_default(payload, List[Event], guess_default=True)
+
+        assert result == []
+        assert [e.type for e in errors] == [ErrorType.TYPE_MISMATCH]
+        assert errors[0].loc == (1, 'kind')
 
 
 class TestOldMsgspecPinFallsBack:

@@ -1168,7 +1168,15 @@ def load_json_with_default(
                 model_or_decoder, JsonDecoder, {'str_keys': True}, 'load_json_with_default')
             try:
                 raw_obj = decode_json(data)
+            except ValidationError:
+                # The payload parses: an untyped decode only fails here on a
+                # value check, and the typed decode never looked at that value
+                # because it sits in a `msgspec.Raw` field. That error is
+                # collateral, the typed one is the real one, so report it.
+                return _handle_root_error(model, e, guess_default=guess_default)
             except DecodeError as error:
+                # Malformed json, which is the real error even when the typed
+                # decode stopped earlier on a type mismatch
                 return _handle_root_error(model, error, guess_default=guess_default)
             except UnicodeDecodeError as error:
                 if utf8_error in ['replace', 'ignore']:
