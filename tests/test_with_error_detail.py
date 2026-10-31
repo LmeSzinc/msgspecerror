@@ -8,8 +8,8 @@ from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
 
 import msgspecerror.with_error as with_error_mod
 from msgspecerror import (
-    ErrorInfoDetail, convert_with_default, convert_with_error, convert_with_error_detail, load_json_with_error_detail,
-    load_msgpack_with_error_detail, parse_msgspec_error
+    ErrorInfo, ErrorInfoDetail, convert_with_default, convert_with_error, convert_with_error_detail,
+    load_json_with_error_detail, load_msgpack_with_error_detail, parse_msgspec_error, resolve_error
 )
 from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
 from msgspecerror.parse_error import _has_placeholder
@@ -66,7 +66,11 @@ def assert_invariants(detail):
     # A placeholder is only kept when it could not be resolved. The reverse does
     # not hold: a dict key can literally be the string `...`.
     assert detail.loc_resolved or _has_placeholder(detail.loc)
-    assert detail.error_value_resolved == (detail.error_value is not UNSET)
+    # The flag is authoritative: the data itself can hold `UNSET`, so
+    # `error_value is UNSET` no longer means "there was no value"
+    assert detail.error_value_resolved in (True, False)
+    if not detail.error_value_resolved:
+        assert detail.error_value is UNSET
     assert (not detail.error_value_resolved) or detail.loc_resolved
 
 
@@ -75,6 +79,57 @@ def assert_failed(result):
     assert obj is NODEFAULT
     assert_invariants(detail)
     return detail
+
+
+class TestSentinelValue:
+    """A value the data really holds is delivered as a value, sentinel or not.
+
+    `UNSET` and `NODEFAULT` are values a caller can put in the data, so using
+    either as the walk's "nothing to collect" marker made the two cases
+    indistinguishable: `{'k': UNSET}` was reported as "located, but no value".
+    """
+
+    def test_unset_is_delivered_as_a_value(self):
+        detail = assert_failed(convert_with_error_detail({'k': UNSET}, Dict[str, int]))
+
+        assert detail.loc == ('k',)
+        assert detail.error_value is UNSET
+        # The value is `UNSET`, and the flag says one was collected
+        assert detail.error_value_resolved is True
+
+    def test_nodefault_is_delivered_as_unset_and_flagged(self):
+        """`NODEFAULT` can not be stored in a struct field, the flag carries it."""
+        detail = assert_failed(convert_with_error_detail({'k': NODEFAULT}, Dict[str, int]))
+
+        assert detail.loc == ('k',)
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is True
+
+    def test_a_missing_field_is_not_a_value(self):
+        """The control case: the path is concrete but collects nothing."""
+        detail = assert_failed(convert_with_error_detail({}, Req))
+
+        assert detail.loc == ('a',)
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is False
+
+    def test_a_root_unset_value(self):
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=())
+
+        detail = resolve_error(error, UNSET, int)
+
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is True
+
+    def test_a_walk_that_stops_early_has_no_value(self):
+        """A path that can not be walked further collects nothing."""
+        error = ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=('ghost',))
+
+        detail = resolve_error(error, {'a': 1}, Dict[str, int])
+
+        assert detail.loc == ('ghost',)
+        assert detail.error_value is UNSET
+        assert detail.error_value_resolved is False
 
 
 class TestSuccess:

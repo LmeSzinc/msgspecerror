@@ -53,13 +53,17 @@ class ErrorInfoDetail(ErrorInfo):
 
     Attributes:
         error_value (Any): The offending value, msgspec.UNSET when there is no
-            value to report. For a `...key` error this is the key itself
+            value to report. For a `...key` error this is the key itself. A
+            value that happens to be `msgspec.UNSET` is delivered as it is: read
+            `error_value_resolved` to tell it from "no value"
         loc_resolved (bool): True when `loc` points at one concrete entry, i.e.
             the placeholders were resolved or there was none to resolve. It is
             not a check for the placeholder text: a dict key that is literally
             the string `...` is a real key, and such a location is resolved
-        error_value_resolved (bool): True when `error_value` holds a value, i.e.
-            it is not msgspec.UNSET
+        error_value_resolved (bool): True when a value was collected. This is the
+            authoritative flag: it stays True when the collected value is
+            `msgspec.UNSET` itself or `NODEFAULT` (the latter is delivered as
+            `UNSET` because that sentinel can not be stored in a struct field)
     """
     error_value: Any = UNSET
     loc_resolved: bool = False

@@ -42,6 +42,13 @@ T_detail_result = Tuple[Union[T, T_NODEFAULT], Union[ErrorInfoDetail, T_NODEFAUL
 _ARRAY_ORIGINS = frozenset({list, tuple, set, frozenset})
 
 
+# A value the walk did reach, but had nothing to collect. It is a private object
+# on purpose: `UNSET` and `NODEFAULT` are values a caller can put in the data, so
+# either one would make "there is no value" and "the value is that sentinel"
+# impossible to tell apart.
+_NO_VALUE = object()
+
+
 def _missing_value(loc, index, keys):
     """
     Result of a path that can not be walked any deeper.
@@ -55,7 +62,9 @@ def _missing_value(loc, index, keys):
         keys (list): Segments resolved so far
 
     Returns:
-        tuple[list, Any] | NODEFAULT: (keys, NODEFAULT), or the NODEFAULT sentinel
+        tuple[list, Any] | NODEFAULT: (keys, `_NO_VALUE`) when the tail is literal
+            but holds no value, or the NODEFAULT sentinel when the tail still
+            holds a placeholder
     """
     tail = loc[index:]
     if _has_placeholder(tail):
@@ -66,7 +75,7 @@ def _missing_value(loc, index, keys):
         part_type = type(part)
         if part_type is not int and part_type is not str:
             return NODEFAULT
-    return keys + list(tail), NODEFAULT
+    return keys + list(tail), _NO_VALUE
 
 
 def _unresolved_detail(error):
@@ -281,7 +290,9 @@ def resolve_error(error, data, model_or_decoder, **kwargs):
             offending value, and the two flags describing what was achieved:
             `loc_resolved` is True when the data was walked all the way, so
             `loc` points at one concrete entry, `error_value_resolved` is True
-            when `error_value` is not UNSET. A `loc` that still holds a
+            when a value was collected. `error_value` is `UNSET` when there is
+            none, so read the flag rather than comparing the value: the data
+            itself can hold `UNSET`. A `loc` that still holds a
             placeholder or that does not match the data is left as it is, and
             `loc_resolved` is then False.
 
@@ -348,15 +359,25 @@ def _resolve_error_with(error, data, model, options):
         return _unresolved_detail(error)
 
     keys, value = resolved
+    # `_NO_VALUE` is the walk's own "reached the entry, nothing to collect".
+    # Every other value is the caller's, `UNSET` and `NODEFAULT` included: they
+    # are values the data can hold, so the flag says whether one was collected
+    # and never whether it happens to equal a sentinel.
+    if value is _NO_VALUE:
+        error_value = UNSET
+        error_value_resolved = False
+    else:
+        # `NODEFAULT` can not be stored in a struct field, it breaks json encoding
+        error_value = UNSET if value is NODEFAULT else value
+        error_value_resolved = True
     return ErrorInfoDetail(
         msg=error.msg, type=error.type, loc=tuple(keys), ctx=error.ctx,
-        # NODEFAULT can not be stored in a struct field, it breaks json encoding
-        error_value=UNSET if value is NODEFAULT else value,
+        error_value=error_value,
         # The walk consumed every placeholder, so the location points at one
         # concrete entry. A dict key that happens to be the string `...` is a
         # real key, it is not a placeholder left behind.
         loc_resolved=True,
-        error_value_resolved=value is not NODEFAULT,
+        error_value_resolved=error_value_resolved,
     )
 
 

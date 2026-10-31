@@ -92,7 +92,11 @@ def assert_invariants(detail):
     # A placeholder is only kept when it could not be resolved. The reverse does
     # not hold: a dict key can literally be the string `...`.
     assert detail.loc_resolved or _has_placeholder(detail.loc)
-    assert detail.error_value_resolved == (detail.error_value is not UNSET)
+    # The flag is authoritative: the data itself can hold `UNSET`, so
+    # `error_value is UNSET` no longer means "there was no value"
+    assert detail.error_value_resolved in (True, False)
+    if not detail.error_value_resolved:
+        assert detail.error_value is UNSET
     # A value can only be collected by walking the whole path
     assert (not detail.error_value_resolved) or detail.loc_resolved
 
