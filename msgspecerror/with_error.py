@@ -26,7 +26,8 @@ from .parse_model import get_field_typehint, is_arraylike
 from .parse_msgpack import fixup_msgpack_unicode_slow
 from .parse_type import is_struct_like, origin_args, unwrap_typehint
 from .repair import (
-    _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _resolve_union_member, _validate_entry
+    _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _is_mapping, _is_sequence,
+    _resolve_union_member, _validate_entry
 )
 
 T = TypeVar('T')
@@ -155,7 +156,7 @@ def _resolve_loc(loc, data, model, options):
 
         # 1. A dict value, msgspec reports it as `...`
         if part == '...':
-            if type(obj) is not dict or not args or len(args) < 2:
+            if not _is_mapping(obj) or not args or len(args) < 2:
                 # A placeholder needs a dict model with a key and a value type
                 return NODEFAULT
             child_model = args[1]
@@ -170,7 +171,7 @@ def _resolve_loc(loc, data, model, options):
 
         # 2. A dict key, msgspec reports it as `...key`, always the last segment
         if part == '...key':
-            if not is_last or type(obj) is not dict or not args:
+            if not is_last or not _is_mapping(obj) or not args:
                 return NODEFAULT
             key = _find_failing_dict_key(obj, args[0], options)
             if key is NODEFAULT:
@@ -191,7 +192,7 @@ def _resolve_loc(loc, data, model, options):
                 # msgspec reports a position, never a negative index: a
                 # negative segment would silently address the last item
                 return NODEFAULT
-            if not isinstance(obj, (list, tuple)):
+            if not _is_sequence(obj):
                 # msgspec decodes an array to a list, anything else means the
                 # location, the data and the model disagree. A dict and a str
                 # can be indexed too, and would silently give a wrong item.
@@ -223,10 +224,15 @@ def _resolve_loc(loc, data, model, options):
                 # A name here is a mismatch, even if the data happens to be a
                 # dict that holds that key.
                 return NODEFAULT
-            # An object model is read from a dict, or from the attributes of a
-            # source object when the failed call used `from_attributes=True`
-            if type(obj) is dict:
+            # An object model is read from a mapping, or from the attributes of
+            # a source object when the failed call used `from_attributes=True`
+            if _is_mapping(obj):
                 try:
+                    # Membership decides, not the lookup: a `defaultdict`
+                    # fabricates the value of a missing key, while msgspec still
+                    # reports the field as missing
+                    if part not in obj:
+                        return _missing_value(loc, index, keys)
                     obj = obj[part]
                 except (KeyError, TypeError):
                     # e.g. a field missing from the data
@@ -273,7 +279,10 @@ def resolve_error(error, data, model_or_decoder, **kwargs):
             returned unchanged.
         data (Any): The raw value that failed validation, e.g. the decoded
             yaml / json / msgpack object. It must be the data before
-            validation, not the converted model instance.
+            validation, not the converted model instance. An object is read
+            from any `Mapping` (a dict subclass, a `UserDict`, a `ChainMap`,
+            a read-only mapping), an array from a list or a tuple, which is
+            what msgspec itself accepts.
         model_or_decoder: The type that was being converted into, or a
             msgspec.json.Decoder / msgspec.msgpack.Decoder to take `.type`,
             `.strict` and `.dec_hook` from. A decoder is never used to decode

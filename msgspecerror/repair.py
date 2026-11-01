@@ -1,4 +1,5 @@
 import re
+from collections.abc import Mapping
 from typing import Any, Dict, List, Tuple, Type, TypeVar, Union, overload
 
 from msgspec import NODEFAULT, DecodeError, EncodeError, Raw, UnsetType, ValidationError, convert
@@ -13,6 +14,99 @@ from .parse_model import get_field_default, get_field_name, get_field_typehint, 
 from .parse_msgpack import AMBIGUOUS_SPAN, MISSING, fixup_msgpack_unicode_fast, fixup_msgpack_unicode_slow
 from .parse_type import default_is_accepted, get_default, is_struct_like, origin_args, unwrap_model, unwrap_typehint
 from .repair_unicode import _collect_unicode_replace
+
+# The data types msgspec reads as an array. A tuple is accepted, `UserList`,
+# `deque`, `array.array` and every other sequence is not: msgspec rejects them
+# at the array check itself, so no error location ever points inside one and
+# there is nothing to read there. When that changes, add the type here and to
+# `_WRITABLE_SEQUENCE_TYPES` when it can be written into, and every reader and
+# the repair follow, `deque` included.
+_SEQUENCE_TYPES = (list, tuple)
+# The subset a repair may delete an item from or write an item into. A tuple is
+# in `_SEQUENCE_TYPES` but not here: its items can not be replaced in place.
+_WRITABLE_SEQUENCE_TYPES = (list,)
+
+
+def _is_mapping(obj):
+    """
+    Check whether the data is used as an object by msgspec.
+
+    msgspec takes any mapping where a struct or a dict model is expected: a
+    dict, a dict subclass (`OrderedDict`, `defaultdict`, `Counter`), a
+    `UserDict`, a `ChainMap`, a read-only mapping. A duck typed class with
+    `keys()` and `__getitem__` is taken as well, but it is deliberately not
+    covered: `Mapping` only accepts what msgspec is known to accept, so a
+    mismatch can never hand back a value msgspec did not look at.
+
+    This is the read side. A repair writes into the data, which a read-only
+    mapping or a `ChainMap` (its `pop` only looks at the first map, `clear`
+    and `update` do not round-trip) can not do, so `_is_writable_mapping()`
+    is the predicate to use before writing.
+
+    Args:
+        obj (Any): The raw data at an error location
+
+    Returns:
+        bool: True if the data can be read as a mapping
+    """
+    return type(obj) is dict or isinstance(obj, Mapping)
+
+
+def _is_writable_mapping(obj):
+    """
+    Check whether the data is a dict that a repair may write into.
+
+    A dict subclass is included, msgspec reads it like a dict and the repair
+    can delete or replace its entries. A `UserDict` is not: writing works, but
+    a repair that gives up has to put the container back, and the round trip is
+    only known to be faithful for a dict.
+
+    Args:
+        obj (Any): The raw data at an error location
+
+    Returns:
+        bool: True if the data can be repaired in place
+    """
+    return isinstance(obj, dict)
+
+
+def _is_sequence(obj):
+    """
+    Check whether the data is used as an array by msgspec.
+
+    msgspec takes a list, a list subclass and a tuple where a sequence model is
+    expected, and rejects every other sequence at the array check, so a
+    location never points inside a `UserList`, a `deque` or an `array.array`.
+    The accepted types live in `_SEQUENCE_TYPES`, one place to edit when
+    msgspec starts taking one of them.
+
+    This is the read side. A repair writes into the data, and a tuple can not
+    be written, so `_is_writable_sequence()` is the predicate to use before
+    deleting or replacing an item.
+
+    Args:
+        obj (Any): The raw data at an error location
+
+    Returns:
+        bool: True if the data can be read as an array
+    """
+    return isinstance(obj, _SEQUENCE_TYPES)
+
+
+def _is_writable_sequence(obj):
+    """
+    Check whether the data is a list that a repair may write into.
+
+    A list subclass is included, msgspec reads it like a list and the repair
+    can delete or replace its items.
+
+    Args:
+        obj (Any): The raw data at an error location
+
+    Returns:
+        bool: True if the data can be repaired in place
+    """
+    return isinstance(obj, _WRITABLE_SEQUENCE_TYPES)
 
 
 def _get_item_model(model_origin, model_args, index):
@@ -159,7 +253,7 @@ def _struct_tag_matches(struct, obj):
         bool: True if the obj has no tag info or the tag points to the struct
     """
     config = getattr(unwrap_model(struct), '__struct_config__', None)
-    if config is None or config.tag is None or type(obj) is not dict:
+    if config is None or config.tag is None or not _is_mapping(obj):
         # Nothing to check the struct against
         return True
     tag = obj.get(config.tag_field, NODEFAULT)
@@ -383,7 +477,7 @@ def _pin_raw(value, loc, model, encoder=None, raw_spans=None):
 
     if part == '...':
         # A dict value failure, the failing key is unknown, pin every entry
-        if type(value) is not dict:
+        if not _is_mapping(value):
             return NODEFAULT
         child_model = args[1] if args else NODEFAULT
         pinned = dict(value)
@@ -399,7 +493,7 @@ def _pin_raw(value, loc, model, encoder=None, raw_spans=None):
         return pinned
 
     if type(part) is int:
-        if type(value) is not list or not 0 <= part < len(value):
+        if not _is_sequence(value) or not 0 <= part < len(value):
             return NODEFAULT
         item_model = _get_index_model(origin, args, part)
         if item_model is NODEFAULT:
@@ -422,7 +516,7 @@ def _pin_raw(value, loc, model, encoder=None, raw_spans=None):
         pinned[part] = item
         return pinned
 
-    if type(value) is not dict:
+    if not _is_mapping(value):
         return NODEFAULT
     try:
         child = value[part]
@@ -545,7 +639,7 @@ def _find_failing_dict_value(obj, value_model, kwargs=None):
     Find the dict entry whose value fails validation.
 
     Args:
-        obj (dict): Raw dict to search
+        obj (dict | Mapping): Raw object to search
         value_model: Typehint of the dict values
         kwargs (dict): Extra keyword arguments for `convert`, the same ones the
             failed call used. Validation rules may change which entry fails
@@ -572,7 +666,7 @@ def _find_failing_dict_key(obj, key_model, kwargs=None):
     Find the dict key that fails validation.
 
     Args:
-        obj (dict): Raw dict to search
+        obj (dict | Mapping): Raw object to search
         key_model: Typehint of the dict keys
         kwargs (dict): Extra keyword arguments for `convert`, see
             `_find_failing_dict_value`
@@ -704,7 +798,7 @@ def _repair_once(
         # 1. Invalid dict value
         # msgspec does not tell which key is invalid, just giving placeholder '...', we need to find the exact key
         if part == '...':
-            if type(obj) is not dict:
+            if not _is_writable_mapping(obj):
                 # Error path `...` implies a dict, but obj doesn't match.
                 return NODEFAULT, error
 
@@ -770,7 +864,7 @@ def _repair_once(
         # 2. Invalid dict key
         # '...key' is our special defined key to distinguish type error on key and on value
         if part == '...key':
-            if type(obj) is not dict:
+            if not _is_writable_mapping(obj):
                 # Error path `...` implies a dict, but obj doesn't match.
                 return NODEFAULT, error
 
@@ -846,7 +940,7 @@ def _repair_once(
                 if not _pop_last_collection(last_collection_data, last_collection_key, undo):
                     return NODEFAULT, error
                 return raw_obj, error
-            if type(obj) is not list:
+            if not _is_writable_sequence(obj):
                 # Error path like `0` implies a list, but obj doesn't match.
                 return NODEFAULT, error
             if is_arraylike(model_origin, known_struct_type=model_kind, unwrap=False):
@@ -948,7 +1042,7 @@ def _repair_once(
             # The data tells how the model is decoded: an object model is
             # addressed by field name, an array model by position, which branch
             # 3 above has already handled
-            if type(obj) is not dict:
+            if not _is_writable_mapping(obj):
                 # A field name implies an object model, but obj doesn't match.
                 return NODEFAULT, error
             if is_last:
