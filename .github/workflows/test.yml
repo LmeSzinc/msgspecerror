@@ -67,7 +67,8 @@ jobs:
       run: |
         python -VV
         uv python find
-        uv pip install --system "pytest>=8" typing-extensions attrs
+        # packaging is what the backport step below reads the wheel metadata with
+        uv pip install --system "pytest>=8" typing-extensions attrs packaging
 
     - name: Test every msgspec version this Python supports
       shell: bash
@@ -99,6 +100,49 @@ jobs:
           echo "::group::msgspec $version on Python ${{ matrix.python-version }}"
           uv pip install --system "msgspec==$version"
           python -c "import msgspec; print('msgspec', msgspec.__version__, msgspec.__file__)"
+          python -m pytest tests -q
+          echo "::endgroup::"
+        done
+
+    - name: Test the msgspec backport from py38deps
+      shell: bash
+      env:
+        UV_PYTHON: "${{ steps.python.outputs.python-path }}"
+      run: |
+        set -euo pipefail
+
+        # py38deps republishes msgspec for the interpreters upstream dropped
+        # by raising requires-python (0.21.0 and later declare >=3.10, the
+        # rebuild declares >=3.8) and rebuilds every version it carries for
+        # every interpreter it builds them for, so a project that adds
+        # https://py38deps.github.io/py38deps/simple/ as an extra index gets
+        # these wheels on recent interpreters too. 0.21.1 is published for
+        # cp38~cp314t and 0.22.0 for cp38~cp315t; a version the index does not
+        # publish for this interpreter is left out rather than silently
+        # falling back to the upstream wheel.
+        case "${{ matrix.python-version }}" in
+          3.8|3.9|3.10|3.11|3.12|3.13|3.14|3.14t) VERSIONS="0.21.1 0.22.0" ;;
+          3.15|3.15t)                              VERSIONS="0.22.0" ;;
+          *)
+            echo "No msgspec backport table for Python ${{ matrix.python-version }}"
+            exit 1
+            ;;
+        esac
+
+        for version in $VERSIONS; do
+          echo "::group::msgspec $version backport on Python ${{ matrix.python-version }}"
+          # The backport index replaces PyPI as the only index, so the wheel
+          # can not come from anywhere else, and --reinstall replaces the
+          # wheel the step above installed from PyPI: both versions exist
+          # upstream as well, so a leftover upstream wheel would pass the
+          # tests below without ever exercising the backport.
+          uv pip install --system --reinstall \
+            --index-url https://py38deps.github.io/py38deps/simple/ \
+            "msgspec==$version"
+          # The rebuild declares requires-python >=3.8 where upstream declares
+          # >=3.10 for the same version, so the last assertion is what proves
+          # the installed wheel is the backport and not an upstream build.
+          python -c "import importlib.metadata as md, msgspec; from packaging.specifiers import SpecifierSet; rp = md.metadata('msgspec')['Requires-Python']; print('msgspec', msgspec.__version__, rp, msgspec.__file__); assert msgspec.__version__ == '$version', msgspec.__version__; assert SpecifierSet(rp).contains('3.8'), rp"
           python -m pytest tests -q
           echo "::endgroup::"
         done
