@@ -608,7 +608,7 @@ class TestGetClassAnnotation:
             get_class_annotation(42, "field")
 
 
-class TestGetMsgspecAnnotation:
+class TestGetMsgspecAnnotationField:
     """Test suite for get_msgspec_annotation function"""
 
     def test_simple_class(self):

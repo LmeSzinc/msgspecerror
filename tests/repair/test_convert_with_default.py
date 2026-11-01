@@ -482,3 +482,27 @@ class TestRawFieldModel:
 
         assert result is NODEFAULT
         assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
+
+    def test_a_value_that_refers_to_itself_is_reported_not_crashed(self):
+        """A YAML anchor gives a cycle, which the encoder can not walk either.
+
+        `msgpack.encode()` raises `RecursionError` for it, not `EncodeError`, so
+        the field could not be filled and the error escaped the repair.
+        """
+        cyclic = {'a': None}
+        cyclic['a'] = cyclic
+
+        result, errors = convert_with_default(cyclic, msgspec.Raw)
+
+        assert result is NODEFAULT
+        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
+
+    def test_a_cycle_inside_a_raw_field_is_reported_not_crashed(self):
+        inner = {'a': 1}
+        inner['self'] = inner
+        data = {'payload': inner, 'n': 'bad'}
+
+        result, errors = convert_with_default(data, self.Msg, guess_default=True)
+
+        assert result is NODEFAULT
+        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]

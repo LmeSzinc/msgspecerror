@@ -313,8 +313,10 @@ def _pin_raw(value, loc, model, encoder=None, raw_spans=None):
             return Raw(b'')
         try:
             return Raw(encoder(_restore_rewrites(value, raw_spans)))
-        except (EncodeError, TypeError):
-            # The value can not be encoded by this codec
+        except (EncodeError, TypeError, RecursionError):
+            # The value can not be encoded by this codec. A `RecursionError` is
+            # a value that refers to itself, which a YAML anchor produces: the
+            # encoder can not walk it, so the field can not be filled either.
             return NODEFAULT
 
     part = loc[0]

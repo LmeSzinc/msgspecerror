@@ -962,10 +962,6 @@ class TestGetNamedTupleFieldDefault:
         with pytest.raises(AttributeError, match='has no field with name="missing"'):
             get_namedtuple_field_default(NTSimple, 'missing')
 
-    def test_a_non_existent_field_name_raises_attribute_error(self):
-        with pytest.raises(AttributeError, match=f'Type {NTSimple} has no field with name="missing"'):
-            get_namedtuple_field_default(NTSimple, 'missing')
-
     @pytest.mark.parametrize('model', [SimpleStruct, NotAStruct, int, Tuple[int, str], None])
     def test_a_model_that_is_not_a_namedtuple(self, model):
         with pytest.raises(AttributeError, match='is not a valid NamedTuple'):

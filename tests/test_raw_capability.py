@@ -500,12 +500,29 @@ class TestMsgpackByteRewrite:
 
         assert bytes(result['good'].payload) == nested
 
-    @pytest.mark.xfail(
-        reason='two different invalid strings need more than the two repair attempts',
-        strict=True,
-    )
     def test_two_different_rewrites_in_one_raw_field(self):
+        """Two different invalid strings, each with its own bytes.
+
+        The fast fixup settles one string per round, the slow walker settles
+        every remaining one, and the validation error of the repaired payload
+        needs another round on top. That third round is what used to be missing.
+        """
         nested = b'\x82\xa1a\xa3x\xffy\xa1b\xa5p\xf0\x28\x8c\xbc'
+        result = self._load_with_good_payload(nested)
+
+        assert bytes(result['good'].payload) == nested
+
+    def test_many_different_rewrites_in_one_raw_field(self):
+        """Five different invalid strings in one raw field are all restored."""
+        pairs = [
+            (b'0', b'a\xffb'), (b'1', b'c\xf0\x28d'), (b'2', b'e\xfff'),
+            (b'3', b'g\x80h'), (b'4', b'i\xffj'),
+        ]
+        nested = bytes([0x80 + len(pairs)])
+        for key, value in pairs:
+            # `fixstr` headers: this payload is short enough for the 5-bit form
+            nested += bytes([0xa0 + len(key)]) + key + bytes([0xa0 + len(value)]) + value
+
         result = self._load_with_good_payload(nested)
 
         assert bytes(result['good'].payload) == nested
@@ -866,6 +883,18 @@ class TestOldMsgspecBuildFallback:
         assert result.a == 0
         assert msgspec.msgpack.decode(result.payload) == {'x': 1}
         assert [e.loc for e in errors] == [('a',)]
+
+    def test_a_value_that_refers_to_itself_can_not_be_rebuilt(self, monkeypatch):
+        """The re-encode hits `RecursionError`, which is not an `EncodeError`."""
+        cyclic = {'a': 1}
+        cyclic['self'] = cyclic
+
+        monkeypatch.setattr(msgspecerror.const, 'MSGSPEC_0_19_PLUS', False)
+
+        result, errors = convert_with_default(cyclic, Raw, guess_default=True)
+
+        assert result is NODEFAULT
+        assert [e.type for e in errors] == [ErrorType.INPUT_REJECTED]
 
 
 class TestWithErrorIsFaithful:

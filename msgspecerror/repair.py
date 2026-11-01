@@ -729,7 +729,7 @@ def _handle_obj_repair(
                 if error.type is ErrorType.WRAPPED_ERROR or error.ctx.may_raw_rejection:
                     rejected_msg = const.MSG_RAW_FROM_DECODED
                     break
-            except (DecodeError, TypeError, EncodeError):
+            except (DecodeError, TypeError, EncodeError, RecursionError):
                 rejected_msg = const.MSG_RAW_FROM_DECODED
                 break
             continue
@@ -1127,7 +1127,13 @@ def load_msgpack_with_default(
     # filled with what the payload really had instead of the repaired string
     raw_spans = {}
 
-    for attempt in range(2):
+    # One round per repair, and one more for what the repaired payload fails on:
+    # round 0 tries the fast fixup (one string), round 1 runs the slow walk (every
+    # remaining string), and the `ValidationError` that the repaired payload then
+    # raises still needs a round of its own. With two rounds that last one ran out
+    # of budget and a payload with two different invalid strings was answered
+    # with a default object instead of the repaired one.
+    for attempt in range(_MAX_UNICODE_ROUNDS):
         if isinstance(error, UnicodeDecodeError):
             # The payload holds bytes that are not utf-8
             if utf8_error not in ('replace', 'ignore'):
@@ -1192,6 +1198,12 @@ def load_msgpack_with_default(
         'Input rejected: failed to solve UnicodeDecodeError',
         type=ErrorType.INPUT_REJECTED, loc=())
     return result, unicode_errors + [rejected]
+
+
+# Rounds the msgpack unicode repair may take. The slow walk repairs every
+# remaining string in one pass, so two rounds always finish the repair, and the
+# `ValidationError` the repaired payload raises needs one more.
+_MAX_UNICODE_ROUNDS = 4
 
 
 def _repair_msgpack_unicode(
