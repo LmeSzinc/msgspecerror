@@ -356,10 +356,21 @@ def _get_index_model(model_origin, model_args, index, known_struct_type=None):
     if known_struct_type is None:
         known_struct_type = is_struct_like(model_origin, unwrap=False)
     if is_arraylike(model_origin, known_struct_type=known_struct_type, unwrap=False):
-        # The index is the field order of an `array_like` struct or a NamedTuple
+        # The index is the field order of an `array_like` struct or a NamedTuple.
+        # `origin_args()` has already split a parametrized alias into the class
+        # and its arguments, and a field declared with a `TypeVar` only resolves
+        # with the arguments put back on: `Box[Leaf]` holds a `Leaf` at that
+        # position, the bare `Box` holds the `~T` it was declared with.
+        field_model = model_origin
+        if model_args:
+            try:
+                field_model = model_origin[model_args]
+            except TypeError:
+                # Not every origin can be parametrized again, the bare class is
+                # still the best answer for the fields that use no argument
+                pass
         try:
-            return get_field_typehint(
-                model_origin, index, known_struct_type=known_struct_type, unwrap=False)
+            return get_field_typehint(field_model, index, known_struct_type=known_struct_type)
         except AttributeError:
             return NODEFAULT
     return _get_item_model(model_origin, model_args, index)

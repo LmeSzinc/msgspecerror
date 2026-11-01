@@ -8,7 +8,7 @@ that failed instead of the whole document.
 """
 import copy
 import dataclasses
-from typing import Dict, List, NamedTuple, Optional, Union
+from typing import Dict, Generic, List, NamedTuple, Optional, TypeVar, Union
 
 import attrs
 import msgspec.json
@@ -18,8 +18,9 @@ from msgspec import NODEFAULT, Struct, field
 from typing_extensions import NotRequired, TypedDict
 
 from msgspecerror import (
-    convert_with_default, load_json_with_default, load_json_with_error_detail, load_msgpack_with_default,
-    load_msgpack_with_error_detail
+    ErrorInfo, convert_with_default, load_json_with_default,
+    load_json_with_error_detail, load_msgpack_with_default, load_msgpack_with_error_detail,
+    resolve_error
 )
 from msgspecerror.const import ErrorType
 
@@ -136,6 +137,35 @@ class Choice(Struct):
     """A union whose members are an object kind and an array kind."""
     kind: str
     payload: Union[Settings, List[int]]
+
+
+T = TypeVar('T')
+
+
+class GenericLeaf(Struct):
+    """The type a generic array position is parametrized with."""
+    a: int = 0
+
+
+class GenericBox(Struct, Generic[T], array_like=True):
+    """A generic `array_like` struct: position 0 is `T`, not a declared type."""
+    x: T
+
+
+class GenericHolder(Struct):
+    """A generic array model nested in a plain struct."""
+    box: GenericBox[GenericLeaf]
+    n: int = 0
+
+
+class GenericObject(Struct, Generic[T]):
+    """A generic struct decoded from an object, which is addressed by name."""
+    x: T
+
+
+class GenericObjectHolder(Struct):
+    """A generic object model nested in a plain struct."""
+    box: GenericObject[GenericLeaf]
 
 
 DOC = {
@@ -564,6 +594,140 @@ class TestTaggedArrayKind:
         assert detail.loc == errors[0].loc == (2,)
         assert detail.error_value == 'bad'
         assert detail.error_value_resolved is True
+
+
+# --- A generic array kind: the position type comes from the alias ---
+
+
+class TestGenericArrayKind:
+    """A generic `array_like` struct keeps its type arguments in the field list.
+
+    `origin_args()` splits `Box[Leaf]` into `Box` and `(Leaf,)`, and a field
+    declared as `T` resolves only with the arguments put back: the bare `Box`
+    still holds the `~T` it was declared with. Both families used to lose the
+    type one level down, so the location was right while the offending value
+    stayed unreadable and the repair fell back to the root default.
+    """
+
+    @pytest.mark.parametrize('guess_default', [False, True], ids=['no-guess', 'guess'])
+    def test_at_root(self, guess_default):
+        result, errors = load_json_with_default(
+            b'[{"a": "bad"}]', GenericBox[GenericLeaf], guess_default=guess_default)
+
+        assert result == GenericBox(x=GenericLeaf(a=0))
+        assert [e.loc for e in errors] == [(0, 'a')]
+
+    def test_as_a_struct_field(self):
+        """The field around the array keeps its own value."""
+        payload = b'{"box": [{"a": "bad"}], "n": 1}'
+
+        result, errors = load_json_with_default(payload, GenericHolder)
+
+        assert result == GenericHolder(box=GenericBox(x=GenericLeaf(a=0)), n=1)
+        assert [e.loc for e in errors] == [('box', 0, 'a')]
+
+    def test_in_a_dict(self):
+        result, errors = load_json_with_default(
+            b'{"k": [{"a": "bad"}]}', Dict[str, GenericBox[GenericLeaf]])
+
+        assert result == {'k': GenericBox(x=GenericLeaf(a=0))}
+        assert [e.loc for e in errors] == [('k', 0, 'a')]
+
+    def test_in_a_list(self):
+        """A valid sibling entry is kept."""
+        payload = b'[[{"a": "bad"}], [{"a": 2}]]'
+
+        result, errors = load_json_with_default(payload, List[GenericBox[GenericLeaf]])
+
+        assert result == [
+            GenericBox(x=GenericLeaf(a=0)),
+            GenericBox(x=GenericLeaf(a=2)),
+        ]
+        assert [e.loc for e in errors] == [(0, 0, 'a')]
+
+    def test_two_array_levels(self):
+        """Each position resolves its own type argument."""
+        result, errors = load_json_with_default(
+            b'[[{"a": "bad"}]]', GenericBox[GenericBox[GenericLeaf]])
+
+        assert result == GenericBox(x=GenericBox(x=GenericLeaf(a=0)))
+        assert [e.loc for e in errors] == [(0, 0, 'a')]
+
+    def test_the_detail_reads_the_value(self):
+        obj, detail = load_json_with_error_detail(b'[{"a": "bad"}]', GenericBox[GenericLeaf])
+
+        assert obj is NODEFAULT
+        assert detail.loc == (0, 'a')
+        assert detail.loc_resolved is True
+        assert detail.error_value == 'bad'
+        assert detail.error_value_resolved is True
+
+    def test_the_detail_agrees_with_the_repair(self):
+        payload = b'[[{"a": "bad"}], [{"a": 2}]]'
+        obj, detail = load_json_with_error_detail(payload, List[GenericBox[GenericLeaf]])
+        result, errors = load_json_with_default(payload, List[GenericBox[GenericLeaf]])
+
+        assert obj is NODEFAULT
+        assert detail.loc == errors[0].loc == (0, 0, 'a')
+        assert result == [GenericBox(x=GenericLeaf(a=0)), GenericBox(x=GenericLeaf(a=2))]
+
+    def test_resolve_error(self):
+        """An ErrorInfo built by hand walks the same path."""
+        detail = resolve_error(
+            ErrorInfo(msg='m', type=ErrorType.TYPE_MISMATCH, loc=(0, 'a')),
+            [{'a': 'bad'}], GenericBox[GenericLeaf])
+
+        assert detail.loc == (0, 'a')
+        assert detail.loc_resolved is True
+        assert detail.error_value == 'bad'
+        assert detail.error_value_resolved is True
+
+    def test_a_failing_position_itself(self):
+        """The boundary that always worked: the position is the whole error."""
+        result, errors = load_json_with_default(b'["bad"]', GenericBox[int], guess_default=True)
+
+        assert result == GenericBox(x=0)
+        assert [e.loc for e in errors] == [(0,)]
+
+    def test_a_position_without_a_default_is_not_written(self):
+        """`x: T` declares no default, so without guessing there is nothing to write."""
+        result, errors = load_json_with_default(b'["bad"]', GenericBox[int])
+
+        assert result is NODEFAULT
+        assert [e.loc for e in errors] == [(0,)]
+
+    def test_msgpack(self):
+        payload = msgspec.msgpack.encode([[{'a': 'bad'}], [{'a': 2}]])
+
+        result, errors = load_msgpack_with_default(payload, List[GenericBox[GenericLeaf]])
+
+        assert result == [GenericBox(x=GenericLeaf(a=0)), GenericBox(x=GenericLeaf(a=2))]
+        assert [e.loc for e in errors] == [(0, 0, 'a')]
+
+    def test_convert(self):
+        data = [{'a': 'bad'}]
+
+        result, errors = convert_with_default(data, GenericBox[GenericLeaf])
+
+        assert result == GenericBox(x=GenericLeaf(a=0))
+        assert [e.loc for e in errors] == [(0, 'a')]
+        assert data == [{'a': 0}]
+
+    def test_a_non_generic_array_kind_is_untouched(self):
+        """The control: an `array_like` struct with no type arguments."""
+        result, errors = load_json_with_default(b'[{"a": "bad"}, 1]', ArrayOuter)
+
+        assert result == ArrayOuter(inner=ArrayInner(a=0), x=1)
+        assert [e.loc for e in errors] == [(0, 'a')]
+
+    def test_a_generic_object_kind_is_untouched(self):
+        """The other control: a generic struct addressed by field name."""
+        payload = b'{"box": {"x": {"a": "bad"}}}'
+
+        result, errors = load_json_with_default(payload, GenericObjectHolder)
+
+        assert result == GenericObjectHolder(box=GenericObject(x=GenericLeaf(a=0)))
+        assert [e.loc for e in errors] == [('box', 'x', 'a')]
 
 
 # --- Union member: the path is relative to the member, not the union ---
