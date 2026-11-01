@@ -1,0 +1,307 @@
+name: CI
+
+on:
+  push:
+    branches:
+    - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "Python ${{ matrix.python-version }} on ${{ matrix.os }}"
+    runs-on: "${{ matrix.os }}"
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-latest
+        - macos-latest
+        - windows-latest
+        python-version:
+        # Every CPython that msgspecerror supports, plus the free-threaded
+        # builds msgspec publishes wheels for. A 3.13t interpreter is not
+        # listed: msgspec has no cp313t wheel, so there would be nothing to
+        # install on it.
+        - "3.8"
+        - "3.9"
+        - "3.10"
+        - "3.11"
+        - "3.12"
+        - "3.13"
+        - "3.14"
+        - "3.15"
+        - "3.14t"
+        - "3.15t"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Install Python
+      id: python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "${{ matrix.python-version }}"
+        # 3.15 is still a pre-release, the other versions are released builds
+        allow-prereleases: true
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      with:
+        enable-cache: true
+
+    - name: Install test dependencies
+      env:
+        # Install into the interpreter setup-python selected, uv would
+        # otherwise pick the first Python it finds on PATH
+        UV_PYTHON: "${{ steps.python.outputs.python-path }}"
+      run: |
+        python -VV
+        uv python find
+        # packaging is what the backport step below reads the wheel metadata with
+        uv pip install --system "pytest>=8" typing-extensions attrs packaging
+
+    - name: Test every msgspec version this Python supports
+      shell: bash
+      env:
+        UV_PYTHON: "${{ steps.python.outputs.python-path }}"
+      run: |
+        set -euo pipefail
+
+        # The msgspec versions that publish a wheel for this interpreter.
+        # msgspec raises its `requires-python` over time (0.18.6 is >=3.8,
+        # 0.19.0/0.20.0 are >=3.9, 0.21.0 and later are >=3.10) and adds new
+        # interpreters with new minor releases, so the supported set is per
+        # Python version. Keep `msgspec` in pyproject.toml in sync with the
+        # range covered here.
+        case "${{ matrix.python-version }}" in
+          3.8)            VERSIONS="0.18.6" ;;
+          3.9)            VERSIONS="0.18.6 0.19.0 0.20.0" ;;
+          3.10|3.11|3.12) VERSIONS="0.18.6 0.19.0 0.20.0 0.21.0 0.21.1 0.22.0" ;;
+          3.13)           VERSIONS="0.19.0 0.20.0 0.21.0 0.21.1 0.22.0" ;;
+          3.14|3.14t)     VERSIONS="0.20.0 0.21.0 0.21.1 0.22.0" ;;
+          3.15|3.15t)     VERSIONS="0.22.0" ;;
+          *)
+            echo "No msgspec version table for Python ${{ matrix.python-version }}"
+            exit 1
+            ;;
+        esac
+
+        for version in $VERSIONS; do
+          echo "::group::msgspec $version on Python ${{ matrix.python-version }}"
+          uv pip install --system "msgspec==$version"
+          python -c "import msgspec; print('msgspec', msgspec.__version__, msgspec.__file__)"
+          python -m pytest tests -q
+          echo "::endgroup::"
+        done
+
+    - name: Test the msgspec backport from py38deps
+      shell: bash
+      env:
+        UV_PYTHON: "${{ steps.python.outputs.python-path }}"
+      run: |
+        set -euo pipefail
+
+        # py38deps republishes msgspec for the interpreters upstream dropped
+        # by raising requires-python (0.21.0 and later declare >=3.10, the
+        # rebuild declares >=3.8) and rebuilds every version it carries for
+        # every interpreter it builds them for, so a project that adds
+        # https://py38deps.github.io/py38deps/simple/ as an extra index gets
+        # these wheels on recent interpreters too. 0.21.1 is published for
+        # cp38~cp314t and 0.22.0 for cp38~cp315t; a version the index does not
+        # publish for this interpreter is left out rather than silently
+        # falling back to the upstream wheel.
+        case "${{ matrix.python-version }}" in
+          3.8|3.9|3.10|3.11|3.12|3.13|3.14|3.14t) VERSIONS="0.21.1 0.22.0" ;;
+          3.15|3.15t)                              VERSIONS="0.22.0" ;;
+          *)
+            echo "No msgspec backport table for Python ${{ matrix.python-version }}"
+            exit 1
+            ;;
+        esac
+
+        for version in $VERSIONS; do
+          echo "::group::msgspec $version backport on Python ${{ matrix.python-version }}"
+          # The backport index replaces PyPI as the only index, so the wheel
+          # can not come from anywhere else, and --reinstall replaces the
+          # wheel the step above installed from PyPI: both versions exist
+          # upstream as well, so a leftover upstream wheel would pass the
+          # tests below without ever exercising the backport.
+          uv pip install --system --reinstall \
+            --index-url https://py38deps.github.io/py38deps/simple/ \
+            "msgspec==$version"
+          # The rebuild declares requires-python >=3.8 where upstream declares
+          # >=3.10 for the same version, so the last assertion is what proves
+          # the installed wheel is the backport and not an upstream build.
+          python -c "import importlib.metadata as md, msgspec; from packaging.specifiers import SpecifierSet; rp = md.metadata('msgspec')['Requires-Python']; print('msgspec', msgspec.__version__, rp, msgspec.__file__); assert msgspec.__version__ == '$version', msgspec.__version__; assert SpecifierSet(rp).contains('3.8'), rp"
+          python -m pytest tests -q
+          echo "::endgroup::"
+        done
+
+  # The packaging checks run after the matrix: a wheel that installs and
+  # passes the suite is worth proving only once the suite passes here, and a
+  # single workflow per push keeps the actions list to one run per commit.
+  build:
+    name: Build wheel
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The last two steps create a tag and dispatch the release, so this job is
+    # the only one allowed to write to the repo. Job level permissions replace
+    # the workflow defaults instead of adding to them, which is why the read
+    # scope of the top level is restated here.
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Install Python
+      id: python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.13"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      with:
+        enable-cache: true
+
+    # Only the wheel is built. The project is pure python and the wheel is
+    # py3-none-any, so it installs on every interpreter and platform pip
+    # supports; an sdist would carry the same files in a form pip has to run a
+    # build for, and it is not distributed here.
+    - name: Build the wheel
+      env:
+        UV_PYTHON: "${{ steps.python.outputs.python-path }}"
+      run: uv build --wheel
+
+    - name: Check the package metadata and the long description
+      run: uv tool run twine check --strict dist/*
+
+    - name: Inspect the built files
+      run: |
+        ls -l dist
+        python -m zipfile -l dist/*.whl
+
+    - name: Install the wheel into a clean environment and test it
+      env:
+        UV_PYTHON: "${{ steps.python.outputs.python-path }}"
+      run: |
+        set -euxo pipefail
+
+        uv venv /tmp/wheel-env
+        uv pip install --python /tmp/wheel-env/bin/python \
+            dist/*.whl "pytest>=8" attrs
+
+        # The tests must exercise the installed wheel, not the checkout, so
+        # they run outside of the repository where the source tree can not
+        # shadow the installed package.
+        cp -r tests /tmp/wheel-tests
+        cd /tmp/wheel-tests
+
+        /tmp/wheel-env/bin/python -I -c "
+        import pathlib, msgspecerror
+        path = pathlib.Path(msgspecerror.__file__).resolve()
+        print('msgspecerror:', path)
+        assert 'site-packages' in str(path), f'not an installed copy: {path}'
+        "
+
+        /tmp/wheel-env/bin/python -m pytest . -q
+
+    # The version is read from the artifact, not from the source tree: whatever
+    # the wheel says it is, that is what gets tagged and published.
+    - name: Checksums
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        wheels=(dist/*.whl)
+        if [ "${#wheels[@]}" -ne 1 ]; then
+          echo "::error::expected exactly one wheel, found ${#wheels[@]}"
+          exit 1
+        fi
+        sha256sum "${wheels[@]}" > dist/SHA256SUMS
+        cat dist/SHA256SUMS
+
+    - name: Upload the built files
+      uses: actions/upload-artifact@v5
+      with:
+        name: dist
+        path: dist/*
+        if-no-files-found: error
+
+    # The tag is the release switch, and it is created here only: the last
+    # step of a run in which the matrix and the packaging checks passed. An
+    # old tag on another commit means the version was not bumped, which is the
+    # normal state of a fix commit and releases nothing. The release workflow
+    # never creates a tag, it only publishes the one found here.
+    - name: Tag the built version
+      id: tag
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        wheels=(dist/*.whl)
+        if [ "${#wheels[@]}" -ne 1 ]; then
+          echo "::error::expected exactly one wheel, found ${#wheels[@]}"
+          exit 1
+        fi
+        # msgspecerror-0.22.0.1-py3-none-any.whl -> 0.22.0.1
+        # DIST_NAME is the [project] name of pyproject.toml. Stripping it is
+        # what keeps this correct if the name ever gains a hyphen: cut -d- -f2
+        # answers "bar" for foo-bar-1.2.3-py3-none-any.whl.
+        DIST_NAME=msgspecerror
+        filename=$(basename "${wheels[0]}")
+        version=${filename#"$DIST_NAME-"}
+        version=${version%%-py3-none-any.whl}
+        tag="v$version"
+        sha=$(git rev-parse HEAD)
+
+        # git answers without an api call: a tag on this very commit means a
+        # rerun, a tag on any other commit means the version was not bumped,
+        # and no tag at all means this run is the release. The second pattern
+        # asks for the peeled ref so an annotated tag answers with the tagged
+        # commit too; the tags here are lightweight, and the pattern is cheap.
+        existing=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}" | cut -f1 | tail -n1)
+        if [ -z "$existing" ]; then
+          gh api -X POST "repos/{owner}/{repo}/git/refs" \
+            -f ref="refs/tags/$tag" -f sha="$sha" > /dev/null
+          echo "Tagged $tag at $sha"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+        elif [ "$existing" = "$sha" ]; then
+          echo "$tag already points to $sha"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::notice::$tag already points to $existing, the version was not bumped, nothing is released"
+          echo "publish=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # Publishing is the continuation of this run, not a second run of the same
+    # checks: the artifacts only leave for pypi when this run tagged its own
+    # version. repository_dispatch is one of the two events a GITHUB_TOKEN may
+    # create, which is what makes the hand-off possible without a deploy key.
+    # A commit that did not bump the version stays a single run in the actions
+    # list instead of adding a skipped one.
+    - name: Trigger the release
+      if: steps.tag.outputs.publish == 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        gh api -X POST "repos/{owner}/{repo}/dispatches" --input - <<JSON
+        {"event_type": "msgspecerror-release", "client_payload": {"run_id": "${{ github.run_id }}"}}
+        JSON

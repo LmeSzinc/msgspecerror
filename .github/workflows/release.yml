@@ -1,0 +1,226 @@
+name: Release
+
+# Publishing is the continuation of CI, not a second run of it. CI builds the
+# wheel of one commit, verifies it on 3 operating systems and tags the version
+# it built; this workflow downloads that very artifact and publishes it, so the
+# file on pypi is the file the test matrix passed. Nothing is rebuilt here, and
+# no tag is created here: the tag is the release signal.
+#
+# CI dispatches this only after it tagged a version, so a commit that did not
+# bump the version produces no run here at all, not an empty one. A
+# repository_dispatch is one of the two events a GITHUB_TOKEN may create, which
+# is why the hand-off needs no deploy key and no personal token.
+
+on:
+  repository_dispatch:
+    types: [msgspecerror-release]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "CI run id to publish, empty picks the latest successful run on master"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# A separate group from ci-<ref> of the CI workflow: a new commit cancels the
+# running CI run, and it must never cancel a release halfway through an upload.
+# cancel-in-progress is false, so a second release waits instead of killing the
+# one in flight.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  DIST_ARTIFACT: dist
+
+jobs:
+  release:
+    name: release
+    # A failed or cancelled CI run publishes nothing: CI dispatches only from a
+    # green run, and the first step re-checks the conclusion of the run it was
+    # asked to publish, which is what keeps a manual dispatch honest too.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # create and publish the release, the tag already exists
+      actions: read     # download the artifact of the CI run
+      id-token: write   # trusted publishing to pypi, and the attestations
+      attestations: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/msgspecerror/
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Resolve the CI run
+        id: run
+        env:
+          # the dispatch carries the run that tagged the version, so the id is
+          # already the right one; only a manual run has to look it up
+          RUN_ID: ${{ github.event.client_payload.run_id || github.event.inputs.run_id }}
+        run: |
+          set -euo pipefail
+          run_id="${RUN_ID:-}"
+          if [ -z "$run_id" ]; then
+            run_id=$(gh run list --workflow CI --branch master --status success \
+              --limit 1 --json databaseId --jq '.[0].databaseId')
+            echo "No run id given, using the latest successful CI run: $run_id"
+          fi
+          conclusion=$(gh api "repos/{owner}/{repo}/actions/runs/$run_id" --jq .conclusion)
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::CI run $run_id concluded $conclusion, only a successful run is published"
+            exit 1
+          fi
+          sha=$(gh api "repos/{owner}/{repo}/actions/runs/$run_id" --jq .head_sha)
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Publishing the artifacts of CI run $run_id at $sha"
+
+      # The checkout is here only so git and gh have a repository context for
+      # the release commands. The artifacts are the ones the matrix tested:
+      # they come from the CI run, nothing is rebuilt from this tree.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.run.outputs.sha }}
+          fetch-depth: 1
+
+      - name: Download the artifacts
+        env:
+          RUN_ID: ${{ steps.run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" -n "$DIST_ARTIFACT" -D dist
+          ls -l dist
+
+      # The version comes from the artifact, not from the source tree: whatever
+      # the wheel says it is, that is what is tagged and published.
+      - name: Resolve the version
+        id: version
+        env:
+          HEAD_SHA: ${{ steps.run.outputs.sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one wheel, found ${#wheels[@]}"
+            exit 1
+          fi
+          # msgspecerror-0.22.0.1-py3-none-any.whl -> 0.22.0.1
+          # DIST_NAME is the [project] name of pyproject.toml. Stripping it is
+          # what keeps this correct if the name ever gains a hyphen: cut -d- -f2
+          # answers "bar" for foo-bar-1.2.3-py3-none-any.whl.
+          DIST_NAME=msgspecerror
+          filename=$(basename "${wheels[0]}")
+          version=${filename#"$DIST_NAME-"}
+          version=${version%%-py3-none-any.whl}
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          # CI creates the tag at the very end of a green run, so a tag on this
+          # commit is the release signal. No tag at all means the version was
+          # not bumped while this commit was built, a tag on another commit
+          # means an older run already released this version: both are the
+          # normal state of a fix commit and publish nothing. ls-remote asks the
+          # remote, so it does not depend on what the shallow clone holds, and
+          # the peeled pattern makes the last sha the tagged commit even for an
+          # annotated tag.
+          tag_sha=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}" | cut -f1 | tail -n1)
+          if [ -z "$tag_sha" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No tag $tag, the version was not bumped, nothing to publish"
+          elif [ "$tag_sha" != "$HEAD_SHA" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag points to $tag_sha, this run built $HEAD_SHA, nothing to publish"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Releasing $version from $HEAD_SHA"
+          fi
+
+      # The release is opened as a draft so the artifacts are attached before
+      # the irreversible step. A failure after this point leaves a draft only
+      # maintainers can see, and a rerun resumes from here instead of starting
+      # over: every step below is idempotent.
+      - name: Create the draft release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          HEAD_SHA: ${{ steps.run.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG already exists, resuming"
+            exit 0
+          fi
+          args=()
+          # a pre-release must not become the latest release of the repository
+          if [[ "$VERSION" =~ (a|b|rc|dev)[0-9]+$ ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$TAG" --draft --verify-tag --target "$HEAD_SHA" \
+            --title "msgspecerror $VERSION" --generate-notes "${args[@]}"
+
+      - name: Upload the files to the release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sha256sum -c dist/SHA256SUMS
+          gh release upload "$TAG" dist/*.whl dist/SHA256SUMS --clobber
+
+      # Only the wheel is distributed. The project is pure python and the wheel
+      # is py3-none-any, so every interpreter and platform pip supports here
+      # takes it, and an sdist would only offer the same files through a build
+      # step. SHA256SUMS is a release asset, not a distribution, twine rejects
+      # an unknown file name.
+      - name: Collect the PyPI files
+        if: steps.version.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p dist-pypi
+          cp dist/*.whl dist-pypi/
+          ls -l dist-pypi
+
+      - name: Publish to PyPI
+        if: steps.version.outputs.publish == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist-pypi
+          attestations: true
+          print-hash: true
+          # a rerun after a later step failed must not fail on an upload that
+          # already succeeded, pypi versions are immutable
+          skip-existing: true
+
+      # The draft becomes visible only once pypi has the same version, so a
+      # release page never advertises a package that cannot be installed
+      - name: Publish the release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false
+
+      - name: Summary
+        if: always()
+        env:
+          RUN_ID: ${{ steps.run.outputs.run_id }}
+          SHA: ${{ steps.run.outputs.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PUBLISH: ${{ steps.version.outputs.publish }}
+        run: |
+          {
+            echo "### Release"
+            echo ""
+            echo "- CI run: ${RUN_ID:-unknown}"
+            echo "- Commit: ${SHA:-unknown}"
+            echo "- Version: ${VERSION:-unknown}"
+            echo "- Tag: ${TAG:-unknown}"
+            echo "- Published: ${PUBLISH:-false}"
+          } >> "$GITHUB_STEP_SUMMARY"
