@@ -25,10 +25,10 @@ from .parse_error import ErrorInfo, ErrorInfoDetail, _has_placeholder, parse_msg
 from .parse_model import get_field_typehint, is_arraylike
 from .parse_msgpack import fixup_msgpack_unicode_slow
 from .parse_type import is_struct_like, origin_args, unwrap_typehint
-from .repair import (
-    _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _is_mapping, _is_sequence,
-    _resolve_union_member, _validate_entry
+from .locate import (
+    _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _is_mapping, _is_sequence, _validate_entry
 )
+from .repair import _resolve_union_member
 
 T = TypeVar('T')
 

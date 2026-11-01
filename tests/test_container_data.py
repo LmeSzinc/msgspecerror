@@ -33,7 +33,7 @@ from msgspec import Struct, UNSET
 
 from msgspecerror import convert_with_default, convert_with_error_detail
 from msgspecerror.const import ErrorType
-from msgspecerror.repair import (
+from msgspecerror.locate import (
     _SEQUENCE_TYPES, _WRITABLE_SEQUENCE_TYPES, _is_mapping, _is_sequence, _is_writable_mapping,
     _is_writable_sequence, _pin_raw
 )

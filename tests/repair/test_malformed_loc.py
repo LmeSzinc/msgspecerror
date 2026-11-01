@@ -22,15 +22,14 @@ import pytest
 from msgspec import NODEFAULT, UNSET, Struct, ValidationError, convert
 
 import msgspecerror.const
+import msgspecerror.locate as locate_mod
 import msgspecerror.repair as repair_mod
 import msgspecerror.with_error as we
 from msgspecerror import convert_with_default, convert_with_error_detail, resolve_error
 from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
 from msgspecerror.parse_error import ErrorInfo
-from msgspecerror.repair import (
-    _handle_obj_repair, _pin_raw, _repair_once, _validate_by_decode, _validate_entry, load_json_with_default,
-    load_msgpack_with_default
-)
+from msgspecerror.locate import _pin_raw, _validate_by_decode, _validate_entry
+from msgspecerror.repair import _handle_obj_repair, _repair_once, load_json_with_default, load_msgpack_with_default
 
 
 def corrupt_loc(real_parse, loc):
@@ -1039,15 +1038,13 @@ class TestValidateEntry:
         problem: this msgspec never takes a `Raw` instance in `convert`. The
         typed decoder does take the payload bytes, so it judges the value.
         """
-        import msgspecerror.repair as repair_mod
 
-        monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
+        monkeypatch.setattr(locate_mod, '_pin_raw', lambda value, loc, model: value)
         assert _validate_entry({'payload': {'a': 1}, 'n': 1}, RawHolder, {}) is None
 
     def test_the_decode_fallback_still_reports_a_real_error(self, monkeypatch):
-        import msgspecerror.repair as repair_mod
 
-        monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
+        monkeypatch.setattr(locate_mod, '_pin_raw', lambda value, loc, model: value)
         error = _validate_entry({'payload': {'a': 1}, 'n': 'bad'}, RawHolder, {})
         assert error.loc == ('n',)
 

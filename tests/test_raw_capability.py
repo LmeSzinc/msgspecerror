@@ -25,7 +25,7 @@ from msgspecerror import (
 )
 from msgspecerror.const import MSGSPEC_0_19_PLUS, ErrorType
 from msgspecerror.parse_error import parse_msgspec_error
-from msgspecerror.repair import _restore_rewrites
+from msgspecerror.locate import _restore_rewrites
 
 # msgspec before 0.19.0 refuses a `Raw` instance in `convert`, so a pinned entry
 # can not be judged and the failing key is never found. The table documents that
@@ -674,19 +674,19 @@ class TestOldMsgspecPinFallsBack:
     """
 
     def test_the_key_is_still_found(self, monkeypatch):
-        import msgspecerror.repair as repair_mod
-        from msgspecerror.repair import _find_failing_dict_value
+        import msgspecerror.locate as locate_mod
+        from msgspecerror.locate import _find_failing_dict_value
 
-        monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
+        monkeypatch.setattr(locate_mod, '_pin_raw', lambda value, loc, model: value)
         obj = {'one': {'payload': {'a': 1}, 'n': 1}, 'two': {'payload': {'b': 2}, 'n': 'bad'}}
 
         assert _find_failing_dict_value(obj, RawReq, {}) == 'two'
 
     def test_an_entry_whose_only_issue_is_raw_is_not_the_failing_one(self, monkeypatch):
-        import msgspecerror.repair as repair_mod
-        from msgspecerror.repair import _find_failing_dict_value
+        import msgspecerror.locate as locate_mod
+        from msgspecerror.locate import _find_failing_dict_value
 
-        monkeypatch.setattr(repair_mod, '_pin_raw', lambda value, loc, model: value)
+        monkeypatch.setattr(locate_mod, '_pin_raw', lambda value, loc, model: value)
         obj = {'one': {'payload': {'a': 1}, 'n': 1}}
 
         assert _find_failing_dict_value(obj, RawReq, {}) is NODEFAULT
