@@ -56,6 +56,142 @@ E:\ProgramFiles\Anaconda3\envs\star\python.exe -m pytest tests/base/test_servert
 
 不要使用 `git add .` 来添加所有文件，因为项目内通常有很多仍在编写的临时文件。
 
+##  AI Agent 要求
+
+### 优先使用codewhale内置工具读写文件而不是命令行
+
+优先使用 codewhale 内置工具而不是调用外部命令行。如果遇到权限问题再去尝试使用命令行访问。如果在任务中多次需要访问一个外部路径，提示用户可以执行 `/trust add {PATH}` 添加信任，这样下一次可以使用内置工具进行访问。
+
+- **代码搜索：** 使用内置工具 `grep_files`（正则表达式搜索文件内容）。不要回退到使用命令行 `Select-String` / `rg` / `grep` 进行全仓库搜索。内置工具是使用 rust 编写的，比命令行更快。内置工具会过滤类似 `node_modules`，`build` 等目录，避免搜索无关内容消耗大量时间。
+- **文件搜索：** 使用内置工具 `file_search` （模糊文件名搜索）， `list_dir` （列举路径下的文件和文件夹），不要使用命令行  `Get-Children` / `find` / `dir` / `ls`。
+- **读取文件：** 使用 `read` 读取单个文件；使用 `grep_files` 搜索多个文件，禁止使用 `Get-Content` 读取项目内的文件
+- **编辑文件：** 使用 `edit` / `fim_edit` / `apply_patch` 等工具编辑文件，不要编写临时脚本去编辑文件。因为内置工具有丰富的模糊匹配与约束，自行编写替换代码很容易遇到 文件编码问题、换行符匹配问题、行号/内容匹配问题、特殊符号转义问题。
+- **批量编辑文件：** 仍然使用内置工具进行编辑。不要怕多次调用工具进行单次编辑很麻烦，手写替换脚本遇到编码问题转义问题反复修改临时脚本更麻烦。
+- **`bash` / powershell 是备用方案，并非默认方案。** 仅当没有内置工具能够完成任务时，或者需要访问超出信任路径时，才使用命令行完成。
+- **禁止使用powershell命令读取写入项目内文件：** 禁止使用 `Get-Content` 读取项目内的文件，因为 powershell 默认读出来是系统编码的文件，而非 UTF-8。禁止使用 `Out-File` / `Write-Output` 写入项目内文件，因为会默认写入 utf8-bom 而非 utf-8。总是使用内置工具读写文件。
+
+下表每一项都必须使用"内置工具"列完成，不要用 bash / PowerShell
+的等价命令。内置工具是工作区感知的——忽略规则、结果大小上限、只读免审批都在内建逻辑里，比 shell 更快、更安全。
+
+| 功能              | 内置工具名称  | bash 命令                                    | PowerShell 命令                                              |
+| ----------------- | ------------- | -------------------------------------------- | ------------------------------------------------------------ |
+| 列出目录内容      | `list_dir`    | `ls -la`                                     | `Get-ChildItem`                                              |
+| 按文件名查找      | `file_search` | `find . -name "*.rs"`                        | `Get-ChildItem -Recurse -Filter *.rs`                        |
+| 按内容搜索        | `grep_files`  | `grep -rn "pattern" .`                       | `Get-ChildItem -Recurse -File \| Select-String -Pattern "pattern"` |
+| 读取文件          | `read`        | `cat file`；`head -n 50 file`                | `Get-Content file`；`Get-Content file -TotalCount 50`        |
+| 写入 / 创建文件   | `write`       | `cat > file <<'EOF' … EOF`                   | `Set-Content file -Value "…"`                                |
+| 精确替换一处文本  | `edit`        | `sed -i 's/old/new/' file`                   | `(Get-Content file) -replace 'old','new' \| Set-Content file` |
+| 多处 / 跨文件修改 | `apply_patch` | `git apply patch.diff`；`patch -p0 < f.diff` | 无原生等价，用 `apply_patch`                                 |
+
+### 不要主动发起对抗性审查
+
+内置工具 `verify` 会使用 sub-agent 运行一个独立的对抗式批评者审查代码。除非用户要求主动要求使用，不要主动使用，否则会产生大量费用。
+
+也不要使用 `agent` 工具拉起一个 sub-agent 执行等价任务。
+
+## 项目操作
+
+### 运行python程序
+
+使用 Anaconda 虚拟环境中的 python 解释器来执行脚本和运行测试，比如：
+
+```bash
+# run a specific file "module/config/gen.py"
+"<path_to_python>" -m module.config.gen
+# run test file "tests/base/test_servertime.py"
+"<path_to_python>" -m pytest tests/base/test_servertime.py
+```
+
+不要直接使用 `python` 命令，因为项目有单独配好的虚拟环境，不使用全局 python 环境。
+
+在运行项目内文件的时候不要直接执行 `python module/config/gen.py` 而是使用 `python -m module.config.gen` 作为模块运行，这样运行路径会在项目根目录。
+
+### 编写计划文档
+
+如果用户要求编写计划文档，那么使用中文将计划写入到 markdown 文件 `doc/{yyyy}-{mm}-{dd}_{title}.md`，比如 `doc/2026-08-13_somethong-matters.md`
+
+历史文档编写即封存，更新文档的时候，不要主动修改历史文档，只修改当前文档。
+
+不要在代码注释中提及历史文档，或者提及其中的章节，注释需要是自描述的。
+
+### 代码提交要求
+
+不主动执行 `git commit` 提交代码，不主动执行 `git push`。
+
+如果用户要求提交，使用 约定式提交（Conventional Commits）编写 commit message，尽量在一行内描述变更，如果修改内容非常复杂才继续补充文本。
+
+提交时仅提交与本次修改有关的修改，不要添加无关修改，不要添加 `doc/` 下的过程文档。
+
+项目已有的 commit message 示例：
+
+```
+Add: time driven TaskQueue refresh
+Fix: thread pool performance dropped when reaching pool limit
+Pref: faster fileinfo building
+Chore: reduce logging in frontend wramup
+Style(frontend): less padding in nav to show more info
+Dep(webapp): shadcn-svelte alert dialog
+Upd: [TW] MAP_PREPARATION assets
+Opt: Faster fleet set by setting fleet 2 and submarine together
+```
+
+### PowerShell兼容提示
+
+Windows 运行环境下的 PowerShell 版本可能很低，执行这样的命令会报错，因为不支持 `&&`
+
+```powershell
+cd "E:\xxx" && "<path_to_python>" -m pytest ...
+```
+
+改用 `;` 分隔命令，并且增加 `&` 来表示调用被引号包裹的路径
+
+```powershell
+cd "E:\xxx"; & "<path_to_python>" -m pytest ...
+```
+
+因为 codewhale （也包括其他 AI agent）执行命令时会创建新的命令行环境，所以回退或者不回退路径都无所谓。
+
+### 临时运行python代码提示
+
+如果你希望临时运行一段简单的 python 测试代码，不要使用 `python -c` 去运行，因为编写转义非常容易出错，使用 stdin 去输入代码。
+
+在 Windows 上这样运行：
+
+注意，即便运行的代码只有一行也必须写成多行，因为 `@'` 和 `'@` 标记需要在行开头
+
+```powershell
+cd "E:\xxx";
+@'
+print("hello world")
+import json
+data = {"key": "value"}
+print(json.dumps(data))
+'@ | & "<path_to_python>"
+```
+
+在 Linux 上这样运行，通过 heredoc 传入：
+
+注意，必须给 heredoc 定界符加引号（`<< 'EOF'`），否则 `$` 和反引号会被 shell 展开。
+
+```bash
+cd /path/to/dir
+python << 'EOF'
+print("hello world")
+import json
+data = {"key": "value"}
+print(json.dumps(data))
+EOF
+```
+
+如果需要临时执行的代码过于复杂，或者需要 stdin，那么在项目根目录编写临时文件来运行它。
+
+### 在创建和移动文件时，添加文件到git
+
+- 当创建新文件的时候，执行命令 `git add "{file}"` 来添加文件，这样就不需要开发者二次添加了。
+- 当移动文件的时候，也需要将新的路径添加到git。
+- 当编辑已有文件的时候，不需要执行 `git add` （我们假定它已经添加到了git，不然在编辑大量文件的时候需要执行许多命令）。
+- 禁止使用 `git add .` 来添加所有文件，因为项目内通常有很多仍在编写的临时文件。
+
 ## python代码开发要求
 
 使用更加pythonic的语法而不是类C语法
@@ -516,5 +652,4 @@ class ResourceCache(Generic[T]):
     def get(self, file: str, **kwargs) -> T:
         ...
 ```
-
 
