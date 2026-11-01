@@ -355,6 +355,360 @@ class TestErrorDetails:
             convert(data, Req)
 
 
+class Obj:
+    """A plain object, the shape `from_attributes=True` is for."""
+
+    def __init__(self, **fields):
+        for name, value in fields.items():
+            setattr(self, name, value)
+
+
+class TestFromAttributes:
+    """`from_attributes=True`: repair a copy of the attributes, never the object.
+
+    The attributes are read into a dict first, because the repair engine writes
+    into a dict and the caller's object must not be changed. Before that, the
+    object was never read at all: the field branch only accepts a dict, so the
+    repair gave up and answered with a root default, losing the fields that had
+    passed.
+    """
+
+    def test_a_good_field_is_kept(self):
+        result, errors = convert_with_default(
+            Obj(a='bad', b='ok'), Req, from_attributes=True, guess_default=True)
+
+        assert result == Req(a=0, b='ok')
+        assert [e.loc for e in errors] == [('a',)]
+
+    def test_the_object_is_not_modified(self):
+        source = Obj(a='bad', b='ok')
+
+        convert_with_default(source, Req, from_attributes=True, guess_default=True)
+
+        assert (source.a, source.b) == ('bad', 'ok')
+
+    def test_a_required_field_no_longer_fails_the_whole_repair(self):
+        """`b` has no default, so an unreadable object used to answer NODEFAULT."""
+
+        class Both(Struct):
+            a: int
+            b: str
+
+        result, errors = convert_with_default(
+            Obj(a='bad', b='ok'), Both, from_attributes=True, guess_default=True)
+
+        assert result == Both(a=0, b='ok')
+        assert [e.loc for e in errors] == [('a',)]
+
+    def test_a_struct_as_the_source(self):
+        class Source(Struct):
+            a: int = 0
+            b: str = 'x'
+
+        source = Source(a='bad', b='ok')
+        result, errors = convert_with_default(source, Req, from_attributes=True, guess_default=True)
+
+        assert result == Req(a=0, b='ok')
+        assert [e.loc for e in errors] == [('a',)]
+        assert source == Source(a='bad', b='ok')
+
+    def test_a_dataclass_as_the_source(self):
+        import dataclasses
+
+        @dataclasses.dataclass
+        class Source:
+            a: int = 0
+            b: str = 'x'
+
+        result, errors = convert_with_default(
+            Source(a='bad', b='ok'), Req, from_attributes=True, guess_default=True)
+
+        assert result == Req(a=0, b='ok')
+        assert [e.loc for e in errors] == [('a',)]
+
+    def test_an_attrs_class_as_the_source(self):
+        attrs = pytest.importorskip('attrs')
+
+        @attrs.define
+        class Source:
+            a: int = 0
+            b: str = 'x'
+
+        result, errors = convert_with_default(
+            Source(a='bad', b='ok'), Req, from_attributes=True, guess_default=True)
+
+        assert result == Req(a=0, b='ok')
+        assert [e.loc for e in errors] == [('a',)]
+
+    def test_a_nested_object_is_repaired_too(self):
+        class Inner(Struct):
+            n: int = 0
+
+        class Outer(Struct):
+            inner: Inner = None
+            tag: str = 't'
+
+        source = Obj(inner=Obj(n='bad'), tag='keep')
+
+        result, errors = convert_with_default(
+            source, Outer, from_attributes=True, guess_default=True)
+
+        assert result == Outer(inner=Inner(n=0), tag='keep')
+        assert [e.loc for e in errors] == [('inner', 'n')]
+        assert source.inner.n == 'bad'
+
+    def test_a_container_field_is_copied(self):
+        """A repair deletes from the dict it walks, which must not be the caller's."""
+        source = Obj(items={'ok': 1, 'bad': 'x'}, tag='keep')
+
+        result, errors = convert_with_default(
+            source, Dict2, from_attributes=True)
+
+        assert result == Dict2(items={'ok': 1}, tag='keep')
+        assert source.items == {'ok': 1, 'bad': 'x'}
+
+    def test_a_dict_subclass_attribute_is_copied(self):
+        """The engine writes into `isinstance(dict)`, so the copy has to as well.
+
+        An exact `type(value) is dict` test let an `OrderedDict` attribute through
+        by reference, and repairing the snapshot deleted a key out of the
+        caller's own dict.
+        """
+        from collections import OrderedDict
+
+        class Holder:
+            def __init__(self):
+                self.items = OrderedDict([('ok', 1), ('bad', 'x')])
+                self.tag = 'keep'
+
+        holder = Holder()
+        result, errors = convert_with_default(holder, Dict2, from_attributes=True)
+
+        assert result == Dict2(items={'ok': 1}, tag='keep')
+        assert [e.loc for e in errors] == [('items', 'bad')]
+        assert holder.items == OrderedDict([('ok', 1), ('bad', 'x')])
+
+    def test_a_list_subclass_attribute_is_copied(self):
+        class MyList(list):
+            pass
+
+        class Holder:
+            def __init__(self):
+                self.xs = MyList([1, 'x'])
+                self.tag = 'keep'
+
+        holder = Holder()
+        result, errors = convert_with_default(holder, ListModel, from_attributes=True)
+
+        assert result == ListModel(xs=[1], tag='keep')
+        assert [e.loc for e in errors] == [('xs', 1)]
+        assert holder.xs == MyList([1, 'x'])
+
+    def test_a_read_only_property_is_read(self):
+        class WithProperty:
+            def __init__(self):
+                self.a = 'bad'
+
+            @property
+            def b(self):
+                return 'computed'
+
+        result, errors = convert_with_default(
+            WithProperty(), Req, from_attributes=True, guess_default=True)
+
+        assert result == Req(a=0, b='computed')
+
+    def test_an_unknown_attribute_does_not_leak_into_the_model(self):
+        result, _ = convert_with_default(
+            Obj(a=1, b='ok', extra='ignored'), Req, from_attributes=True)
+
+        assert result == Req(a=1, b='ok')
+
+    def test_an_object_that_holds_itself_terminates(self):
+        class Loop(Struct):
+            a: int = 0
+            me: object = None
+
+        source = Obj(a='bad')
+        source.me = source
+
+        result, errors = convert_with_default(
+            source, Loop, from_attributes=True, guess_default=True)
+
+        assert result.a == 0
+        assert [e.loc for e in errors] == [('a',)]
+
+    @pytest.mark.parametrize('data', [5, 'text', [1, 2], None])
+    def test_data_without_attributes_keeps_the_old_answer(self, data):
+        """A scalar can not be read by attribute, it is a root error as before."""
+        result, errors = convert_with_default(data, Req, from_attributes=True, guess_default=True)
+
+        assert result is NODEFAULT
+        assert [e.loc for e in errors] == [()]
+
+    def test_the_option_off_keeps_the_old_answer(self):
+        """Without the option an object is not a mapping, and that is a root error."""
+        result, errors = convert_with_default(Obj(a='bad', b='ok'), Req, guess_default=True)
+
+        assert result is NODEFAULT
+        assert [e.loc for e in errors] == [()]
+
+    def test_a_dataclass_pseudo_field_is_not_read(self):
+        """`__dataclass_fields__` holds ClassVar / InitVar, msgspec decodes neither.
+
+        Reading them would put a key into the snapshot that no field maps to.
+        """
+        import dataclasses
+        import typing
+
+        @dataclasses.dataclass
+        class Source:
+            a: int = 0
+            b: str = 'x'
+            cv: typing.ClassVar[int] = 5
+
+        from msgspecerror.locate import _attribute_snapshot
+
+        source = Source(a='bad', b='ok')
+        source.cv = 9
+
+        assert _attribute_snapshot(source, Source, 'dataclass') == {'a': 'bad', 'b': 'ok'}
+
+        result, errors = convert_with_default(
+            source, Source2, from_attributes=True, guess_default=True)
+
+        assert result == Source2(a=0, b='ok')
+        assert [e.loc for e in errors] == [('a',)]
+
+    @pytest.mark.parametrize('data', [
+        [1, 2], (1,), {1, 2}, 5, 1.5, 'text', b'ab', None,
+        # a mapping subclass with an attribute of its own: msgspec reads it by
+        # key, so the attribute must not be taken as the field
+        'mapping-subclass', 'list-subclass',
+    ])
+    def test_a_builtin_value_is_answered_before_the_field_names(self, data, monkeypatch):
+        """No attribute to read, so the field names are never even listed."""
+        import msgspecerror.locate as locate_mod
+
+        if data == 'mapping-subclass':
+            from collections import OrderedDict
+
+            class MappingWithAttributes(OrderedDict):
+                pass
+
+            value = MappingWithAttributes({'b': 'ok'})
+            value.a = 5
+        elif data == 'list-subclass':
+            class ListSubclass(list):
+                pass
+
+            value = ListSubclass([1])
+        else:
+            value = data
+
+        looked_up = []
+        monkeypatch.setattr(
+            locate_mod, '_snapshot_field_names',
+            lambda *args, **kwargs: looked_up.append(args) or ())
+
+        assert locate_mod._attribute_snapshot(value, Req, 'struct') is None
+        assert looked_up == []
+
+    @pytest.mark.parametrize('kind', ['typeddict', 'namedtuple', '', None])
+    def test_a_model_that_is_not_an_object_never_reads_an_attribute(self, kind, monkeypatch):
+        """A TypedDict is a dict and a NamedTuple is an array: neither has fields.
+
+        `Explodes` raises on any attribute read, so reaching for one fails the
+        test instead of being silently skipped by an `AttributeError`.
+        """
+
+        class Explodes:
+            def __getattr__(self, name):
+                raise AssertionError(f'attribute {name!r} must not be read')
+
+        import msgspecerror.locate as locate_mod
+
+        looked_up = []
+        monkeypatch.setattr(
+            locate_mod, '_snapshot_field_names',
+            lambda *args, **kwargs: looked_up.append(args) or ())
+
+        assert locate_mod._attribute_snapshot(Explodes(), Req, kind) is None
+        assert looked_up == []
+
+    def test_a_model_with_no_readable_field_is_refused(self):
+        """An object of another shape is not a source, and the caller keeps its
+        old answer instead of repairing an empty dict."""
+        from msgspecerror.locate import _attribute_snapshot
+
+        assert _attribute_snapshot(5, Req, 'struct') is None
+        assert _attribute_snapshot({}, Req, 'struct') is None
+
+    def test_a_typeddict_model_keeps_the_dict_behaviour(self):
+        from typing_extensions import TypedDict
+
+        class TD(TypedDict):
+            a: int
+
+        result, errors = convert_with_default({'a': 'bad'}, TD, from_attributes=True, guess_default=True)
+
+        assert result == {'a': 0}
+        assert [e.loc for e in errors] == [('a',)]
+
+    def test_a_mapping_is_answered_by_the_snapshot_itself(self):
+        """A dict has no attributes, and the snapshot says so on its own.
+
+        The caller repeats no condition: `_attribute_snapshot()` is the one
+        place that decides, so the two can not disagree.
+        """
+        from msgspecerror.locate import _attribute_snapshot
+
+        assert _attribute_snapshot({'a': 'bad'}, Req, 'struct') is None
+
+        data = {'a': 'bad', 'b': 'ok'}
+        result, errors = convert_with_default(data, Req, from_attributes=True, guess_default=True)
+
+        assert result == Req(a=0, b='ok')
+        assert [e.loc for e in errors] == [('a',)]
+        # A dict is still repaired in place, the snapshot does not take it over
+        assert data == {'a': 0, 'b': 'ok'}
+
+    def test_a_renamed_model_keeps_the_old_answer(self):
+        """A dict is decoded by the encoded name, the error names the attribute.
+
+        Mixing the two would silently drop every renamed field, so this shape is
+        left to the old behaviour instead of being repaired wrongly. See P2-17.
+        """
+
+        class Renamed(Struct, rename='camel'):
+            some_field: int = 0
+            other: str = 'y'
+
+        result, errors = convert_with_default(
+            Obj(some_field='bad', other='keep'), Renamed, from_attributes=True, guess_default=True)
+
+        assert result == Renamed(some_field=0, other='y')
+        assert [e.loc for e in errors] == [('some_field',)]
+
+
+class Dict2(Struct):
+    """A field that holds a dict, for the copy test."""
+    items: Dict[str, int] = {}
+    tag: str = 't'
+
+
+class Source2(Struct):
+    """Two fields, so a snapshot that drops one is visible."""
+    a: int = 0
+    b: str = 'x'
+
+
+class ListModel(Struct):
+    """A field that holds a list, for the subclass copy test."""
+    xs: List[int] = []
+    tag: str = 't'
+
+
 class TestDecoderOptions:
     """The repair does not fight the rules the caller validated with."""
 

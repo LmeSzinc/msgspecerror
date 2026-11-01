@@ -8,8 +8,8 @@ from msgspec.msgpack import Decoder as MsgpackDecoder, decode as decode_msgpack,
 from . import const
 from .const import ErrorType, T_json_data, T_msgpack_data, T_utf8_error
 from .locate import (
-    _DECODE_KWARGS, _find_failing_dict_key, _find_failing_dict_value, _get_index_model, _get_item_model,
-    _is_mapping, _is_writable_mapping, _is_writable_sequence, _pin_raw
+    _DECODE_KWARGS, _attribute_snapshot, _find_failing_dict_key, _find_failing_dict_value, _get_index_model,
+    _get_item_model, _is_mapping, _is_writable_mapping, _is_writable_sequence, _pin_raw
 )
 from .parse_decoder import _type_error, get_decoder_model
 from .parse_error import ErrorInfo, parse_msgspec_error
@@ -1271,6 +1271,9 @@ def convert_with_default(data, model_or_decoder, *, guess_default=False, **kwarg
     The repair is applied to `data` in place, the same way
     load_json_with_default() repairs the object it just decoded.
     A caller that still needs the original value must copy it first.
+    With `from_attributes=True` and an object (not a mapping) the attributes are
+    read into a dict first, so there the object itself is never modified: the
+    repaired model is built from that copy.
 
     A repair that gives up does not leave a half repaired object behind: every
     container it has written into is put back as it was, so a caller can retry
@@ -1301,5 +1304,19 @@ def convert_with_default(data, model_or_decoder, *, guess_default=False, **kwarg
     try:
         return convert(data, type=model, **options), []
     except ValidationError as e:
+        if options.get('from_attributes'):
+            # An object is read by attribute, and the engine can only write into a
+            # dict. The attributes are copied into one first: the repair then works
+            # on data it owns, and the caller's object is never touched.
+            #
+            # No guard is repeated here. `_attribute_snapshot()` is the one place
+            # that decides, and it answers None for everything it can not read
+            # (a mapping, a builtin value, a model that is not an object, a
+            # renamed struct), so a second condition outside would only be able to
+            # disagree with it.
+            snapshot = _attribute_snapshot(data, model, is_struct_like(model))
+            if snapshot is not None:
+                return _handle_obj_repair(
+                    snapshot, model, e, guess_default=guess_default, kwargs=options)
         return _handle_obj_repair(
             data, model, e, guess_default=guess_default, kwargs=options, undo=_Undo())

@@ -30,7 +30,7 @@ from msgspec.msgpack import decode as decode_msgpack, encode as encode_msgpack
 from .parse_error import parse_msgspec_error
 from .parse_model import get_field_typehint, is_arraylike
 from .parse_msgpack import AMBIGUOUS_SPAN, MISSING
-from .parse_type import is_struct_like, origin_args, unwrap_typehint
+from .parse_type import is_struct_like, origin_args, unwrap_model, unwrap_typehint
 
 # The data types msgspec reads as an array. A tuple is accepted, `UserList`,
 # `deque`, `array.array` and every other sequence is not: msgspec rejects them
@@ -124,6 +124,187 @@ def _is_writable_sequence(obj):
         bool: True if the data can be repaired in place
     """
     return isinstance(obj, _WRITABLE_SEQUENCE_TYPES)
+
+
+# The model kinds whose data is an object with attributes. A TypedDict is a dict
+# and a NamedTuple is an array, neither has attributes to read.
+_OBJECT_MODEL_KINDS = ('struct', 'dataclass', 'attrs')
+# A nested object can refer to itself; the snapshot is not the place to find out
+_MAX_SNAPSHOT_DEPTH = 32
+
+
+def _snapshot_field_names(model, model_kind):
+    """
+    List the attributes an object model reads, or None when they can not be used.
+
+    A struct may rename its fields for the encoded form (`rename='camel'`). The
+    error location names the attribute while a dict is decoded by the encoded
+    name, and a snapshot can only be keyed one way, so a renamed struct is
+    refused here and the caller keeps its old behaviour. A dataclass and an
+    attrs class have no rename: the attribute name is the key.
+
+    Args:
+        model (type): The model to read
+        model_kind (str): Its kind, as `is_struct_like()` names it
+
+    Returns:
+        tuple[str] | None: The attribute names, or None when this kind has none
+            or the names can not be used as dict keys
+    """
+    model_class = unwrap_model(model)
+    if model_kind == 'struct':
+        names = getattr(model_class, '__struct_fields__', None)
+        encoded = getattr(model_class, '__struct_encode_fields__', None)
+        if not names or encoded is None or tuple(names) != tuple(encoded):
+            # Renamed, or no fields at all
+            return None
+        return tuple(names)
+    if model_kind == 'dataclass':
+        # `__dataclass_fields__` also holds the `ClassVar` and `InitVar` pseudo
+        # fields, which msgspec decodes neither of. A real field is marked by the
+        # private `_FIELD`, the same marker `parse_model_dataclass._field()` reads.
+        names = []
+        for name, field in getattr(model_class, '__dataclass_fields__', {}).items():
+            try:
+                field_type = field._field_type.name
+            except AttributeError:
+                field_type = '_FIELD'
+            if field_type == '_FIELD':
+                names.append(name)
+        return tuple(names) if names else None
+    if model_kind == 'attrs':
+        return tuple(f.name for f in getattr(model_class, '__attrs_attrs__', ()))
+    return None
+
+
+def _copy_containers(value, seen):
+    """
+    Copy the dicts and lists of a value, so a repair can not reach the original.
+
+    The snapshot shares its values with the caller's object. A repair writes into
+    the dicts and lists it walks, so those have to be copies, or fixing the
+    snapshot would change the object the caller still holds. A cycle is copied
+    once and the copy refers to itself, the same way the original does.
+
+    Args:
+        value (Any): The value to copy
+        seen (dict): Identity of every container copied so far, to its copy
+
+    Returns:
+        Any: The value, with its containers copied
+    """
+    if isinstance(value, dict):
+        copied = seen.get(id(value))
+        if copied is not None:
+            return copied
+        copied = {}
+        seen[id(value)] = copied
+        for key, item in value.items():
+            copied[key] = _copy_containers(item, seen)
+        return copied
+    if isinstance(value, list):
+        copied = seen.get(id(value))
+        if copied is not None:
+            return copied
+        copied = []
+        seen[id(value)] = copied
+        copied.extend(_copy_containers(item, seen) for item in value)
+        return copied
+    return value
+
+
+def _attribute_snapshot(obj, model, model_kind, depth=0, seen=None):
+    """
+    Read the attributes a model names off an object, into a plain dict.
+
+    `from_attributes=True` decodes an object by reading its attributes. Repairing
+    that object would mean writing attributes back, which raises questions the
+    library has no answer for (a read-only property, a setter with a side
+    effect), and the repair engine can only write into a dict. Reading the
+    attributes into a dict first sidesteps both: the engine repairs the dict it
+    owns, and the caller's object is never touched.
+
+    A field whose typehint is an object model is read the same way, so a nested
+    object is repaired too instead of failing the whole document.
+
+    Args:
+        obj (Any): The object the failed call was converting
+        model (type): The model it was being converted into
+        model_kind (str): Its kind, as `is_struct_like()` names it
+        depth (int): Recursion depth, the guard against an object cycle.
+            Defaults to 0
+        seen (set | None): Identity of the objects already read, the guard
+            against an object that holds itself. Defaults to None
+
+    Returns:
+        dict | None: `{field_name: value}`, or None when the object can not be
+            read this way and the caller has to keep its old behaviour
+    """
+    if model_kind not in _OBJECT_MODEL_KINDS:
+        # A dict model, a sequence model, a scalar: the data is not read by
+        # attribute, so there is nothing to snapshot
+        return None
+    if _is_mapping(obj) or _is_sequence(obj):
+        # Decoded by key, or by position: not by attribute. The predicates are the
+        # ones the repair already uses to decide what it may walk, so a subclass
+        # is recognised here without a list of its own.
+        return None
+    if type(obj).__module__ == 'builtins':
+        # A scalar, a container, a class: every builtin type lives in that
+        # module, so no list of them has to be kept up to date. A user class is
+        # never in it, and a container subclass was caught above.
+        return None
+    names = _snapshot_field_names(model, model_kind)
+    if names is None:
+        return None
+    if depth > _MAX_SNAPSHOT_DEPTH:
+        return None
+    seen = set() if seen is None else seen
+    if id(obj) in seen:
+        return None
+    seen = seen | {id(obj)}
+
+    copied = {}
+    snapshot = {}
+    for name in names:
+        try:
+            value = getattr(obj, name)
+        except AttributeError:
+            # The attribute is missing, the decode reports that field as missing
+            continue
+        value_type = type(value)
+        if value_type.__module__ == 'builtins':
+            # Every builtin type lives in that module, so no list of them has to
+            # be kept up to date. The two builtin containers are copied, because
+            # a repair deletes from the containers it walks; every other builtin
+            # value is a scalar and is taken as it is.
+            if value_type is dict or value_type is list:
+                snapshot[name] = _copy_containers(value, copied)
+            else:
+                snapshot[name] = value
+            continue
+        if _is_writable_mapping(value) or _is_writable_sequence(value):
+            # A container subclass, which the engine writes into all the same:
+            # decided by the engine's own predicates rather than by its exact type
+            snapshot[name] = _copy_containers(value, copied)
+            continue
+        # Only a value from outside the builtin module can be an object model, and
+        # only then is the typehint worth looking up: it walks the class for
+        # every annotation
+        try:
+            typehint = get_field_typehint(model, name, known_struct_type=model_kind)
+        except AttributeError:
+            typehint = None
+        if typehint is not None:
+            child_kind = is_struct_like(typehint, unwrap=False)
+            if child_kind in _OBJECT_MODEL_KINDS:
+                nested = _attribute_snapshot(value, typehint, child_kind, depth + 1, seen)
+                if nested is not None:
+                    snapshot[name] = nested
+                    continue
+        snapshot[name] = _copy_containers(value, copied)
+    # No attribute was readable: a scalar, or an object of another shape
+    return snapshot or None
 
 
 def _get_item_model(model_origin, model_args, index):
