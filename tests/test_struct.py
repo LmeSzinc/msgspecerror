@@ -809,6 +809,27 @@ class TestGetDataclassFieldDefault:
     def test_a_failing_factory_returns_nodefault(self):
         assert get_dataclass_field_default(DCFailingFactory, 'broken') is NODEFAULT
 
+    def test_the_missing_sentinel_is_matched_by_identity(self, monkeypatch):
+        """CPython 3.15 gave `MISSING` a PEP 661 `sentinel`, so its class name is no marker."""
+
+        class RenamedSentinel:
+            """The type of `MISSING` in a Python that names the sentinel otherwise."""
+
+        missing = RenamedSentinel()
+        field_object = type('Field', (), {
+            'default': missing,
+            'default_factory': missing,
+            '_field_type': type('_FieldType', (), {'name': '_FIELD'})(),
+        })()
+
+        monkeypatch.setattr(dataclasses, 'MISSING', missing)
+        monkeypatch.setattr(DCSimple, '__dataclass_fields__', {'plain': field_object})
+
+        # the sentinel is no default, so the field is required
+        assert get_dataclass_field_default(DCSimple, 'plain') is NODEFAULT
+        # and it is no default_factory either
+        assert get_dataclass_field_default(DCSimple, 'plain', guess_default=True) == 0
+
     def test_a_position_is_not_a_field(self):
         """Only an `array_like` struct is decoded from an array, a dataclass is read by name."""
         with pytest.raises(AttributeError, match='has no field with name="1"'):

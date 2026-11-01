@@ -97,19 +97,27 @@ def get_dataclass_field_default(model, name, validate=False, guess_default=False
     """
     field = _field(model, name, unwrap=unwrap)
 
-    # `dataclasses.MISSING` is the singleton of the private `_MISSING_TYPE`, so
-    # the module does not have to be imported to recognise it. The attributes are
-    # read as they are: a field object that lacks one has no default at all.
+    # `dataclasses` is imported for sure, the model is one of its classes, and
+    # the import is deferred so the library does not depend on it. The sentinel
+    # is compared by identity, never by the name of its class: CPython 3.15
+    # replaced the private `_MISSING_TYPE` class of `MISSING` with a PEP 661
+    # `sentinel`, which no name check survives.
+    import dataclasses
+
+    missing = dataclasses.MISSING
+
+    # The attributes are read as they are: a field object that lacks one has no
+    # default at all.
     try:
         value = field.default
-        has_default = type(value).__name__ != '_MISSING_TYPE'
+        has_default = value is not missing
     except AttributeError:
         has_default = False
 
     if not has_default:
         try:
             factory = field.default_factory
-            has_factory = type(factory).__name__ != '_MISSING_TYPE'
+            has_factory = factory is not missing
         except AttributeError:
             has_factory = False
         if not has_factory:
