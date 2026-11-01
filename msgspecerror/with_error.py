@@ -271,6 +271,13 @@ def resolve_error(error, data, model_or_decoder, **kwargs):
     It is read-only: `data` and `error` are never modified, and no exception is
     raised for a location that doesn't match the data / model.
 
+    Read-only does not mean side effect free. To find which entry failed, the
+    entries around the error are validated again, so any user code the
+    validation runs (a `dec_hook`, a `Struct.__post_init__`) runs again as
+    well, and its side effects happen a second time. The count is linear in the
+    object and about twice the instances a passing call builds; this can not be
+    avoided while the search judges entries with the caller's own rules.
+
     Args:
         error (ErrorInfo | ValidationError | str): Error to resolve. An
             ErrorInfo is used as it is, anything else is parsed with
@@ -574,6 +581,10 @@ def convert_with_error_detail(data, model_or_decoder, **kwargs):
     points at the entry that really failed, not at one the parser rejected for
     the wrong rules.
 
+    Locating the failing entry validates the entries again, so user code that
+    the conversion runs (a `dec_hook`, a `Struct.__post_init__`) runs again as
+    well, and its side effects happen a second time. See resolve_error().
+
     A `msgspec.Raw` field can not be built from an in-memory object: `convert`
     stops there, so the location it reports names the raw field and not the
     error behind it, if any. A placeholder `Raw` is pinned at that location and
@@ -647,6 +658,10 @@ def load_json_with_error_detail(data, model_or_decoder):
     `error_value` stays UNSET, instead of a guess.
 
     Nothing is repaired: the payload, the data and the error are left untouched.
+
+    Locating the failing entry validates the entries again, so user code that
+    the conversion runs (a `dec_hook`, a `Struct.__post_init__`) runs again as
+    well, and its side effects happen a second time. See resolve_error().
 
     Args:
         data (bytes | bytearray | memoryview | str): Json payload
@@ -798,6 +813,10 @@ def load_msgpack_with_error_detail(data, model_or_decoder):
     `error_value` stays UNSET, instead of a guess.
 
     Nothing is repaired: the payload, the data and the error are left untouched.
+
+    Locating the failing entry validates the entries again, so user code that
+    the conversion runs (a `dec_hook`, a `Struct.__post_init__`) runs again as
+    well, and its side effects happen a second time. See resolve_error().
 
     Args:
         data (bytes | bytearray | memoryview): Msgpack payload

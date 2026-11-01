@@ -1,6 +1,6 @@
 from typing import Any, Tuple, Union
 
-from msgspec import NODEFAULT, UNSET, Struct, field
+from msgspec import NODEFAULT, UNSET, Struct, field, to_builtins
 
 from .const import MSGSPEC_0_22_PLUS, ErrorType
 from .parse_ctx import ErrorCtx, KEY_got, get_length_ctx, get_number_ctx, get_pattern_ctx
@@ -9,6 +9,40 @@ from .parse_path import KEY_at, KEY_at_check, KEY_at_key_in, get_error_path
 # Placeholders msgspec leaves in an error path for a dict entry
 PLACEHOLDER_VALUE = '...'
 PLACEHOLDER_KEY = '...key'
+
+
+def _loggable_value(value):
+    """
+    Turn a raw value into something `msgspec.json.encode` accepts.
+
+    The offending value is delivered as the caller's own object, which may be a
+    type msgspec does not know (an instance of a plain class, a `complex`) or a
+    structure that refers to itself. Neither can be encoded, so a log line
+    built from it would raise. This is the stand-in used by
+    `ErrorInfo.to_log_dict()`.
+
+    The value is converted the way msgspec would convert it, so a `bytes` or a
+    `datetime` keeps its normal json form instead of becoming a repr. Only a
+    value msgspec can not encode at all falls back to its `repr()`, which also
+    handles a reference cycle (`{'a': {...}}`).
+
+    Args:
+        value (Any): The value to make loggable
+
+    Returns:
+        Any: Plain data `msgspec.json.encode` accepts
+    """
+    try:
+        return to_builtins(value)
+    except (TypeError, RecursionError):
+        pass
+    try:
+        return repr(value)
+    except Exception:
+        # `__repr__` belongs to the caller's object and can raise anything. A
+        # log line is the one place that must not fail because of it, so the
+        # type name is the answer.
+        return f'<{type(value).__name__} object>'
 
 
 def _has_placeholder(loc):
@@ -46,6 +80,30 @@ class ErrorInfo(Struct, omit_defaults=True):
     # Additional context info
     ctx: ErrorCtx = field(default_factory=ErrorCtx)
 
+    def to_log_dict(self):
+        """
+        Return the error as plain data, ready for a structured log line.
+
+        Every field is included, whatever its default, so a log consumer sees
+        the same keys for every error. `type` is the name of the enum member and
+        `ctx` is a plain dict. `loc` stays a tuple, the same value the error
+        holds: `msgspec.json.encode()` writes it as an array either way, and a
+        caller reading the dict back should not have to know it was serialised.
+
+        `msgspec.json.encode(error)` works for this class as well; the method
+        exists so that an `ErrorInfoDetail`, whose `error_value` can be any
+        object, can be logged the same way.
+
+        Returns:
+            dict: Keys `msg`, `type`, `loc`, `ctx`, all json-encodable
+        """
+        return {
+            'msg': self.msg,
+            'type': self.type.name,
+            'loc': self.loc,
+            'ctx': to_builtins(self.ctx),
+        }
+
 
 class ErrorInfoDetail(ErrorInfo):
     """
@@ -64,10 +122,45 @@ class ErrorInfoDetail(ErrorInfo):
             authoritative flag: it stays True when the collected value is
             `msgspec.UNSET` itself or `NODEFAULT` (the latter is delivered as
             `UNSET` because that sentinel can not be stored in a struct field)
+
+    An `error_value` taken from an in-memory object is whatever the caller had:
+    a plain class instance, a `complex`, or a structure that refers to itself.
+    `msgspec.json.encode()` rejects those, so encode `to_log_dict()` instead of
+    the error itself when the result goes into a log.
     """
     error_value: Any = UNSET
     loc_resolved: bool = False
     error_value_resolved: bool = False
+
+    def to_log_dict(self):
+        """
+        Return the detail as plain data, ready for a structured log line.
+
+        The same keys as `ErrorInfo.to_log_dict()`, plus `error_value`,
+        `loc_resolved` and `error_value_resolved`. `error_value` is always
+        present and is `None` when nothing was collected; the flag is what
+        tells a value of `None` apart from no value at all.
+
+        The value is converted the way msgspec converts it (`bytes` becomes
+        base64 text, a `set` becomes a list). A value msgspec can not encode
+        at all, and a value that refers to itself, is replaced by its `repr()`, so
+        the result always encodes. Read `error_value` on the error itself when
+        the raw object is needed.
+
+        Returns:
+            dict: Keys `msg`, `type`, `loc`, `ctx`, `error_value`, `loc_resolved`,
+                `error_value_resolved`, all json-encodable
+        """
+        data = super().to_log_dict()
+        # `UNSET` and `NODEFAULT` can not sit in a plain dict, and neither can
+        # the objects msgspec does not encode; `_loggable_value()` covers all of
+        # them. `None` is the stand-in for "nothing was collected".
+        data['error_value'] = (
+            _loggable_value(self.error_value) if self.error_value_resolved else None
+        )
+        data['loc_resolved'] = self.loc_resolved
+        data['error_value_resolved'] = self.error_value_resolved
+        return data
 
 
 def _extract_got(remain):
