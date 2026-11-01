@@ -94,8 +94,10 @@ def _unresolved_detail(error):
         error (ErrorInfo): The parsed error, its `loc` is handed back
 
     Returns:
-        ErrorInfoDetail: The location without a placeholder, and `error_value`
-            unset. `loc` is `()` when it is not a usable path
+        ErrorInfoDetail: The location as it can be handed back, and
+            `error_value` unset. `loc` is `()` when it is not a usable path. A
+            detail that already carries `loc_resolved` keeps the answer of the
+            walk that produced it
     """
     loc = error.loc
     loc_type = type(loc)
@@ -113,9 +115,20 @@ def _unresolved_detail(error):
             if part_type is not int and part_type is not str:
                 loc = ()
                 break
+    # The flag is never re-derived from the text of the location: a dict key can
+    # be the string `...` itself, so placeholder text alone does not say whether
+    # a placeholder was left behind. A detail that has been walked already knows,
+    # and that answer stands even when this walk could not confirm it.
+    # An error that was never walked only has msgspec's own path, and there `...`
+    # / `...key` is how a dict entry is written down: msgspec never spells a real
+    # key out, so reading that text is exact.
+    if isinstance(error, ErrorInfoDetail):
+        loc_resolved = error.loc_resolved
+    else:
+        loc_resolved = not _has_placeholder(loc)
     return ErrorInfoDetail(
         msg=error.msg, type=error.type, loc=loc, ctx=error.ctx,
-        loc_resolved=not _has_placeholder(loc))
+        loc_resolved=loc_resolved)
 
 
 def _resolve_loc(loc, data, model, options):
@@ -310,7 +323,10 @@ def resolve_error(error, data, model_or_decoder, **kwargs):
             none, so read the flag rather than comparing the value: the data
             itself can hold `UNSET`. A `loc` that still holds a
             placeholder or that does not match the data is left as it is, and
-            `loc_resolved` is then False.
+            `loc_resolved` is then False; the one exception is an error that
+            already came out of a walk, whose flag is kept because that walk
+            knows whether its location is concrete and this one could not
+            confirm or deny it.
 
     Examples:
         class ItemInfo(Struct):

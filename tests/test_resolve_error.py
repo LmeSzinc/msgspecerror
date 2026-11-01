@@ -323,6 +323,28 @@ class TestResolveLiteralPlaceholderKey:
         assert detail.loc_resolved is False
         assert detail.error_value_resolved is False
 
+    @pytest.mark.parametrize('key', ['...', '...key'])
+    def test_a_walk_that_cannot_confirm_keeps_the_carried_flag(self, key):
+        """The flag belongs to the walk that produced the location.
+
+        A second `resolve_error()` against data where nothing fails can not
+        confirm anything. The location was resolved when it was produced and its
+        key only reads like a placeholder, so the flag is not revoked.
+        """
+        class Inner(Struct):
+            a: int
+
+        detail = convert_with_error_detail({key: {}}, Dict[str, Inner])[1]
+        assert detail.loc == (key, 'a')
+        assert detail.loc_resolved is True
+        assert detail.error_value_resolved is False
+
+        again = resolve_error(detail, {key: {'a': 1}}, Dict[str, Inner])
+        assert again.loc == (key, 'a')
+        assert again.loc_resolved is True
+        assert again.error_value_resolved is False
+        assert_invariants(again)
+
 
 class TestResolveNoPlaceholder:
     def test_struct_field(self):
