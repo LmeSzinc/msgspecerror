@@ -627,6 +627,26 @@ class TestDeliveryInvariants:
         assert_json_encodable(detail)
         assert_loc_segments(detail.loc)
 
+    @pytest.mark.parametrize('model, data', [
+        (Req, {}),
+        (Box, {'inner': {}}),
+        (Req, {'a': 1, 'z': 2}),
+        (Dict[str, int], {'k': 'x'}),
+        (Dict[str, List[int]], {'k': [1, 'x']}),
+        (Dict[str, Dict[str, int]], {'a': {'b': 'x'}}),
+        (Tuple[int, str], [1, 2]),
+        (Union[Dict[str, int], List[int]], {'k': 'x'}),
+        (Inventory, {'items': {'apple': {'amount': 'ABC'}}}),
+        (int, 'abc'),
+        (Set[int], {1, 'x'}),
+    ])
+    def test_resolve_error(self, model, data):
+        """`resolve_error` is the fourth entry that answers with a detail."""
+        detail = resolve(model, data)
+
+        assert_json_encodable(detail)
+        assert_loc_segments(detail.loc)
+
     def test_the_two_flags_are_booleans(self):
         """The flags are plain bool fields, not truthy sentinels."""
         detail = resolve(Dict[str, int], {'k': 'x'})

@@ -146,6 +146,7 @@ def _try_fix_string(data, header_len, str_len, item_start, utf8_error):
     """
     payload_start = item_start + header_len
     item_end = payload_start + str_len
+    # `data` is normalized to `bytes` by the caller, so this slice is one too
     payload = data[payload_start:item_end]
     try:
         payload.decode('utf-8')
@@ -409,6 +410,10 @@ def fixup_msgpack_unicode_fast(
         bytes | None: The fixed ``bytes`` on success, ``None`` when the
             failing string cannot be unambiguously located.
     """
+    if type(data) is not bytes:
+        # A `memoryview` has no `.find()`; the repair only runs on a failed
+        # decode, so one copy here is cheap and every step below is uniform
+        data = bytes(data)
     payload = error.object
     str_len = len(payload)
 
@@ -478,6 +483,11 @@ def fixup_msgpack_unicode_slow(
     Returns:
         bytes: The fully repaired msgpack bytes.
     """
+    if type(data) is not bytes:
+        # A `memoryview` slice has no `.decode()` and a `bytearray` slice would
+        # end up in the span map as a mutable object; the repair only runs on a
+        # failed decode, so one copy here keeps every step uniform
+        data = bytes(data)
     parts = []
     end = 0
     for start, item_end, fixed in _walk_fix(data, 0, utf8_error):

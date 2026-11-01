@@ -841,13 +841,25 @@ def _handle_json_encode_repair(
 
 
 def _handle_json_unicode_repair(
-        data: bytes,
+        data,
         *,
         utf8_error: T_utf8_error,
 ) -> "tuple[bytes | str, list[ErrorInfo]]":
     """
     Helper function to repair json data that has unicode error
+
+    Args:
+        data (bytes | bytearray | memoryview): The payload that failed to decode
+        utf8_error (str): 'replace' to write U+FFFD, 'ignore' to drop it
+
+    Returns:
+        tuple[bytes | str, list[ErrorInfo]]: The repaired payload and the errors
     """
+    if type(data) is not bytes:
+        # A `memoryview` has no `.decode()`. The payload only reaches here on the
+        # repair path, so one copy is cheap and every branch below then works on
+        # the same type.
+        data = bytes(data)
     if utf8_error == 'replace':
         data = data.decode('utf-8', errors=utf8_error)
         # msgspec allow decoding json in str, so we just keep in str
@@ -1201,7 +1213,9 @@ def _repair_msgpack_unicode(
     repair, preventing attackers from causing O(N*M) re-decode cycles.
 
     Args:
-        data (bytes): The payload to repair
+        data (bytes | bytearray | memoryview): The payload to repair. The fixups
+            copy it to `bytes`, which is what their `.find()` / `.decode()`
+            calls and the span map need
         error (UnicodeDecodeError): The failure that stopped the untyped decode
         attempt (int): 0 for the fast fix, anything else for the slow walk
         utf8_error (str): Error handler for the invalid bytes
